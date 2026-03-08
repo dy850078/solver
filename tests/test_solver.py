@@ -7,16 +7,16 @@ Run: pytest tests/test_solver.py -v
 
 import json
 from fastapi.testclient import TestClient
-from server import app
 
-client = TestClient(app)
-
-from models import (
+from app.models import (
     Resources, Topology, Baremetal, VM, NodeRole,
     AntiAffinityRule, SolverConfig,
     PlacementRequest, PlacementResult, PlacementAssignment,
 )
-from solver import VMPlacementSolver
+from app.solver import VMPlacementSolver
+from app.server import api
+
+client = TestClient(api)
 
 
 # ===========================================================================

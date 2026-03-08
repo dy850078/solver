@@ -17,17 +17,14 @@ dev = [
 ]
 
 [project.scripts]
-# 讓你可以直接在 terminal 輸入 solver-server 來啟動
-solver-server = "server:main"
+solver-server = "app.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-# flat layout: models.py / solver.py / server.py 直接放在根目錄
-# 告訴 setuptools 這些就是要安裝的 top-level modules
-py-modules = ["models", "solver", "server"]
+packages = ["app"]
 
 [tool.pytest.ini_options]
 # pytest 固定從 tests/ 找測試，不需要在 terminal 指定路徑

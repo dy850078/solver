@@ -35,7 +35,7 @@ from collections import defaultdict
 
 from ortools.sat.python import cp_model
 
-from models import (
+from .models import (
     PlacementRequest,
     PlacementResult,
     PlacementAssignment,
