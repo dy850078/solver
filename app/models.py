@@ -168,6 +168,10 @@ class SolverConfig(BaseModel):
     num_workers: int = 8
     allow_partial_placement: bool = False
     auto_generate_anti_affinity: bool = True
+    # 目標函數 weights
+    w_consolidation: int = 10
+    w_headroom: int = 8
+    headroom_upper_bound_pct: int = 90
 
 
 # ---------------------------------------------------------------------------

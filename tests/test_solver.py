@@ -383,3 +383,55 @@ class TestSerialization:
         """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
         assert resp.status_code == 422
+
+
+# ===========================================================================
+# 9. Objective function: consolidation + headroom
+# ===========================================================================
+
+class TestObjective:
+
+    def test_consolidation_prefers_fewer_bms(self):
+        """Consolidation：2 BM 都夠放，solver 應把全部 VM 放進 1 台。"""
+        bms = [
+            make_bm("bm-1", cpu=64, mem=256_000),
+            make_bm("bm-2", cpu=64, mem=256_000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(3)]
+
+        r = solve(vms, bms, w_consolidation=10, w_headroom=0)
+
+        assert r.success
+        assert len(r.assignments) == 3
+
+        bm_ids_used = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids_used) == 1, f"Expected 1 BM used, got: {bm_ids_used}"
+
+    def test_headroom_avoids_high_utilization(self):
+        """Headroom：BM-A 放置後 80%，BM-B 放置後 100%。solver 應選 BM-A。"""
+        bms = [
+            make_bm("bm-a", cpu=10, mem=256_000, used_cpu=0),
+            make_bm("bm-b", cpu=10, mem=256_000, used_cpu=2),  # 已用 2 cpu
+        ]
+        vms = [make_vm("vm-1", cpu=8, mem=16_000)]
+
+        r = solve(vms, bms, w_consolidation=0, w_headroom=8)
+
+        assert r.success
+        # BM-A: (0+8)/10 = 80% → over = 0
+        # BM-B: (2+8)/10 = 100% → over = 10
+        assert amap(r)["vm-1"] == "bm-a", f"Expected bm-a, got: {amap(r)}"
+
+    def test_partial_placement_priority_over_consolidation(self):
+        """
+        Partial placement 優先級高於 consolidation penalty。
+        即使 consolidation 希望少用 BM，多放 VM 永遠更重要。
+        """
+        bms = [make_bm("bm-1", cpu=8, mem=32_000, disk=200)]
+        vms = [make_vm(f"vm-{i}") for i in range(3)]
+
+        r = solve(vms, bms, allow_partial_placement=True, w_consolidation=10)
+
+        # 容量只夠放 2 台（8 cpu / 4 cpu per VM = 2）
+        assert len(r.assignments) == 2, f"Expected 2 placed, got {len(r.assignments)}"
+        assert len(r.unplaced_vms) == 1

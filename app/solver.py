@@ -77,6 +77,9 @@ class VMPlacementSolver:
         # because it means we never even consider impossible assignments.
         self.assign: dict[tuple[str, str], cp_model.IntVar] = {}
 
+        # Objective helper: bm_used[bm_id] = 1 if any VM is placed on that BM
+        self.bm_used: dict[str, cp_model.IntVar] = {}
+
     # ------------------------------------------------------------------
     # Step A: Determine which (VM, BM) pairs are eligible
     # ------------------------------------------------------------------
@@ -279,6 +282,122 @@ class VMPlacementSolver:
                     self.model.Add(sum(vars_in_ag) <= rule.max_per_ag)
 
     # ------------------------------------------------------------------
+    # Step C (cont.): Objective function helpers
+    # ------------------------------------------------------------------
+
+    def _build_bm_used_vars(self):
+        """
+        建立 bm_used[bm_id] 變數：這台 BM 是否被使用。
+
+        bm_used[bm] = max(assign[vm_1, bm], assign[vm_2, bm], ...)
+        → 只要有任何 VM 放在這台 BM，bm_used = 1
+        """
+        for bm in self.request.baremetals:
+            bm_used = self.model.NewBoolVar(f"bm_used_{bm.id}")
+
+            vm_vars_on_bm = [
+                self.assign[(vm_id, bm.id)]
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in self.assign
+            ]
+
+            if vm_vars_on_bm:
+                self.model.AddMaxEquality(bm_used, vm_vars_on_bm)
+            else:
+                self.model.Add(bm_used == 0)
+
+            self.bm_used[bm.id] = bm_used
+
+    def _compute_headroom_penalties(self) -> list[cp_model.IntVar]:
+        """
+        計算每台 BM 的 headroom penalty。
+
+        對每台 BM：
+        1. 計算每個資源維度的利用率（after_usage / total）
+        2. 超過 headroom_upper_bound_pct 的部分計為 penalty
+        3. 跨維度取最大值（最壞情況決定 penalty）
+
+        返回每台 BM 的 penalty 變數列表。
+        """
+        penalties = []
+        for bm in self.request.baremetals:
+            dim_overs = []
+            for field in RESOURCE_FIELDS:
+                total_d = getattr(bm.total_capacity, field)
+                if total_d == 0:
+                    continue  # 避免除以零（gpu_count=0 的機器）
+
+                used_d = getattr(bm.used_capacity, field)
+
+                assigned_vars = [
+                    (vm_id, self.assign[(vm_id, bm.id)])
+                    for vm_id in self.vm_map
+                    if (vm_id, bm.id) in self.assign
+                ]
+                if not assigned_vars:
+                    continue
+
+                # 新放入的 VM 消耗
+                new_usage = sum(
+                    getattr(self.vm_map[vm_id].demand, field) * var
+                    for vm_id, var in assigned_vars
+                )
+
+                # Step A: 計算放置後的使用量 × 100（避免浮點）
+                after_times_100 = self.model.NewIntVar(
+                    0, total_d * 100, f"a100_{bm.id}_{field}"
+                )
+                self.model.Add(after_times_100 == (used_d + new_usage) * 100)
+
+                # Step B: 整數百分比（0–100）
+                util_pct = self.model.NewIntVar(0, 100, f"util_{bm.id}_{field}")
+                self.model.AddDivisionEquality(util_pct, after_times_100, total_d)
+
+                # Step C: 超過安全上限的量（可能為負）
+                raw = self.model.NewIntVar(-100, 100, f"raw_{bm.id}_{field}")
+                self.model.Add(raw == util_pct - self.config.headroom_upper_bound_pct)
+
+                # Step D: ReLU：截斷負值
+                over = self.model.NewIntVar(0, 100, f"over_{bm.id}_{field}")
+                self.model.AddMaxEquality(over, [self.model.NewConstant(0), raw])
+                dim_overs.append(over)
+
+            if dim_overs:
+                # Step E: 跨維度取最大值
+                bm_penalty = self.model.NewIntVar(0, 100, f"hp_{bm.id}")
+                self.model.AddMaxEquality(bm_penalty, dim_overs)
+                penalties.append(bm_penalty)
+
+        return penalties
+
+    def _add_objective(self):
+        """
+        組合所有目標函數項並設定 Minimize。
+
+        優先級（由高到低）：
+        1. 放置盡量多的 VM（partial placement 模式）
+        2. 使用盡量少的 BM（consolidation）
+        3. 利用率不超過安全上限（headroom）
+        """
+        terms = []
+
+        if self.config.allow_partial_placement:
+            total_placed = sum(self.assign.values())
+            terms.append(-1_000_000 * total_placed)
+
+        if self.config.w_consolidation > 0:
+            self._build_bm_used_vars()
+            terms.append(self.config.w_consolidation * sum(self.bm_used.values()))
+
+        if self.config.w_headroom > 0:
+            penalties = self._compute_headroom_penalties()
+            if penalties:
+                terms.append(self.config.w_headroom * sum(penalties))
+
+        if terms:
+            self.model.Minimize(sum(terms))
+
+    # ------------------------------------------------------------------
     # Step D: Solve and extract results
     # ------------------------------------------------------------------
 
@@ -297,13 +416,8 @@ class VMPlacementSolver:
             self._add_capacity_constraints()
             self._add_anti_affinity_constraints()
 
-            # Objective: only needed for partial placement right now.
-            # With allow_partial_placement, constraints say "place <= 1 BM per VM"
-            # but the solver has no reason to prefer 1 over 0. So we tell it:
-            # "maximize the number of placed VMs" = "minimize the negative count".
-            if self.config.allow_partial_placement:
-                total_placed = sum(self.assign[key] for key in self.assign)
-                self.model.Maximize(total_placed)
+            # Objective: consolidation + headroom (+ partial placement priority)
+            self._add_objective()
 
             # Solve
             solver = cp_model.CpSolver()
