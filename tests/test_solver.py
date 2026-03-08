@@ -6,6 +6,10 @@ Run: pytest tests/test_solver.py -v
 """
 
 import json
+from fastapi.testclient import TestClient
+from server import app
+
+client = TestClient(app)
 
 from models import (
     Resources, Topology, Baremetal, VM, NodeRole,
@@ -352,3 +356,30 @@ class TestSerialization:
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
         assert out["assignments"][0]["ag"] == "ag-1"
+
+    def test_http_solve_endpoint(self):
+        """FastAPI POST /v1/placement/solve 回傳正確結果。"""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "baremetals": [{
+                "id": "bm-1",
+                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        })
+        assert resp.status_code == 200
+        out = resp.json()
+        assert out["success"] is True
+        assert out["assignments"][0]["vm_id"] == "vm-1"
+
+    def test_http_healthz(self):
+        """GET /healthz 回傳 healthy。"""
+        resp = client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "healthy"
+
+    def test_http_invalid_request_returns_422(self):
+        """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
+        resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
+        assert resp.status_code == 422

@@ -1,62 +1,66 @@
 """
-Entry points: HTTP server and CLI mode.
+Entry points: HTTP server (FastAPI) and CLI mode.
 
 HTTP:  python server.py --port 50051
-CLI:   python server.py --cli --input request.json
+       uvicorn server:app --host 0.0.0.0 --port 50051
+CLI:   python server.py --cli --input request.json [--output result.json]
+
+FastAPI 的好處：
+  - PlacementRequest 是 Pydantic model，FastAPI 直接用它解析 request body
+  - 送來的 JSON 缺欄位或型別錯誤，FastAPI 自動回傳 422 和清楚的錯誤訊息
+  - GET /docs 自動產生互動式 API 文件（開發時很好用）
 """
 
 from __future__ import annotations
-import argparse, json, logging, sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from models import PlacementRequest
+import argparse
+import logging
+import sys
+
+import uvicorn
+from fastapi import FastAPI
+
+from models import PlacementRequest, PlacementResult
 from solver import VMPlacementSolver
 
 logger = logging.getLogger(__name__)
 
-
-class PlacementHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/v1/placement/solve":
-            self.send_error(404)
-            return
-        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
-        try:
-            request = PlacementRequest.model_validate_json(body)
-            result = VMPlacementSolver(request).solve()
-            resp = result.model_dump_json(indent=2).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(resp)
-        except Exception as e:
-            logger.exception("Failed")
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode())
-
-    def do_GET(self):
-        if self.path == "/healthz":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b'{"status":"healthy"}')
-        else:
-            self.send_error(404)
+app = FastAPI(
+    title="VM Placement Solver",
+    description="Optimizes VM-to-baremetal placement using OR-Tools CP-SAT solver",
+    version="0.1.0",
+)
 
 
-def main():
+@app.post("/v1/placement/solve", response_model=PlacementResult)
+def solve(request: PlacementRequest) -> PlacementResult:
+    """
+    Receive a placement request from the Go scheduler and return an optimized plan.
+
+    FastAPI 自動把 request body (JSON) 解析成 PlacementRequest，
+    並把回傳的 PlacementResult 序列化成 JSON response。
+    """
+    return VMPlacementSolver(request).solve()
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    return {"status": "healthy"}
+
+
+def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    parser = argparse.ArgumentParser()
+
+    parser = argparse.ArgumentParser(description="VM Placement Solver")
     parser.add_argument("--port", type=int, default=50051)
-    parser.add_argument("--cli", action="store_true")
-    parser.add_argument("--input", type=str)
-    parser.add_argument("--output", type=str)
+    parser.add_argument("--cli", action="store_true", help="Run in CLI mode instead of HTTP server")
+    parser.add_argument("--input", type=str, help="Input JSON file (CLI mode only)")
+    parser.add_argument("--output", type=str, help="Output JSON file (CLI mode only, default: stdout)")
     args = parser.parse_args()
 
     if args.cli:
         if not args.input:
-            print("ERROR: --input required", file=sys.stderr)
+            print("ERROR: --input required in CLI mode", file=sys.stderr)
             sys.exit(1)
         with open(args.input) as f:
             request = PlacementRequest.model_validate_json(f.read())
@@ -68,9 +72,8 @@ def main():
         else:
             print(output)
     else:
-        server = HTTPServer(("0.0.0.0", args.port), PlacementHandler)
-        logger.info(f"Listening on :{args.port}")
-        server.serve_forever()
+        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
+
 
 if __name__ == "__main__":
     main()
