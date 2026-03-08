@@ -5,8 +5,7 @@ Each test class maps to one type of constraint.
 Run: pytest tests/test_solver.py -v
 """
 
-import json, sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import json
 
 from models import (
     Resources, Topology, Baremetal, VM, NodeRole,

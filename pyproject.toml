@@ -1,0 +1,31 @@
+[project]
+name = "vm-placement-solver"
+version = "0.1.0"
+description = "Python-based VM placement optimizer using OR-Tools CP-SAT solver"
+requires-python = ">=3.13"
+dependencies = [
+    "ortools>=9.9",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+# 讓你可以直接在 terminal 輸入 solver-server 來啟動
+solver-server = "server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# flat layout: models.py / solver.py / server.py 直接放在根目錄
+# 告訴 setuptools 這些就是要安裝的 top-level modules
+py-modules = ["models", "solver", "server"]
+
+[tool.pytest.ini_options]
+# pytest 固定從 tests/ 找測試，不需要在 terminal 指定路徑
+testpaths = ["tests"]
