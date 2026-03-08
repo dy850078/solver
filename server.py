@@ -9,8 +9,8 @@ from __future__ import annotations
 import argparse, json, logging, sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from models import PlacementRequest
 from solver import VMPlacementSolver
-from serialization import load_request_from_json, load_request_from_file, result_to_json
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,9 @@ class PlacementHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
         try:
-            request = load_request_from_json(body)
+            request = PlacementRequest.model_validate_json(body)
             result = VMPlacementSolver(request).solve()
-            resp = result_to_json(result).encode()
+            resp = result.model_dump_json(indent=2).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -58,9 +58,10 @@ def main():
         if not args.input:
             print("ERROR: --input required", file=sys.stderr)
             sys.exit(1)
-        request = load_request_from_file(args.input)
+        with open(args.input) as f:
+            request = PlacementRequest.model_validate_json(f.read())
         result = VMPlacementSolver(request).solve()
-        output = result_to_json(result)
+        output = result.model_dump_json(indent=2)
         if args.output:
             with open(args.output, "w") as f:
                 f.write(output)

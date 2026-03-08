@@ -1,34 +1,36 @@
 """
 VM Placement Solver — Data Models
 
-Step 1: Define the data structures that flow between Go scheduler and Python solver.
-
-Think of this as the "language" both sides speak.
-The Go scheduler produces a PlacementRequest (JSON), and the Python solver
-returns a PlacementResult (JSON).
+Pydantic v2 BaseModel 取代 dataclass 的好處：
+  - model_validate_json(str) 直接把 JSON 字串轉成 Python 物件（不需要 serialization.py）
+  - model_dump_json() 把 Python 物件轉回 JSON 字串
+  - 建立物件時自動驗證型別，送錯資料立刻有清楚的錯誤訊息
 
 Topology: site > phase > datacenter > rack
 Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
 # Resources: the multi-dimensional "size" of a VM or baremetal
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Resources:
+class Resources(BaseModel):
     """
     Represents resource capacity or demand.
 
-    Why a separate class? Because both VMs and baremetals use the same
-    dimensions (cpu, mem, disk, gpu). Having one class lets us write
-    generic code that works across all dimensions.
+    為什麼用獨立的 class？因為 VM 和 Baremetal 都用同樣的維度（cpu, mem, disk, gpu），
+    寫一個 class 就可以讓 solver 用統一的方式處理所有維度。
+
+    Pydantic 注意事項：
+      - 欄位宣告方式和 dataclass 一樣：cpu_cores: int = 0
+      - 建立方式也一樣：Resources(cpu_cores=4, memory_mb=16000)
     """
     cpu_cores: int = 0
     memory_mb: int = 0
@@ -65,8 +67,7 @@ class Resources:
 # Topology: where a baremetal physically lives
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Topology:
+class Topology(BaseModel):
     """
     Physical: site > phase > datacenter > rack
     Virtual:  AG (availability group) — the key for anti-affinity spreading
@@ -82,16 +83,21 @@ class Topology:
 # Baremetal: a physical server
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Baremetal:
+class Baremetal(BaseModel):
     """
     A physical host. The Go scheduler fills in total_capacity and used_capacity
     from the inventory API. We compute available = total - used.
+
+    Pydantic 注意事項：
+      - Field(default_factory=Resources) 取代 dataclass 的 field(default_factory=Resources)
+        意思一樣：「預設值是一個新建的空 Resources()」
+      - available_capacity 用普通的 @property 就好，Pydantic 允許這樣做。
+        因為它不是輸入欄位，只是計算用，所以不需要出現在 JSON 裡。
     """
     id: str
     total_capacity: Resources
-    used_capacity: Resources = field(default_factory=Resources)
-    topology: Topology = field(default_factory=Topology)
+    used_capacity: Resources = Field(default_factory=Resources)
+    topology: Topology = Field(default_factory=Topology)
 
     @property
     def available_capacity(self) -> Resources:
@@ -103,14 +109,17 @@ class Baremetal:
 # ---------------------------------------------------------------------------
 
 class NodeRole(str, Enum):
+    """
+    str, Enum 讓 Pydantic 可以直接從 JSON 字串（如 "master"）解析成 NodeRole.MASTER。
+    不需要在 serialization.py 裡手動 NodeRole(d.get("node_role", "worker"))。
+    """
     MASTER = "master"
     WORKER = "worker"
     INFRA = "infra"
     L4LB = "l4lb"
 
 
-@dataclass
-class VM:
+class VM(BaseModel):
     """
     A VM to be placed on a baremetal.
 
@@ -120,23 +129,21 @@ class VM:
 
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
-      anti-affinity rules: VMs with the same (ip_type, node_role) should
-      spread across different AGs.
+      anti-affinity rules.
     """
     id: str
     demand: Resources
     node_role: NodeRole = NodeRole.WORKER
     ip_type: str = ""
     cluster_id: str = ""
-    candidate_baremetals: list[str] = field(default_factory=list)
+    candidate_baremetals: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Anti-affinity: spread VMs across AGs
 # ---------------------------------------------------------------------------
 
-@dataclass
-class AntiAffinityRule:
+class AntiAffinityRule(BaseModel):
     """
     "These VMs should NOT all land in the same AG."
 
@@ -152,18 +159,14 @@ class AntiAffinityRule:
 # Solver config: tuning knobs
 # ---------------------------------------------------------------------------
 
-@dataclass
-class SolverConfig:
+class SolverConfig(BaseModel):
     """
-    For now, just solver behavior settings.
+    Solver behavior settings.
     We'll add objective weights later when we build the scoring function.
     """
     max_solve_time_seconds: float = 30.0
     num_workers: int = 8
     allow_partial_placement: bool = False
-
-    # Auto-generate anti-affinity rules from (cluster_id, node_role) groups.
-    # max_per_ag is computed automatically: ceil(num_vms / num_ags)
     auto_generate_anti_affinity: bool = True
 
 
@@ -171,32 +174,41 @@ class SolverConfig:
 # Solver I/O: the JSON contract
 # ---------------------------------------------------------------------------
 
-@dataclass
-class PlacementRequest:
-    """Input: what the Go scheduler sends to the Python solver."""
+class PlacementRequest(BaseModel):
+    """
+    Input: what the Go scheduler sends to the Python solver.
+
+    使用方式：
+      request = PlacementRequest.model_validate_json(json_string)
+      request = PlacementRequest.model_validate(python_dict)
+    """
     vms: list[VM]
     baremetals: list[Baremetal]
-    anti_affinity_rules: list[AntiAffinityRule] = field(default_factory=list)
-    config: SolverConfig = field(default_factory=SolverConfig)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
 
 
-@dataclass
-class PlacementAssignment:
+class PlacementAssignment(BaseModel):
     """One VM → one BM assignment, with the AG for easy verification."""
     vm_id: str
     baremetal_id: str
     ag: str = ""
 
 
-@dataclass
-class PlacementResult:
-    """Output: what the Python solver returns to the Go scheduler."""
+class PlacementResult(BaseModel):
+    """
+    Output: what the Python solver returns to the Go scheduler.
+
+    使用方式：
+      json_string = result.model_dump_json(indent=2)
+      python_dict = result.model_dump()
+    """
     success: bool
-    assignments: list[PlacementAssignment] = field(default_factory=list)
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
     solver_status: str = ""
     solve_time_seconds: float = 0.0
-    unplaced_vms: list[str] = field(default_factory=list)
-    diagnostics: dict[str, Any] = field(default_factory=dict)
+    unplaced_vms: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:
         """Convenience: vm_id -> baremetal_id."""

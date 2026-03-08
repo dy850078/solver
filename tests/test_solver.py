@@ -8,9 +8,12 @@ Run: pytest tests/test_solver.py -v
 import json, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import *
+from models import (
+    Resources, Topology, Baremetal, VM, NodeRole,
+    AntiAffinityRule, SolverConfig,
+    PlacementRequest, PlacementResult, PlacementAssignment,
+)
 from solver import VMPlacementSolver
-from serialization import load_request_from_json, result_to_json
 
 
 # ===========================================================================
@@ -20,10 +23,11 @@ from serialization import load_request_from_json, result_to_json
 def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
             used_cpu=0, used_mem=0, used_disk=0,
             ag="ag-1", dc="dc-1", rack="rack-1"):
+    # Pydantic BaseModel 只接受 keyword arguments，不接受 positional arguments
     return Baremetal(
         id=bm_id,
-        total_capacity=Resources(cpu, mem, disk, gpu),
-        used_capacity=Resources(used_cpu, used_mem, used_disk, 0),
+        total_capacity=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk, gpu_count=gpu),
+        used_capacity=Resources(cpu_cores=used_cpu, memory_mb=used_mem, disk_gb=used_disk),
         topology=Topology(site="site-a", phase="p1", datacenter=dc, rack=rack, ag=ag),
     )
 
@@ -32,7 +36,7 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
             ip_type="routable", candidates=None):
     return VM(
         id=vm_id,
-        demand=Resources(cpu, mem, disk, 0),
+        demand=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk),
         node_role=role,
         ip_type=ip_type,
         cluster_id=cluster,
@@ -163,7 +167,7 @@ class TestAntiAffinity:
     def test_spread_3_vms_across_3_ags(self):
         bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
         vms = [make_vm(f"vm-{i}") for i in range(3)]
-        rules = [AntiAffinityRule("g1", ["vm-0", "vm-1", "vm-2"], max_per_ag=1)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1", "vm-2"], max_per_ag=1)]
         r = solve(vms, bms, rules)
         assert r.success
         ags = {a.ag for a in r.assignments}
@@ -173,7 +177,7 @@ class TestAntiAffinity:
         """2 VMs, max_per_ag=1, but only 1 AG → impossible."""
         bms = [make_bm("bm-1", ag="ag-a"), make_bm("bm-2", ag="ag-a")]
         vms = [make_vm("vm-0"), make_vm("vm-1")]
-        rules = [AntiAffinityRule("g1", ["vm-0", "vm-1"], max_per_ag=1)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1"], max_per_ag=1)]
         r = solve(vms, bms, rules)
         assert not r.success
 
@@ -184,7 +188,7 @@ class TestAntiAffinity:
             make_bm("bm-b1", ag="ag-b"),
         ]
         vms = [make_vm(f"vm-{i}") for i in range(4)]
-        rules = [AntiAffinityRule("g1", [f"vm-{i}" for i in range(4)], max_per_ag=2)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=[f"vm-{i}" for i in range(4)], max_per_ag=2)]
         r = solve(vms, bms, rules)
         assert r.success
         ag_counts = {}
@@ -339,9 +343,12 @@ class TestSerialization:
             "config": {"auto_generate_anti_affinity": False},
         })
 
-        request = load_request_from_json(req)
+        # Pydantic: JSON string → model (取代 load_request_from_json)
+        request = PlacementRequest.model_validate_json(req)
         result = VMPlacementSolver(request).solve()
-        out = json.loads(result_to_json(result))
+
+        # Pydantic: model → JSON string → dict (取代 result_to_json)
+        out = json.loads(result.model_dump_json())
 
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
