@@ -3,7 +3,6 @@
 > **對象**：Kubernetes 叢集排程組的工程師
 > **目的**：釐清 Go 排程器的實際能力與邊界，說明哪些問題真正需要 CP-SAT，
 > 以及整合 Solver 對開發者帶來的具體效益
-
 ---
 
 ## 一、背景：Go 排程器的 Snapshot 機制
@@ -93,6 +92,107 @@ BM-X 已有 Cluster-A 的 3 個 VM（歷史批次）
 
 ---
 
+### 問題 C：排程品質最優化（Optimization）
+
+**輪詢做到的是「公平分配」，但公平不等於最佳。**
+
+輪詢的邏輯是把 VM 依序放到下一台 BM，最終讓每台 BM 大概放同樣數量的 VM。
+但這對實際維運產生兩個根本問題。
+
+---
+
+#### 問題 C-1：資源碎片化，BM 永遠無法騰空
+
+輪詢傾向把 VM 均勻地分散到所有 BM，結果是：
+
+```
+BM-A: VM-1, VM-5, VM-9      ← 3 個 VM，CPU 45% / MEM 30%
+BM-B: VM-2, VM-6, VM-10     ← 3 個 VM，CPU 40% / MEM 28%
+BM-C: VM-3, VM-7, VM-11     ← 3 個 VM，CPU 38% / MEM 25%
+BM-D: VM-4, VM-8, VM-12     ← 3 個 VM，CPU 42% / MEM 27%
+```
+
+每台 BM 都有一些 VM，但都沒滿。這代表：
+- **沒有任何 BM 可以下線**進行維護或節能
+- **無法縮減 BM Pool**，資源使用率整體偏低
+- **維運成本持續攀升**：更多 BM 上線 = 更多電力、更多硬體維護
+
+反之，若 Solver 採用整合策略（Consolidation），同樣 12 台 VM 可能被整合到 2–3 台 BM，
+其餘 BM 維持空閒，可以排程維護或進入低功耗模式。
+
+---
+
+#### 問題 C-2：資源熱點，某些 BM 過載而其他閒置
+
+輪詢只計算「已分配幾台 VM」，不看資源維度的實際使用量。
+結果是：
+
+```
+BM-A 接到 3 台重量 VM（各需 28 CPU）：CPU 利用率 84/100 = 84% ← 危險邊緣
+BM-B 接到 3 台輕量 VM（各需 2 CPU）：CPU 利用率 6/100 = 6%  ← 嚴重閒置
+```
+
+問題不止於此 —— 資源維度是多軸的（CPU / Memory / Disk / GPU），
+某台 BM 可能 CPU 尚有餘裕，但 Memory 已達 95%，下一批 VM 一到就 OOM：
+
+```
+BM-X 當前狀態：CPU 60%（安全），Memory 91%（危險）
+輪詢繼續往 BM-X 分配 → 下一台 memory-heavy VM 觸發 OOM killer
+```
+
+輪詢完全看不到這種多維資源的不均衡，它只看「這台 BM 輪到了」。
+
+---
+
+#### 為什麼在純 Go 中難以解決
+
+**實作 Consolidation（最小化使用 BM 數量）的嘗試**：
+
+```go
+// 想法：先把 VM 往已有 VM 的 BM 上塞（First Fit Decreasing）
+// 問題 1：4 個資源維度（CPU/MEM/Disk/GPU）同時緊，哪個優先？
+// 問題 2：VM 的大小不均一，「先大後小」的貪心不保證全局最優
+// 問題 3：貪心決策不可逆——早期的選擇鎖死了後期的可能性
+for _, vm := range sortedVMs {
+    placed := false
+    for _, bm := range sortedBMsByUsage {
+        if canPlace(vm, bm) {
+            place(vm, bm)   // ← 這個決定可能讓後面的 VM 沒地方去
+            placed = true
+            break
+        }
+    }
+}
+// 結果：局部最優，不保證整體 BM 數最小
+```
+
+**實作 Headroom（避免資源過載）的嘗試**：
+
+```go
+// 想法：跳過利用率超過 90% 的 BM
+for _, bm := range baremetals {
+    if bm.CpuUtil() > 0.9 || bm.MemUtil() > 0.9 { // 哪個維度超了都跳過
+        continue
+    }
+    place(vm, bm)
+    break
+}
+// 問題：這只考慮「當前狀態」，不考慮「放入 VM 後的狀態」
+// 且 CPU / MEM 維度的懲罰程度不同，簡單的 > 0.9 沒有細緻的 trade-off
+```
+
+**同時達成 Consolidation 和 Headroom 的衝突**：
+
+這兩個目標天生對立 ——
+- Consolidation 要求**把 VM 往同一台 BM 塞**，讓其他 BM 保持空閒
+- Headroom 要求**不要把 BM 壓到太高的利用率**
+
+在純 Go 中平衡這兩個目標，不是不可能，而是需要實作一個完整的加權評分系統、
+維護每台 BM 的多維度利用率狀態、以及處理兩個目標衝突時的優先順序，
+而且這個系統在每次新增一個目標維度時，就要整體重寫。
+
+---
+
 ### 問題 B：柔性約束（Soft Constraints）極難實作
 
 硬性約束（Hard Constraint）很好描述：「條件不滿足就失敗」。
@@ -165,6 +265,93 @@ for i := 0; i < maxAttempts; i++ {
 本專案以 **Python sidecar 服務**的形式整合 CP-SAT 求解器。
 Go 排程器負責收集所有狀態（包括歷史排程、其他叢集現況），
 Solver 負責在滿足所有約束的前提下找出最優分配。
+
+### 解法 C：最優化目標函數（Consolidation + Headroom）
+
+CP-SAT 的目標函數把「排程品質」量化為一個數學式，求解器在滿足所有硬約束的前提下，
+自動找出讓這個數學式最小的分配方案。
+
+#### C-1：Consolidation（最小化被使用的 BM 數量）
+
+對每台 BM 引入一個布林變數 `bm_used[j]`：
+
+```
+bm_used[j] = max(assign[vm_1, bm_j], assign[vm_2, bm_j], ...)
+           = 1  只要有任何 VM 被分配到 bm_j
+           = 0  若這台 BM 完全空閒
+```
+
+目標函數加入：
+
+```
+Minimize:  w_consolidation × Σ bm_used[j]
+```
+
+求解器在搜尋過程中，會自動偏好「把 VM 堆在少數幾台 BM 上，讓其餘 BM 空下來」的解。
+空下來的 BM 可以用於維護或節能，不需要任何額外的排程邏輯。
+
+#### C-2：Headroom（懲罰超過安全利用率的 BM）
+
+對每台 BM 的每個資源維度，計算放置後的超載程度：
+
+```
+after_util[j, r] = (used_capacity[j, r] + Σ demand[i, r] × assign[i, j]) / total[j, r]
+
+over[j, r] = max(0,  after_util[j, r] × 100  −  headroom_upper_bound_pct)
+           = 0      若利用率在安全範圍內（≤ 90%）
+           = 正整數  若超過（例：96% → over = 6）
+
+bm_penalty[j] = max(over[j, cpu], over[j, mem], over[j, disk], over[j, gpu])
+              ← 跨維度取最壞情況
+```
+
+目標函數加入：
+
+```
+Minimize:  w_headroom × Σ bm_penalty[j]
+```
+
+這確保求解器會主動迴避「放入 VM 後會超過安全利用率的 BM」，以最壞的資源維度為準。
+
+#### C-3：多目標優先級設計
+
+三個目標需要明確的優先順序：
+1. **放置盡量多的 VM**（部分排程模式下，最高優先）
+2. **Consolidation**（次優先）
+3. **Headroom**（最低優先）
+
+CP-SAT 只接受一個目標函數，透過**係數縮放**實現優先級：
+
+```python
+Minimize:
+    -1_000_000 × placed_count         # 放置數量（負號=越多越好）
+    +        10 × Σ bm_used[j]        # Consolidation
+    +         8 × Σ bm_penalty[j]     # Headroom
+```
+
+`1_000_000` 遠大於 `10 × N_BMs + 8 × 100 × N_BMs` 的最大值，
+保證「多放一台 VM 的收益」永遠大於「任何 BM 使用數量或 headroom 的變化」。
+這是一種嚴格的優先級保證，不需要手動調整 trade-off。
+
+#### Consolidation 與 Headroom 的自動平衡
+
+這兩個目標天生對立：Consolidation 要把 VM 堆在一起，Headroom 要避免堆太滿。
+在 CP-SAT 中，這個衝突被自然地表達為目標函數的 `w_consolidation` 與 `w_headroom`
+的**相對大小**，求解器自動找到最佳平衡點：
+
+```
+BM-A 空閒 → 放入 VM → bm_used 從 0→1 → consolidation 成本 +10
+BM-B 已有 VM，利用率 85% → 再放入後 92% → over=2 → headroom 成本 +16
+
+比較：
+  放到 BM-A：+10（開啟 BM-A）
+  放到 BM-B：+16（加劇 BM-B 過載）
+  → 求解器選 BM-A（成本較低）
+```
+
+這個 trade-off 是**自動計算的**，不需要工程師手寫任何 if/else 邏輯。
+
+---
 
 ### 解法 A：跨批次約束 — 外部狀態注入
 
@@ -255,6 +442,9 @@ Phase 2: Maximize 柔性規則總分（在不犧牲放置數的前提下）
 | **跨批次拓撲反親和（Soft）** | ❌ 指數級複雜度 | ✅ 目標函數懲罰項 | **Solver 解決** |
 | **跨批次拓撲親和（Soft）** | ❌ 無法最優化 | ✅ 目標函數獎勵項 | **Solver 解決** |
 | **多柔性規則 Trade-off** | ❌ 手寫邏輯爆炸 | ✅ 加權目標函數 | **Solver 解決** |
+| **Consolidation（最小化使用 BM 數）** | ❌ 貪心不保證全局最優 | ✅ `bm_used` 變數 + 最小化目標 | **Solver 解決** |
+| **Headroom（避免多維資源過載）** | ❌ 無法同時考慮四個維度 | ✅ per-BM per-dimension 懲罰項 | **Solver 解決** |
+| **Consolidation + Headroom 自動平衡** | ❌ 需要手寫 trade-off 邏輯 | ✅ 係數縮放自動平衡 | **Solver 解決** |
 
 ---
 
@@ -416,6 +606,8 @@ Go Scheduler
 │    └─ 跨批次拓撲反親和 Hard（直接封鎖對應變數）          │
 │                                                        │
 │  Phase 2：建立目標函數                                   │
+│    ├─ Consolidation（minimize 被使用 BM 數）            │
+│    ├─ Headroom（minimize 四維資源超載 penalty）          │
 │    ├─ Soft 反親和懲罰項（-weight per 違反）             │
 │    └─ Soft 親和獎勵項（+weight per 滿足）               │
 │                                                        │
@@ -444,16 +636,19 @@ Go Scheduler 依據 assignments 執行 VM 創建
 | **跨批次 / 跨叢集約束** | ❌ Snapshot 看不到歷史 | ✅ 外部狀態注入 + 硬約束 |
 | **柔性規則** | ❌ 啟發式，非最優 | ✅ 全域最優加權目標函數 |
 | **多規則 Trade-off** | ❌ 手寫邏輯複雜度爆炸 | ✅ 自動 weight 平衡 |
+| **Consolidation（減少使用 BM 數）** | ❌ 貪心，非全局最優 | ✅ `bm_used` 最小化目標 |
+| **Headroom（四維資源過載防護）** | ❌ 無法跨維度評分 | ✅ per-dimension penalty + 跨維度 max |
+| **Consolidation × Headroom 平衡** | ❌ 需手寫 if/else trade-off | ✅ 係數縮放，求解器自動平衡 |
 | **新增約束成本** | 高（可能動多個子系統） | 低（新增 `model.Add()` 呼叫） |
 | **測試可讀性** | 需了解演算法細節 | 直接描述業務場景 |
 | **失敗診斷** | 需手工埋點 | 內建結構化診斷 |
 | **職責清晰度** | 排程邏輯與系統整合混雜 | Go 做整合，Solver 做最優化 |
 
 **一句話總結**：
-Go 排程器已能在批次內正確處理大多數約束，
-真正需要 CP-SAT 的是**跨批次的歷史狀態約束**和**多目標柔性最優化**。
-而整合 Solver 的附加效益是：讓每條業務規則直接對應一段程式碼，
-新需求不再是演算法挑戰，而只是新的 `model.Add()` 呼叫。
+Go 排程器已能在批次內正確處理大多數硬性約束，
+真正需要 CP-SAT 的是三件事：**跨批次歷史狀態約束**、**多目標柔性最優化**、以及**資源整合與過載防護的全局最優解**。
+整合 Solver 的附加效益是：每條業務規則直接對應一段程式碼，
+新需求不再是演算法挑戰，而只是新的 `model.Add()` 或 `objective_terms.append()` 呼叫。
 
 ---
 
