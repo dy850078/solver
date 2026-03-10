@@ -9,6 +9,11 @@ FastAPI 的好處：
   - PlacementRequest 是 Pydantic model，FastAPI 直接用它解析 request body
   - 送來的 JSON 缺欄位或型別錯誤，FastAPI 自動回傳 422 和清楚的錯誤訊息
   - GET /docs 自動產生互動式 API 文件（開發時很好用）
+
+Swagger UI 靜態資源說明：
+  FastAPI 預設從 cdn.jsdelivr.net 載入 Swagger UI 的 JS/CSS。
+  在無網路環境下頁面會空白，因此改由 swagger-ui-bundle 套件提供本機靜態檔案，
+  掛載於 /swagger-static，並覆寫 /docs endpoint 使用本機 URL。
 """
 
 from __future__ import annotations
@@ -16,22 +21,44 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
+import swagger_ui_bundle
 import uvicorn
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .models import PlacementRequest, PlacementResult
 from .solver import VMPlacementSolver
 
 logger = logging.getLogger(__name__)
 
-# FastAPI instance — 命名為 api 避免與 app/ package 名稱混淆
-# uvicorn 啟動指令: uvicorn app.server:api --host 0.0.0.0 --port 50051
+# 本機 Swagger UI 靜態資源路徑（由 swagger-ui-bundle 套件提供）
+_SWAGGER_STATIC_DIR = Path(swagger_ui_bundle.__file__).parent / "vendor" / "swagger-ui-4.15.5"
+
+# FastAPI instance — docs_url=None 關閉預設的 CDN 版 /docs
 api = FastAPI(
     title="VM Placement Solver",
     description="Optimizes VM-to-baremetal placement using OR-Tools CP-SAT solver",
     version="0.1.0",
+    docs_url=None,   # 關閉預設 /docs（會從 CDN 載入，無網路時空白）
 )
+
+# 掛載本機靜態檔案到 /swagger-static
+api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
+
+
+@api.get("/docs", include_in_schema=False)
+def custom_swagger_ui() -> HTMLResponse:
+    """Swagger UI，使用本機靜態資源（不依賴 CDN）。"""
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="VM Placement Solver — API Docs",
+        swagger_js_url="/swagger-static/swagger-ui-bundle.js",
+        swagger_css_url="/swagger-static/swagger-ui.css",
+    )
 
 
 @api.post("/v1/placement/solve", response_model=PlacementResult)

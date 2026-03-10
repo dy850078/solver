@@ -388,6 +388,17 @@ class TestSerialization:
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
         assert resp.status_code == 422
 
+    def test_swagger_ui_loads_from_local_static(self):
+        """
+        /docs 應回傳 200，且 HTML 中的 JS/CSS 指向本機 /swagger-static，
+        而非 cdn.jsdelivr.net（避免無網路環境下頁面空白）。
+        """
+        resp = client.get("/docs")
+        assert resp.status_code == 200
+        assert "cdn.jsdelivr.net" not in resp.text
+        assert "/swagger-static/swagger-ui-bundle.js" in resp.text
+        assert "/swagger-static/swagger-ui.css" in resp.text
+
 
 # ===========================================================================
 # 9. BM VM count limit
