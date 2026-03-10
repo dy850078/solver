@@ -12,8 +12,9 @@ from app.models import (
     Resources, Topology, Baremetal, VM, NodeRole,
     AntiAffinityRule, SolverConfig,
     PlacementRequest, PlacementResult, PlacementAssignment,
+    ExistingVM, TopologyRule,
 )
-from app.solver import VMPlacementSolver
+from app.solver import VMPlacementSolver, validate_topology_rules
 from app.server import api
 
 client = TestClient(api)
@@ -46,13 +47,16 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
         candidate_baremetals=candidates or [],
     )
 
-def solve(vms, bms, rules=None, **config_overrides):
+def solve(vms, bms, rules=None, existing_vms=None, topology_rules=None,
+          **config_overrides):
     """Solve with default config, overridable."""
     cfg = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     cfg.update(config_overrides)
     request = PlacementRequest(
         vms=vms, baremetals=bms,
         anti_affinity_rules=rules or [],
+        existing_vms=existing_vms or [],
+        topology_rules=topology_rules or [],
         config=SolverConfig(**cfg),
     )
     return VMPlacementSolver(request).solve()
@@ -383,3 +387,308 @@ class TestSerialization:
         """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
         assert resp.status_code == 422
+
+
+# ===========================================================================
+# 9. BM VM count limit
+# ===========================================================================
+
+class TestBmVmCountLimit:
+
+    def test_count_limit_respected(self):
+        """BM has max_vm_count=2, already has 1 → can only add 1 more."""
+        bms = [make_bm("bm-1")]
+        # Patch max_vm_count and current_vm_count
+        bms[0] = bms[0].model_copy(update={"max_vm_count": 2, "current_vm_count": 1})
+        vms = [make_vm("vm-1"), make_vm("vm-2")]
+        r = solve(vms, bms)
+        # Only 1 VM can be placed (capacity is fine but count limit hit)
+        assert not r.success
+
+    def test_count_limit_allows_fit(self):
+        """BM has max_vm_count=5, current=2 → can add 3."""
+        bms = [make_bm("bm-1")]
+        bms[0] = bms[0].model_copy(update={"max_vm_count": 5, "current_vm_count": 2})
+        vms = [make_vm(f"vm-{i}") for i in range(3)]
+        r = solve(vms, bms)
+        assert r.success
+
+    def test_count_limit_none_means_unlimited(self):
+        """max_vm_count=None → no count limit."""
+        bms = [make_bm("bm-1")]
+        vms = [make_vm(f"vm-{i}") for i in range(10)]
+        r = solve(vms, bms)
+        assert r.success
+        assert len(r.assignments) == 10
+
+    def test_count_limit_spreads_across_bms(self):
+        """max_vm_count=2 on each BM → 4 VMs spread across 2 BMs."""
+        bms = [
+            make_bm("bm-1").model_copy(update={"max_vm_count": 2, "current_vm_count": 0}),
+            make_bm("bm-2").model_copy(update={"max_vm_count": 2, "current_vm_count": 0}),
+        ]
+        vms = [make_vm(f"vm-{i}") for i in range(4)]
+        r = solve(vms, bms)
+        assert r.success
+        bm_counts = {}
+        for a in r.assignments:
+            bm_counts[a.baremetal_id] = bm_counts.get(a.baremetal_id, 0) + 1
+        assert all(c <= 2 for c in bm_counts.values())
+
+
+# ===========================================================================
+# 10. Topology rule validation
+# ===========================================================================
+
+class TestTopologyValidation:
+
+    def test_affinity_hard_downgraded(self):
+        """Affinity + hard → auto-downgraded to soft with warning."""
+        rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="affinity", enforcement="hard",
+        )]
+        validated, warnings = validate_topology_rules(rules)
+        assert validated[0].enforcement == "soft"
+        assert any(w["type"] == "enforcement_downgraded" for w in warnings)
+
+    def test_conflict_detected(self):
+        """Affinity @ rack + anti-affinity @ datacenter → conflict."""
+        rules = [
+            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
+                         scope="rack", type="affinity", enforcement="soft"),
+            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
+                         scope="datacenter", type="anti_affinity", enforcement="hard"),
+        ]
+        import pytest
+        with pytest.raises(ValueError, match="conflict"):
+            validate_topology_rules(rules)
+
+    def test_no_conflict_affinity_coarser(self):
+        """Affinity @ site + anti-affinity @ datacenter → OK (same site, different DC)."""
+        rules = [
+            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
+                         scope="site", type="affinity", enforcement="soft"),
+            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
+                         scope="datacenter", type="anti_affinity", enforcement="hard"),
+        ]
+        validated, warnings = validate_topology_rules(rules)
+        assert len(validated) == 2
+
+    def test_redundant_rules_filtered(self):
+        """Same pair + same direction at rack and datacenter → keep rack, warn datacenter."""
+        rules = [
+            TopologyRule(rule_id="fine", cluster_ids=["A", "B"],
+                         scope="rack", type="anti_affinity", enforcement="hard"),
+            TopologyRule(rule_id="coarse", cluster_ids=["A", "B"],
+                         scope="datacenter", type="anti_affinity", enforcement="hard"),
+        ]
+        validated, warnings = validate_topology_rules(rules)
+        assert len(validated) == 1
+        assert validated[0].rule_id == "fine"
+        assert any(w["type"] == "redundant_rule_filtered" for w in warnings)
+
+
+# ===========================================================================
+# 11. Cross-cluster hard anti-affinity
+# ===========================================================================
+
+class TestCrossClusterHardAntiAffinity:
+
+    def test_blocks_same_dc(self):
+        """Cluster B in dc-1 + anti-affinity@datacenter → Cluster A can't go to dc-1."""
+        bms = [
+            make_bm("bm-1", dc="dc-1"),
+            make_bm("bm-2", dc="dc-2"),
+        ]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="existing-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="hard",
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-2"  # must avoid dc-1
+
+    def test_infeasible_all_dcs_occupied(self):
+        """All DCs occupied by cluster B → infeasible."""
+        bms = [make_bm("bm-1", dc="dc-1"), make_bm("bm-2", dc="dc-1")]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="hard",
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert not r.success
+
+    def test_no_effect_on_unrelated_cluster(self):
+        """Rule between A and B should not affect cluster C."""
+        bms = [make_bm("bm-1", dc="dc-1")]
+        vms = [make_vm("vm-1", cluster="C")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="hard",
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success  # C is not in the rule, so it can go anywhere
+
+    def test_rack_level_anti_affinity(self):
+        """Anti-affinity at rack level: same DC is fine, same rack is not."""
+        bms = [
+            make_bm("bm-1", dc="dc-1", rack="rack-1"),
+            make_bm("bm-2", dc="dc-1", rack="rack-2"),
+        ]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="rack", type="anti_affinity", enforcement="hard",
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-2"  # rack-2 is fine
+
+
+# ===========================================================================
+# 12. Cross-cluster soft anti-affinity
+# ===========================================================================
+
+class TestCrossClusterSoftAntiAffinity:
+
+    def test_prefers_different_dc(self):
+        """Soft anti-affinity: prefers dc-2 but doesn't fail if only dc-1 available."""
+        bms = [
+            make_bm("bm-1", dc="dc-1"),
+            make_bm("bm-2", dc="dc-2"),
+        ]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="soft", weight=10,
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-2"  # prefers avoiding dc-1
+
+    def test_soft_anti_affinity_does_not_block(self):
+        """If only dc-1 available, soft anti-affinity still allows it."""
+        bms = [make_bm("bm-1", dc="dc-1")]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="soft", weight=10,
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success  # soft doesn't block
+
+
+# ===========================================================================
+# 13. Cross-cluster soft affinity
+# ===========================================================================
+
+class TestCrossClusterSoftAffinity:
+
+    def test_prefers_same_dc(self):
+        """Soft affinity: prefers to co-locate in dc-1 with cluster B."""
+        bms = [
+            make_bm("bm-1", dc="dc-1"),
+            make_bm("bm-2", dc="dc-2"),
+        ]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="affinity", enforcement="soft", weight=10,
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-1"  # prefers dc-1
+
+    def test_affinity_no_existing_vms_warns(self):
+        """Affinity with no existing VMs → no effect, just a warning."""
+        bms = [make_bm("bm-1", dc="dc-1")]
+        vms = [make_vm("vm-1", cluster="A")]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="affinity", enforcement="soft",
+        )]
+        r = solve(vms, bms, topology_rules=topo_rules)
+        assert r.success
+        warnings = r.diagnostics.get("warnings", [])
+        assert any(w["type"] == "affinity_rule_no_effect" for w in warnings)
+
+
+# ===========================================================================
+# 14. Two-phase solving
+# ===========================================================================
+
+class TestTwoPhaseSolving:
+
+    def test_partial_with_soft_rules(self):
+        """Partial placement + soft affinity: maximize VMs first, then soft score."""
+        bms = [
+            make_bm("bm-1", cpu=8, mem=32_000, disk=200, dc="dc-1"),
+            make_bm("bm-2", cpu=8, mem=32_000, disk=200, dc="dc-2"),
+        ]
+        # 5 VMs but room for only 4 (2 per BM by cpu)
+        vms = [make_vm(f"vm-{i}", cluster="A") for i in range(5)]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="r1", cluster_ids=["A", "B"],
+            scope="datacenter", type="affinity", enforcement="soft", weight=1,
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules,
+                  allow_partial_placement=True)
+        # Should place 4 VMs (resource limit), not sacrifice any for affinity
+        assert len(r.assignments) == 4
+        assert len(r.unplaced_vms) == 1
+
+
+# ===========================================================================
+# 15. MODEL_INVALID from topology conflict
+# ===========================================================================
+
+class TestModelInvalid:
+
+    def test_conflicting_rules_returns_model_invalid(self):
+        """Conflicting affinity+anti-affinity returns MODEL_INVALID."""
+        bms = [make_bm("bm-1")]
+        vms = [make_vm("vm-1", cluster="A")]
+        topo_rules = [
+            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
+                         scope="rack", type="affinity", enforcement="soft"),
+            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
+                         scope="datacenter", type="anti_affinity", enforcement="hard"),
+        ]
+        r = solve(vms, bms, topology_rules=topo_rules)
+        assert not r.success
+        assert r.solver_status == "MODEL_INVALID"
