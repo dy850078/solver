@@ -1,336 +1,434 @@
-# 為什麼用 CP-SAT Solver 取代 Go 排程器的輪詢（Round-Robin）？
+# 為什麼引入 CP-SAT Solver？—— Go 排程器能力邊界與整合效益
 
 > **對象**：Kubernetes 叢集排程組的工程師
-> **目的**：說明現有輪詢排程的具體缺陷，以及本專案如何用 Google OR-Tools CP-SAT 約束規劃求解器逐一解決這些問題
+> **目的**：釐清 Go 排程器的實際能力與邊界，說明哪些問題真正需要 CP-SAT，
+> 以及整合 Solver 對開發者帶來的具體效益
 
 ---
 
-## 一、背景：現有排程器做什麼？
+## 一、背景：Go 排程器的 Snapshot 機制
 
-Go 排程器（scheduler）負責把一批「需要被創建的 VM」分配到「可用的裸金屬伺服器（Baremetal，BM）」上。
-目前的核心邏輯是**輪詢（Round-Robin）**：依序把 VM 一個個分配給下一台 BM，週而復始。
+Go 排程器並非原始的輪詢（Round-Robin）。它在每次排程批次（scheduling batch）開始時，
+會建立一份**資源快照（snapshot）**，記錄當下所有 BM 的可用容量與狀態。
+排程過程中每分配一台 VM，就即時更新這份快照中的已用資源，確保後續的 VM 不會被排到
+同一批次中已超量的 BM。
 
 ```
-VM-1 → BM-A
-VM-2 → BM-B
-VM-3 → BM-C
-VM-4 → BM-A   ← 回到頭
-VM-5 → BM-B
-...
+批次開始：建立 Snapshot
+           BM-A: CPU 32 可用 / BM-B: CPU 16 可用 / BM-C: CPU 8 可用
+
+分配 VM-1 (8 CPU) → BM-A
+  Snapshot 更新：BM-A: CPU 24 可用
+
+分配 VM-2 (12 CPU) → BM-B
+  Snapshot 更新：BM-B: CPU 4 可用
+
+分配 VM-3 (6 CPU) → ?  ← Snapshot 知道 BM-B 已不夠，自動略過
+  → BM-C (8 可用 ≥ 6 ✓)
 ```
 
-這個做法簡單易懂，但面對真實環境的各種約束條件，會產生多個難以手動修補的問題。
+### Go 排程器（含 Snapshot）能處理的問題
+
+憑藉 Snapshot，Go 排程器在**單一批次**內可以正確處理：
+
+| 能力 | 說明 |
+|------|------|
+| **資源容量約束** | CPU / Memory / Disk / GPU 不超量 |
+| **候選清單過濾** | 尊重 Step 3 篩出的合法 BM 清單（IP、網段、硬體型號） |
+| **AG 反親和分散** | 同批次內的 Master VM 分散到不同 AG |
+| **BM VM 數量上限** | 同批次內不超過 BM 的 max_vm_count 政策 |
+| **部分排程回報** | 資源不足時回報哪些 VM 放不下 |
+
+這些能力已足以應付**單一叢集、單一批次**的排程需求。
 
 ---
 
-## 二、輪詢排程的七個核心問題
+## 二、真正的問題：Go 排程器做不到的兩件事
 
-### 問題 1：無法保證不超出 BM 資源容量
-
-輪詢只考慮「下一台是誰」，不考慮這台 BM 剩下多少 CPU / Memory / Disk / GPU。
-結果是：**VM 被排到一台根本塞不下它的 BM**，導致建立失敗或系統過載。
-
-> 真實情境：BM-A 已剩 2 CPU cores，VM-5 要求 16 cores → 輪詢照排不誤。
+Snapshot 機制的關鍵限制是：**它只看得到「這次批次」的資訊**。
+現實環境中有兩類問題超出了這個邊界，且在純 Go 實作上「困難到不合理」。
 
 ---
 
-### 問題 2：無法尊重候選清單（Candidate List）
+### 問題 A：跨批次排程約束（Cross-Scheduling-Batch Constraints）
 
-排程流程的第三步（Step 3）會依據 IP、網段、硬體型號等條件先篩出每個 VM 的「合法 BM 清單」。
-輪詢不讀這份清單，直接按序分配，導致 VM 被放到**不合格的 BM** 上。
+**Snapshot 是批次內的狀態，它看不到其他批次、其他叢集留下的歷史排程結果。**
 
-> 真實情境：VM 需要 Routable IP，只有 BM-B、BM-C 有這個網段，但輪詢可能把它排到 BM-A。
-
----
-
-### 問題 3：無法做到 AG（Availability Group）反親和性分散
-
-高可用架構要求同一叢集的 Master VM 分散到不同的 AG（機架群組），避免單一 AG 故障導致控制平面全滅。
-輪詢天生不懂拓撲，它只會依序填滿：
+#### 情境：跨叢集拓撲反親和性
 
 ```
-AG-1: VM-master-1, VM-master-2, VM-master-3   ← 3 個 master 全在同一 AG！
-AG-2: 空的
-AG-3: 空的
+昨天：排程 Cluster-A
+  → Master VM 全部排入 DC-1（合法，當時沒有衝突）
+
+今天：排程 Cluster-B，政策要求「Cluster-B 不能與 Cluster-A 在同一 DC」
+  → Go 排程器建立新 Snapshot
+  → Snapshot 只記錄今天這批 VM 的狀態
+  → Snapshot 完全不知道昨天 Cluster-A 已在 DC-1
+  → Cluster-B 的 VM 被排進 DC-1 ← 違反跨叢集隔離政策
 ```
 
-> 真實後果：BM-A、BM-B 都在 AG-1 被輪詢填滿，某天 AG-1 機架斷電，整個叢集控制平面消失。
+這不是 Bug，而是 Snapshot 設計的必然結果：**Snapshot 的生命週期是一個批次，跨批次的歷史狀態不在它的視野內。**
 
----
-
-### 問題 4：無法處理部分排程（Partial Placement）
-
-某些情境下 BM 資源不足以放下「這批 VM 的全部」，合理的做法是「能放幾個就放幾個，回報哪些放不下」。
-輪詢不具備這種判斷，它要嘛全放（可能超量），要嘛整批失敗（無法利用剩餘空間）。
-
----
-
-### 問題 5：無法限制單台 BM 上的總 VM 數
-
-某些 BM 因角色（Role）或授權限制，有「最多同時跑 N 個 VM」的政策上限，與資源用量無關。
-輪詢對這個數字完全無感，會繼續往同一台 BM 疊加 VM 直到資源耗盡或超出政策。
-
-> 真實情境：BM-infra 的策略是 max 4 個 VM，目前已有 3 個，輪詢又分配了 2 個 → 超出政策上限。
-
----
-
-### 問題 6：無法執行跨叢集拓撲反親和性
-
-多個 Kubernetes 叢集共享同一批 BM 時，「不同叢集的特定角色 VM 不能在同一個機房（Datacenter）」這類跨叢集規則完全超出輪詢的能力範圍。
-輪詢只看「現在要排的這批 VM」，完全看不到其他叢集的 VM 已經在哪裡。
-
-> 真實情境：Cluster-A 和 Cluster-B 要求 datacenter 級別反親和，但輪詢把 Cluster-A 的 VM 排到 Cluster-B 已佔用的 DC-1，違反隔離政策。
-
----
-
-### 問題 7：無法優化跨叢集拓撲親和性（Co-location）
-
-某些叢集希望「跟另一個叢集的 VM 排在相同的機房」，以降低延遲或滿足合規要求（軟性需求）。
-輪詢更不可能為了這種偏好去調整分配順序。
-
----
-
-## 三、解決方案：CP-SAT 約束規劃求解器
-
-本專案以 **Python sidecar 服務**的形式運行在 Go 排程器旁，接收 PlacementRequest、回傳 PlacementResult。
-核心是 Google OR-Tools 的 **CP-SAT 求解器**，它的工作原理是：
+#### 情境：跨叢集親和性（Co-location）
 
 ```
-定義「決策變數」→ 加入「約束條件」→ 設定「目標函數」→ 搜尋滿足所有條件的最佳解
+Cluster-A 已在 DC-2 有大量 VM（昨天排程）
+今天排程 Cluster-B，希望「靠近 Cluster-A 以降低延遲」
+→ Go Snapshot 不知道 Cluster-A 在哪裡
+→ 無法偏好 DC-2，只能隨機或輪詢分配
 ```
 
-每個 (VM, BM) 的組合對應一個布林變數 `assign[vm_i, bm_j]`，值為 1 代表「把 VM-i 放到 BM-j」。
+#### 情境：跨叢集 BM VM 數量統計
+
+```
+BM-X 已有 Cluster-A 的 3 個 VM（歷史批次）
+今天排程 Cluster-B，BM-X 的 max_vm_count = 4
+→ Go Snapshot 只看到「今天這批」分配了幾個
+→ 不知道歷史上已有 3 個 VM，可能再分配 4 個 → 共 7 個，超出上限
+```
+
+**本質問題**：排程約束的生命週期跨越了多個獨立的批次（甚至多個叢集），
+而 Snapshot 的設計邊界在單一批次內。
+**在不引入外部求解器的情況下，Go 需要自行維護全域歷史狀態、手動實作回溯搜尋，複雜度呈指數級增長。**
 
 ---
 
-## 四、七個問題的對應解法
+### 問題 B：柔性約束（Soft Constraints）極難實作
 
-### 解法 1：容量約束（Capacity Constraint）
+硬性約束（Hard Constraint）很好描述：「條件不滿足就失敗」。
+但排程中大量的需求是**柔性的**：「盡量滿足，實在不行就退而求其次」。
 
-**對應問題：1**
+#### 純 Go 實作柔性約束的困境
 
-對每台 BM 的每個資源維度加入線性不等式約束：
+**方法一：貪心啟發（Greedy Heuristic）**
+
+```go
+// 先試「理想選擇」，失敗就退而求其次
+for _, bm := range preferredBMs {
+    if canPlace(vm, bm) {
+        place(vm, bm)
+        break
+    }
+}
+```
+
+問題：
+- 貪心決策不可逆，前面 VM 的選擇可能讓後面 VM 陷入困境
+- 無法保證「整批 VM 的柔性規則總滿足度最大」
+- 新增一個柔性規則 = 重寫選擇邏輯，規則組合爆炸
+
+**方法二：回溯搜尋（Backtracking）**
+
+```go
+func tryAllCombinations(vms []VM, bms []BM) Assignment {
+    // 嘗試所有可能的分配組合，選出最高分的
+    // 時間複雜度：O(|BM|^|VM|) ← 100 BM × 50 VM = 100^50 種組合
+}
+```
+
+問題：
+- 計算複雜度不可接受（指數級）
+- 需要自行實作剪枝（pruning）、搜尋策略
+- 等同於自己實作一個求解器，且效率遠不如成熟工具
+
+**方法三：多次分配 + 評分**
+
+```go
+// 試多種分配方案，選最高分的
+for i := 0; i < maxAttempts; i++ {
+    attempt := randomAssignment(vms, bms)
+    score := evaluate(attempt, softRules)
+    if score > bestScore { best = attempt }
+}
+```
+
+問題：
+- 結果非確定性，不可重現
+- 無法保證找到最優解
+- 柔性規則的優先順序（weight）難以正確反映在最終分數上
+
+**多個柔性規則同時存在時的組合難題**：
 
 ```
-∀ BM-j, ∀ resource r:
-  Σ (demand[vm_i][r] × assign[vm_i, bm_j]) ≤ available[bm_j][r]
+軟規則 1：Cluster-B 偏好與 Cluster-A 同 DC（weight=10）
+軟規則 2：Cluster-B 偏好遠離 Cluster-C 的 rack（weight=5）
+軟規則 3：盡量讓 VM 分散到不同 BM（weight=3）
+
+問題：當規則 1 和規則 2 互相衝突時，正確的 trade-off 是什麼？
+純 Go 手寫邏輯幾乎無法表達「在不違反規則 1 的前提下，盡量滿足規則 2」。
 ```
-
-資源維度：`cpu_cores`、`memory_mb`、`disk_gb`、`gpu_count`
-
-求解器在搜尋過程中絕對不會產生超出容量的解。
 
 ---
 
-### 解法 2：候選清單約束（Candidate List）
+## 三、CP-SAT Solver 的解法
 
-**對應問題：2**
+本專案以 **Python sidecar 服務**的形式整合 CP-SAT 求解器。
+Go 排程器負責收集所有狀態（包括歷史排程、其他叢集現況），
+Solver 負責在滿足所有約束的前提下找出最優分配。
 
-在建立變數前做**預篩選**：若 VM-i 的候選清單存在，則只為 `(vm_i, bm_j in candidates)` 的組合建立變數，其他組合的變數根本不存在。
+### 解法 A：跨批次約束 — 外部狀態注入
+
+Go 排程器在呼叫 Solver 前，主動查詢並組裝「跨批次的全域狀態」，
+注入 `PlacementRequest` 中：
+
+```json
+{
+  "existing_vms": [
+    {
+      "vm_id": "vm-cluster-a-master-1",
+      "cluster_id": "cluster-a",
+      "baremetal_id": "bm-42",
+      "topology": { "datacenter": "dc-1", "rack": "rack-3", ... }
+    }
+  ],
+  "topology_rules": [
+    {
+      "rule_id": "a-b-anti-affinity",
+      "cluster_ids": ["cluster-a", "cluster-b"],
+      "scope": "datacenter",
+      "type": "anti_affinity",
+      "enforcement": "hard"
+    }
+  ]
+}
+```
+
+Solver 從 `existing_vms` 建立拓撲佔用索引，配合 `topology_rules` 加入對應約束，
+讓「歷史批次的排程結果」對今天的分配產生約束效果。
+
+**架構分工**：跨批次的歷史狀態收集由 Go 排程器負責，Solver 本身保持無狀態（stateless）。
+
+#### 跨叢集硬性反親和：直接封鎖
+
+```
+∀ BM-j 所在 zone ∈ 其他叢集已占用 zones:
+    assign[vm_i, bm_j] = 0  （該變數直接從模型中移除）
+```
+
+#### 跨叢集 BM VM 數統計：全域計數
+
+```
+∀ BM-j:
+    current_vm_count（所有叢集歷史 VM 數）+ Σ assign[vm_i, bm_j] ≤ max_vm_count
+```
+
+`current_vm_count` 由 Go 從 Inventory API 拿到後填入，Solver 直接使用。
+
+---
+
+### 解法 B：柔性約束 — 目標函數建模
+
+CP-SAT 的目標函數天生支援「加權偏好」：
+
+```
+Maximize:
+  Σ placement_count × 1000           ← 放置數量（最高優先，大權重）
+  + Σ affinity_satisfied × weight    ← 親和性滿足（正分獎勵）
+  - Σ anti_affinity_violated × weight ← 反親和違反（負分懲罰）
+```
+
+多個柔性規則的優先順序透過 `weight` 精確表達，不需要手寫 trade-off 邏輯。
+
+#### 兩階段求解確保硬性優先
+
+當同時有部分排程和柔性規則時：
+
+```
+Phase 1: Maximize 放置數 → 得到最優數量 N
+         ↓ 固定：已放置數 == N
+Phase 2: Maximize 柔性規則總分（在不犧牲放置數的前提下）
+```
+
+這確保「多放一台 VM 永遠優先於滿足任何柔性偏好」，不需要人工調整 weight 數值。
+
+---
+
+## 四、約束對照總表
+
+| 約束類型 | Go 排程器（含 Snapshot）| CP-SAT Solver | 關鍵差異 |
+|---------|----------------------|--------------|---------|
+| BM 資源容量 | ✅ 批次內正確處理 | ✅ 線性不等式約束 | Go 已能做，Solver 同樣支援 |
+| 候選清單過濾 | ✅ Step 3 篩選 | ✅ 預篩選變數 | Go 已能做，Solver 同樣支援 |
+| AG 反親和（批次內） | ✅ Snapshot 追蹤 | ✅ per-AG 計數約束 | Go 已能做，Solver 同樣支援 |
+| BM VM 數上限（批次內） | ✅ Snapshot 追蹤 | ✅ 計數不等式約束 | Go 已能做，Solver 同樣支援 |
+| **跨批次拓撲反親和（Hard）** | ❌ Snapshot 看不到歷史 | ✅ `existing_vms` 注入 + 硬約束 | **Solver 解決** |
+| **跨批次拓撲反親和（Soft）** | ❌ 指數級複雜度 | ✅ 目標函數懲罰項 | **Solver 解決** |
+| **跨批次拓撲親和（Soft）** | ❌ 無法最優化 | ✅ 目標函數獎勵項 | **Solver 解決** |
+| **多柔性規則 Trade-off** | ❌ 手寫邏輯爆炸 | ✅ 加權目標函數 | **Solver 解決** |
+
+---
+
+## 五、對開發者的效益：為什麼 Solver 讓實作更簡單？
+
+這一節說明整合 CP-SAT 後，開發者在**新增功能、維護、測試**上獲得的具體好處。
+
+---
+
+### 效益 1：宣告式（Declarative）約束 — 描述「要什麼」而非「怎麼找」
+
+純 Go 實作排程邏輯時，開發者需要同時思考：
+- **業務規則**（VM 不能超出容量）
+- **搜尋策略**（先試哪台 BM？衝突了怎麼回溯？）
+- **狀態追蹤**（Snapshot 怎麼更新？邊界條件？）
+
+CP-SAT 把後兩者交給求解器，開發者只需描述業務規則：
 
 ```python
-if vm.candidate_baremetals:
-    eligible = [bm for bm in vm.candidate_baremetals if capacity_fits]
-else:
-    eligible = [bm for bm in all_bms if capacity_fits]
-
-for bm_id in eligible:
-    assign[(vm.id, bm_id)] = model.NewBoolVar(...)
+# 新增「BM VM 數量上限」約束 — 3 行完成
+for bm in baremetals:
+    if bm.max_vm_count:
+        model.Add(bm.current_vm_count + sum(assign[vm, bm]) <= bm.max_vm_count)
 ```
 
-由於變數不存在，求解器物理上無法把 VM 排到不合格的 BM。
-此舉同時縮小了問題規模，加快求解速度。
+對比等效的 Go 實作，需要：
+- 在 Snapshot 中追蹤 current_vm_count
+- 在每次分配時檢查並更新
+- 處理批次結束時的邊界清理
+- 考慮併發安全
+
+**每條新約束 = 幾行 Python，而非一個子系統。**
 
 ---
 
-### 解法 3：AG 反親和性約束（Anti-Affinity）
+### 效益 2：柔性約束免費獲得最優性
 
-**對應問題：3**
-
-對每條反親和規則，對每個 AG 加入計數上限約束：
-
-```
-∀ rule r, ∀ AG a:
-  Σ (assign[vm_i, bm_j]) ≤ max_per_ag(r)
-    vm_i ∈ rule.vm_ids
-    bm_j ∈ AG a
-```
-
-`max_per_ag` 動態計算為 `ceil(VM 數 / AG 數)`，允許在 AG 數不足時做均衡分散：
-
-| 情境 | VM 數 | AG 數 | max_per_ag | 分布 |
-|------|-------|-------|-----------|------|
-| 3 Master，3 AG | 3 | 3 | 1 | 1/1/1 ✓ |
-| 5 Master，3 AG | 5 | 3 | 2 | 2/2/1 ✓ |
-| 6 Worker，3 AG | 6 | 3 | 2 | 2/2/2 ✓ |
-
-不需要顯式指定規則，支援**自動生成**：依 `(ip_type, node_role)` 分組，自動產生對應的反親和規則。
-
----
-
-### 解法 4：部分排程（Partial Placement）
-
-**對應問題：4**
-
-開啟 `allow_partial_placement=True` 後：
-
-1. 每個 VM 的分配約束從「恰好放到一台」改為「最多放到一台」（`== 1` → `<= 1`）
-2. 目標函數設為**最大化已放置的 VM 總數**：
-
-```
-Maximize: Σ assign[vm_i, bm_j]
-```
-
-求解器會自動找出能放最多 VM 的最佳組合，回報中的 `unplaced_vms` 欄位說明哪些 VM 無法排入。
-
----
-
-### 解法 5：BM VM 數量上限（VM Count Limit）
-
-**對應問題：5**
-
-在 `Baremetal` 模型中加入 `max_vm_count` 和 `current_vm_count` 兩個欄位，並加入約束：
-
-```
-∀ BM-j with max_vm_count set:
-  current_vm_count[bm_j] + Σ assign[vm_i, bm_j] ≤ max_vm_count[bm_j]
-```
-
-`current_vm_count` 由 Go 排程器從 Inventory API 查詢後填入，代表目前該 BM 上**所有叢集**的 VM 總數。
-`max_vm_count = None` 表示無限制，不加約束。
-
----
-
-### 解法 6：跨叢集拓撲反親和性（Cross-Cluster Anti-Affinity）
-
-**對應問題：6**
-
-透過 `existing_vms`（其他叢集已存在的 VM 及其拓撲位置）和 `topology_rules`（跨叢集規則）來實現。
-
-**拓撲層級**（從細到粗）：
-
-```
-rack  <  datacenter  <  phase  <  site
-```
-
-同層級及以下相同，則上層也相同（`same(rack) → same(datacenter) → same(phase) → same(site)`）。
-
-**強制（Hard）反親和性**：直接禁止相關組合
+純 Go 的柔性邏輯只能給出「不錯的解」，無法保證最優。
+CP-SAT 在 timeout 內搜尋**全局最優解**，並回報是 `OPTIMAL`（保證最優）或 `FEASIBLE`（時間不夠但可用）。
 
 ```python
-# 如果 BM-j 所在的 datacenter 已被其他叢集的 VM 占用
-# 則直接設 assign[vm_i, bm_j] = 0
-if bm_zone in occupied_zones:
-    model.Add(assign[(vm_i, bm_j)] == 0)
+# 柔性親和規則 — 加一個目標項即可
+objective_terms.append((colocation_indicator, rule.weight))
+model.Maximize(sum(var * w for var, w in objective_terms))
 ```
 
-**柔性（Soft）反親和性**：加入懲罰項（目標函數負分）
-
-```
-Minimize: Σ weight × violation_indicator[vm_i, rule_r]
-```
-
-若唯一可用的 BM 都在被占用的區域，柔性規則不阻止排程，只記錄違反情況。
-
-**規則驗證**（自動在求解前執行）：
-
-| 檢查項目 | 處理方式 |
-|---------|---------|
-| 親和性 + 強制（hard）| 自動降為柔性（soft）+ 警告 |
-| 親和與反親和 scope 衝突 | 回傳 `MODEL_INVALID` + 錯誤訊息 |
-| 同一對叢集有多個同方向規則 | 保留最細粒度，過濾較粗的 + 警告 |
+開發者不需要思考「這個啟發式好不好」，求解器負責找最好的。
 
 ---
 
-### 解法 7：跨叢集拓撲親和性（Cross-Cluster Affinity）
+### 效益 3：新增約束不破壞現有邏輯
 
-**對應問題：7**
-
-**永遠是柔性（Soft）**，在目標函數中加入獎勵項：
+CP-SAT 的約束是**加法性（additive）**的：
 
 ```
-Maximize: Σ weight × colocation_indicator[vm_i, rule_r]
+現有約束集合 {容量, AG反親和, 候選清單}
+    + 新約束：跨叢集拓撲反親和
+    = 新約束集合（自動與所有現有約束共同作用）
 ```
 
-若 VM-i 被放到與目標叢集 VM 相同的拓撲區域，`colocation_indicator = 1`，獲得正分。
+純 Go 的情況：新增跨叢集反親和需要修改 Snapshot 結構、分配主迴圈的判斷邏輯、
+回報結構，以及確保不與 AG 反親和的邏輯互相干擾。
 
-若目標叢集目前沒有任何 VM，親和規則自動無效化（只記錄警告），不影響排程正確性。
+**CP-SAT：加一個 `model.Add()` 調用。Go：可能動到多個子系統。**
 
 ---
 
-## 五、兩階段求解（Two-Phase Solving）
+### 效益 4：測試與業務規則一一對應
 
-當同時啟用「部分排程」和「柔性拓撲規則」時，單純合併目標函數會有**優先順序問題**：
-求解器可能為了多拿幾個柔性分數，放棄多放一台 VM。
+CP-SAT 約束直接對應業務規則，讓測試案例也能直接對應：
 
-本專案採用**兩階段求解**確保優先級正確：
+```python
+# 測試「BM VM 數量上限」— 業務語義清晰
+def test_count_limit_respected():
+    bm = make_bm("bm-1", max_vm_count=2, current_vm_count=1)
+    vms = [make_vm("vm-1"), make_vm("vm-2")]   # 2 個新 VM
+    result = solve(vms, [bm])
+    assert not result.success  # 1 + 2 = 3 > 2，必須失敗
 
+# 測試「跨叢集硬性反親和」— 場景直觀
+def test_blocks_same_dc():
+    # 設定：BM-1 在 DC-1（已被 Cluster-B 佔用），BM-2 在 DC-2
+    # 規則：Cluster-A 與 Cluster-B 反親和@datacenter
+    result = solve(vms_cluster_a, [bm_dc1, bm_dc2], ...)
+    assert assignment["vm-1"] == "bm-2"  # 必須避開 DC-1
 ```
-第一階段：Maximize 已放置 VM 數 → 得到最大數量 N
-          ↓
-第二階段：固定已放置數 == N，Maximize 柔性規則分數
-```
 
-兩個階段平分總 timeout（各佔 50%）。
-
-```
-┌─────────────────────────────────────────────────────────┐
-│  Phase 1: 最大化 VM 放置數                                │
-│  約束：容量 + 候選清單 + AG 反親和 + VM 數上限 + 強制拓撲  │
-│  目標：Maximize Σ assign[vm_i, bm_j]                     │
-│  結果：N = 最多能放 N 台                                   │
-└────────────────────┬────────────────────────────────────┘
-                     │ 固定：Σ assign == N
-┌────────────────────▼────────────────────────────────────┐
-│  Phase 2: 最大化柔性規則分數                              │
-│  約束：全部硬約束 + Σ assign == N                         │
-│  目標：Maximize Σ weight × soft_indicator                 │
-│  結果：在不犧牲 VM 放置數的前提下，最佳化拓撲偏好           │
-└─────────────────────────────────────────────────────────┘
-```
+測試直接描述業務場景，不需要了解排程演算法的內部細節。
 
 ---
 
-## 六、完整求解流程圖
+### 效益 5：清晰的職責分工 — Go 做 Go 擅長的事
+
+整合後的架構分工明確：
+
+```
+Go 排程器                          Python Solver Sidecar
+─────────────────────              ──────────────────────────
+• Kubernetes API 互動              • 約束建模（CP-SAT 模型）
+• Inventory API 查詢               • 最優化搜尋
+• VM 創建 / 刪除 / 更新             • 柔性規則 Trade-off
+• 歷史狀態收集（existing_vms）      • 衝突檢測與診斷
+• 候選清單篩選（Step 3）            • 兩階段求解
+• 錯誤處理與重試                    • 結果回報
+• 排程批次協調
+```
+
+Go 用它最擅長的方式處理系統整合、API 呼叫、並發控制。
+Solver 用成熟的數學工具處理組合最優化。
+兩者透過定義清晰的 JSON API 解耦，可以獨立開發、測試、部署。
+
+---
+
+### 效益 6：自帶診斷能力，降低排程失敗的 Debug 成本
+
+Solver 回傳結構化的診斷資訊，讓排程失敗不再是黑盒：
+
+```json
+{
+  "success": false,
+  "solver_status": "MODEL_INVALID",
+  "diagnostics": {
+    "error": "Topology rule conflict: affinity rule 'r1' at scope 'rack' conflicts with anti-affinity rule 'r2' at scope 'datacenter'",
+    "warnings": [
+      { "type": "enforcement_downgraded", "rule_id": "r3", "reason": "affinity rules cannot be hard; downgraded to soft" },
+      { "type": "redundant_rule_filtered", "rule_id": "r4", "reason": "coarser than r2 for same cluster pair; filtered out" }
+    ]
+  }
+}
+```
+
+純 Go 要達到同等診斷品質，需要在每個分支加入人工的錯誤分析邏輯。
+
+---
+
+## 六、完整求解流程
 
 ```
 Go Scheduler
+  │  1. 查 Inventory API：BM 容量、角色、歷史 VM 數
+  │  2. 執行 Step 3：取得候選清單
+  │  3. 查詢其他叢集的 existing_vms 及 topology_rules
   │
   │  POST /v1/placement/solve
-  │  {vms, baremetals, anti_affinity_rules,
-  │   existing_vms, topology_rules, config}
-  ▼
-┌──────────────────────────────────────────┐
-│  Python Solver Sidecar                   │
-│                                          │
-│  1. 規則驗證                              │
-│     ├─ 衝突檢測（→ MODEL_INVALID）        │
-│     ├─ 冗餘過濾（→ 保留最細粒度）          │
-│     └─ Hard 親和降級（→ Soft + 警告）     │
-│                                          │
-│  2. 建立 CP-SAT 模型                      │
-│     ├─ 決策變數（只建合法的 (VM, BM) 對）  │
-│     ├─ 每個 VM 只能在一台 BM              │
-│     ├─ BM 資源容量限制                    │
-│     ├─ AG 反親和分散約束                  │
-│     ├─ BM VM 數量上限                     │
-│     └─ 跨叢集 Hard 反親和（直接封鎖）      │
-│                                          │
-│  3. 建立目標函數                          │
-│     ├─ Soft 反親和懲罰項（-weight）       │
-│     └─ Soft 親和獎勵項（+weight）         │
-│                                          │
-│  4. 求解                                  │
-│     ├─ 有部分排程 + Soft 規則 → 兩階段     │
-│     └─ 其他 → 單階段                      │
-│                                          │
-│  5. 回傳結果                              │
-│     ├─ success / 失敗原因                 │
-│     ├─ assignments: [{vm_id, bm_id, ag}] │
-│     ├─ unplaced_vms: [vm_id, ...]        │
-│     ├─ solver_status: OPTIMAL/FEASIBLE/… │
-│     └─ diagnostics: {warnings, errors}  │
-└──────────────────────────────────────────┘
+  ▼  { vms, baremetals, existing_vms, topology_rules, config }
+┌────────────────────────────────────────────────────────┐
+│  Python Solver Sidecar                                 │
+│                                                        │
+│  Phase 0：規則驗證                                      │
+│    ├─ Hard 親和 → 降為 Soft（+ 警告）                   │
+│    ├─ 衝突檢測 → MODEL_INVALID（親和 scope ≤ 反親和）   │
+│    └─ 冗餘過濾 → 保留最細粒度（+ 警告）                 │
+│                                                        │
+│  Phase 1：建立 CP-SAT 硬約束                            │
+│    ├─ 每個 VM 恰好分配一台 BM（or ≤ 1 if 部分排程）     │
+│    ├─ BM 資源容量不超量（CPU/Mem/Disk/GPU）              │
+│    ├─ AG 反親和分散（per-AG 計數上限）                  │
+│    ├─ BM VM 數量上限（歷史 + 新增 ≤ max_vm_count）      │
+│    └─ 跨批次拓撲反親和 Hard（直接封鎖對應變數）          │
+│                                                        │
+│  Phase 2：建立目標函數                                   │
+│    ├─ Soft 反親和懲罰項（-weight per 違反）             │
+│    └─ Soft 親和獎勵項（+weight per 滿足）               │
+│                                                        │
+│  Phase 3：求解                                          │
+│    ├─ 部分排程 + Soft 規則 → 兩階段求解                 │
+│    └─ 其他 → 單階段求解                                 │
+│                                                        │
+│  Phase 4：回傳                                          │
+│    ├─ assignments: [{vm_id, bm_id, ag}]               │
+│    ├─ unplaced_vms: [vm_id, ...]                      │
+│    ├─ solver_status: OPTIMAL / FEASIBLE / INFEASIBLE  │
+│    └─ diagnostics: { warnings, errors }               │
+└────────────────────────────────────────────────────────┘
   │
   ▼
 Go Scheduler 依據 assignments 執行 VM 創建
@@ -338,47 +436,25 @@ Go Scheduler 依據 assignments 執行 VM 創建
 
 ---
 
-## 七、問題與解法對照總表
+## 七、總結
 
-| # | 輪詢的問題 | CP-SAT 解法 | 實作位置 |
-|---|-----------|------------|---------|
-| 1 | 不檢查 BM 資源容量 | 容量線性不等式約束 | `_add_capacity_constraints()` |
-| 2 | 忽略候選清單 | 預篩選，只建合法變數 | `_get_eligible_baremetals()` |
-| 3 | 無 AG 反親和分散 | per-AG 計數上限約束 + 自動規則生成 | `_add_ag_anti_affinity_constraints()` |
-| 4 | 不支援部分排程 | 最大化放置數 + `unplaced_vms` 回報 | `_solve_single()` + `allow_partial_placement` |
-| 5 | 忽略 BM VM 數量政策 | `current + new ≤ max_vm_count` 約束 | `_add_vm_count_constraints()` |
-| 6 | 看不到跨叢集現況 | Hard/Soft 跨叢集拓撲反親和約束 | `_add_hard_topology_constraints()` |
-| 7 | 無法優化跨叢集共置 | Soft 親和目標函數獎勵項 | `_build_soft_objective_terms()` |
+| 面向 | 純 Go 排程器（含 Snapshot）| 整合 CP-SAT Solver 後 |
+|------|--------------------------|----------------------|
+| **批次內容量 / 候選清單** | ✅ 正確處理 | ✅ 同樣正確 |
+| **跨批次 / 跨叢集約束** | ❌ Snapshot 看不到歷史 | ✅ 外部狀態注入 + 硬約束 |
+| **柔性規則** | ❌ 啟發式，非最優 | ✅ 全域最優加權目標函數 |
+| **多規則 Trade-off** | ❌ 手寫邏輯複雜度爆炸 | ✅ 自動 weight 平衡 |
+| **新增約束成本** | 高（可能動多個子系統） | 低（新增 `model.Add()` 呼叫） |
+| **測試可讀性** | 需了解演算法細節 | 直接描述業務場景 |
+| **失敗診斷** | 需手工埋點 | 內建結構化診斷 |
+| **職責清晰度** | 排程邏輯與系統整合混雜 | Go 做整合，Solver 做最優化 |
 
----
-
-## 八、與 Go 排程器的整合方式
-
-CP-SAT Solver 以 **HTTP Sidecar** 的形式運行，Go 排程器保持 stateless 狀態：
-
-```
-Go Scheduler（現有）           Python Solver Sidecar（新增）
-      │                                    │
-      │  1. 查 Inventory API               │
-      │     取得 BM 容量、角色、VM 數統計   │
-      │                                    │
-      │  2. 查 Step 3 候選清單             │
-      │                                    │
-      │  3. 查詢其他叢集 existing_vms      │
-      │     及 topology_rules              │
-      │                                    │
-      │  ──── POST /v1/placement/solve ──► │
-      │       PlacementRequest             │
-      │                                    │
-      │  ◄─── PlacementResult ────────────│
-      │       assignments                  │
-      │                                    │
-      │  4. 依據 assignments 建立 VM       │
-```
-
-Go 排程器負責**收集所有狀態和規則**，Solver 只負責**計算最優分配**。
-Solver 本身完全無狀態（stateless），每次呼叫獨立計算。
+**一句話總結**：
+Go 排程器已能在批次內正確處理大多數約束，
+真正需要 CP-SAT 的是**跨批次的歷史狀態約束**和**多目標柔性最優化**。
+而整合 Solver 的附加效益是：讓每條業務規則直接對應一段程式碼，
+新需求不再是演算法挑戰，而只是新的 `model.Add()` 呼叫。
 
 ---
 
-*文件版本：1.0 | 更新日期：2026-03-10*
+*文件版本：1.1 | 更新日期：2026-03-10*
