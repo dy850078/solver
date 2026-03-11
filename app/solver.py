@@ -25,6 +25,7 @@ import math
 import time
 import logging
 from collections import defaultdict
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
 from ortools.sat.python import cp_model
@@ -46,6 +47,23 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 RESOURCE_FIELDS = ["cpu_cores", "memory_mb", "disk_gb", "gpu_count"]
+
+
+@dataclass
+class _AssumptionRecord:
+    """
+    Tracks one assumable constraint in the diagnostic model.
+
+    category:
+      - "vm_placement"  — this VM must be placed
+      - "anti_affinity" — per-AG limit for an anti-affinity rule
+      - "bm_count_limit"— BM VM count limit
+      - "topology_rule" — cross-cluster hard anti-affinity topology constraint
+    """
+    var: Any  # cp_model.IntVar (BoolVar)
+    category: str
+    message: str
+    detail: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 def _get_topology_value(topo: Topology, scope: str) -> str:
@@ -487,9 +505,18 @@ class VMPlacementSolver:
             )
 
             if needs_two_phase:
-                return self._solve_two_phase(soft_terms, start)
+                result = self._solve_two_phase(soft_terms, start)
             else:
-                return self._solve_single(soft_terms, start)
+                result = self._solve_single(soft_terms, start)
+
+            # Enrich INFEASIBLE results with a structured UNSAT core explanation
+            if result.solver_status == "INFEASIBLE":
+                reasons = self._diagnose_infeasibility(validated_rules)
+                result = result.model_copy(
+                    update={"infeasibility_reasons": reasons}
+                )
+
+            return result
 
         except ValueError as e:
             # Validation error (e.g. topology conflict)
@@ -643,6 +670,243 @@ class VMPlacementSolver:
             unplaced_vms=unplaced,
             diagnostics=self.diagnostics,
         )
+
+    # ------------------------------------------------------------------
+    # Infeasibility diagnosis via CP-SAT assumptions
+    # ------------------------------------------------------------------
+
+    def _diagnose_infeasibility(
+        self, validated_rules: list[TopologyRule]
+    ) -> list[dict[str, Any]]:
+        """
+        Build a fresh diagnostic CP-SAT model where each high-level constraint
+        is guarded by an assumption BoolVar.  Then call
+        SufficientAssumptionsForInfeasibility() to get a minimal UNSAT core.
+
+        Hard constraints kept always-on (not assumable):
+          - BM resource capacity (physical limit, never negotiable)
+          - at-most-1-BM-per-VM
+
+        Assumable constraints (each gets its own BoolVar):
+          1. vm_placement:   VM must be placed somewhere  (sum >= 1)
+          2. anti_affinity:  per-AG max limit for each rule
+          3. bm_count_limit: BM total VM count cap
+          4. topology_rule:  cross-cluster hard anti-affinity zone blocks
+
+        Returns a list of reason dicts (category, message, + detail fields).
+        """
+        diag_model = cp_model.CpModel()
+
+        # Re-build assignment variables in the diagnostic model
+        diag_assign: dict[tuple[str, str], cp_model.IntVar] = {}
+        for vm in self.request.vms:
+            for bm_id in self._get_eligible_baremetals(vm):
+                diag_assign[(vm.id, bm_id)] = diag_model.NewBoolVar(
+                    f"d_{vm.id}__{bm_id}"
+                )
+
+        # --- Always-hard: capacity ---
+        for bm in self.request.baremetals:
+            avail = bm.available_capacity
+            assigned_vars = [
+                (vm_id, diag_assign[(vm_id, bm.id)])
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in diag_assign
+            ]
+            if not assigned_vars:
+                continue
+            for f in RESOURCE_FIELDS:
+                capacity = getattr(avail, f)
+                usage = sum(
+                    getattr(self.vm_map[vm_id].demand, f) * var
+                    for vm_id, var in assigned_vars
+                )
+                diag_model.Add(usage <= capacity)
+
+        # --- Always-hard: at most one BM per VM ---
+        for vm in self.request.vms:
+            vm_vars = [
+                diag_assign[(vm.id, bm_id)]
+                for bm_id in self._get_eligible_baremetals(vm)
+                if (vm.id, bm_id) in diag_assign
+            ]
+            if vm_vars:
+                diag_model.Add(sum(vm_vars) <= 1)
+
+        # Assumption registry: literal index → record
+        records: dict[int, _AssumptionRecord] = {}
+        assumption_lits: list[cp_model.IntVar] = []
+
+        def _register(rec: _AssumptionRecord) -> None:
+            records[rec.var.Index()] = rec
+            assumption_lits.append(rec.var)
+
+        # --- Assumable: VM placement (must place each VM) ---
+        for vm in self.request.vms:
+            vm_vars = [
+                diag_assign[(vm.id, bm_id)]
+                for bm_id in self._get_eligible_baremetals(vm)
+                if (vm.id, bm_id) in diag_assign
+            ]
+            must_place = diag_model.NewBoolVar(f"must_place_{vm.id}")
+            if vm_vars:
+                diag_model.Add(sum(vm_vars) >= 1).OnlyEnforceIf(must_place)
+            else:
+                # No eligible BMs at all — force contradiction when assumed
+                sentinel = diag_model.NewBoolVar(f"no_bm_sentinel_{vm.id}")
+                diag_model.Add(sentinel == 0)
+                diag_model.Add(sentinel == 1).OnlyEnforceIf(must_place)
+            _register(_AssumptionRecord(
+                var=must_place,
+                category="vm_placement",
+                message=(
+                    f"VM '{vm.id}' must be placed "
+                    f"(role={vm.node_role.value}, {len(vm_vars)} eligible BM(s))"
+                ),
+                detail={
+                    "vm_id": vm.id,
+                    "node_role": vm.node_role.value,
+                    "cluster_id": vm.cluster_id,
+                    "eligible_bm_count": len(vm_vars),
+                },
+            ))
+
+        # --- Assumable: AG anti-affinity (one assumption per rule × AG) ---
+        for rule in self.effective_rules:
+            for ag, ag_bm_ids in self.ag_to_bms.items():
+                vars_in_ag = [
+                    diag_assign[(vm_id, bm_id)]
+                    for vm_id in rule.vm_ids
+                    for bm_id in ag_bm_ids
+                    if (vm_id, bm_id) in diag_assign
+                ]
+                if not vars_in_ag:
+                    continue
+                aa_var = diag_model.NewBoolVar(
+                    f"aa_{rule.group_id.replace('/', '_')}_{ag}"
+                )
+                diag_model.Add(
+                    sum(vars_in_ag) <= rule.max_per_ag
+                ).OnlyEnforceIf(aa_var)
+                _register(_AssumptionRecord(
+                    var=aa_var,
+                    category="anti_affinity",
+                    message=(
+                        f"Anti-affinity '{rule.group_id}': "
+                        f"max {rule.max_per_ag} VM(s) per AG '{ag}'"
+                    ),
+                    detail={
+                        "group_id": rule.group_id,
+                        "ag": ag,
+                        "max_per_ag": rule.max_per_ag,
+                        "vm_ids": list(rule.vm_ids),
+                    },
+                ))
+
+        # --- Assumable: BM VM count limits ---
+        for bm in self.request.baremetals:
+            if bm.max_vm_count is None:
+                continue
+            new_vars = [
+                diag_assign[(vm_id, bm.id)]
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in diag_assign
+            ]
+            if not new_vars:
+                continue
+            count_var = diag_model.NewBoolVar(f"bm_count_{bm.id}")
+            diag_model.Add(
+                bm.current_vm_count + sum(new_vars) <= bm.max_vm_count
+            ).OnlyEnforceIf(count_var)
+            available_slots = bm.max_vm_count - bm.current_vm_count
+            _register(_AssumptionRecord(
+                var=count_var,
+                category="bm_count_limit",
+                message=(
+                    f"BM '{bm.id}' VM count limit: "
+                    f"current={bm.current_vm_count}, max={bm.max_vm_count} "
+                    f"({available_slots} slot(s) available)"
+                ),
+                detail={
+                    "bm_id": bm.id,
+                    "current_vm_count": bm.current_vm_count,
+                    "max_vm_count": bm.max_vm_count,
+                    "available_slots": available_slots,
+                },
+            ))
+
+        # --- Assumable: cross-cluster hard topology anti-affinity ---
+        current_cluster_ids = {vm.cluster_id for vm in self.request.vms}
+        for rule in validated_rules:
+            if rule.type != "anti_affinity" or rule.enforcement != "hard":
+                continue
+            other_cids = set(rule.cluster_ids) - current_cluster_ids
+            occupied_zones: set[str] = set()
+            for cid in other_cids:
+                occupied_zones.update(
+                    self.existing_cluster_zones.get(cid, {}).get(rule.scope, set())
+                )
+            if not occupied_zones:
+                continue
+
+            topo_var = diag_model.NewBoolVar(f"topo_{rule.rule_id}")
+            for vm in self.request.vms:
+                if vm.cluster_id not in rule.cluster_ids:
+                    continue
+                for bm in self.request.baremetals:
+                    if (vm.id, bm.id) not in diag_assign:
+                        continue
+                    bm_zone = _get_topology_zone(bm.topology, rule.scope)
+                    if bm_zone in occupied_zones:
+                        diag_model.Add(
+                            diag_assign[(vm.id, bm.id)] == 0
+                        ).OnlyEnforceIf(topo_var)
+            _register(_AssumptionRecord(
+                var=topo_var,
+                category="topology_rule",
+                message=(
+                    f"Cross-cluster hard anti-affinity '{rule.rule_id}' "
+                    f"at scope '{rule.scope}': "
+                    f"zones {sorted(occupied_zones)} already occupied"
+                ),
+                detail={
+                    "rule_id": rule.rule_id,
+                    "scope": rule.scope,
+                    "cluster_ids": sorted(rule.cluster_ids),
+                    "occupied_zones": sorted(occupied_zones),
+                },
+            ))
+
+        # Set assumptions and solve the diagnostic model
+        diag_model.AddAssumptions(assumption_lits)
+
+        diag_solver = cp_model.CpSolver()
+        diag_solver.parameters.max_time_in_seconds = 30.0
+        diag_solver.parameters.num_workers = 1
+
+        status = diag_solver.Solve(diag_model)
+
+        if status != cp_model.INFEASIBLE:
+            logger.warning(
+                f"Diagnostic model returned {self._status_name(status)}, "
+                f"expected INFEASIBLE — returning empty reasons"
+            )
+            return []
+
+        core_lits = diag_solver.SufficientAssumptionsForInfeasibility()
+        logger.info(
+            f"UNSAT core: {len(core_lits)} assumption(s) out of {len(assumption_lits)}"
+        )
+
+        reasons: list[dict[str, Any]] = []
+        for lit in core_lits:
+            rec = records.get(lit)
+            if rec is None:
+                logger.debug(f"Unknown literal {lit} in UNSAT core — skipping")
+                continue
+            reasons.append({"category": rec.category, "message": rec.message, **rec.detail})
+
+        return reasons
 
     @staticmethod
     def _status_name(status: int) -> str:

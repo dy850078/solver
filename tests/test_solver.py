@@ -703,3 +703,84 @@ class TestModelInvalid:
         r = solve(vms, bms, topology_rules=topo_rules)
         assert not r.success
         assert r.solver_status == "MODEL_INVALID"
+
+
+# ===========================================================================
+# 16. Infeasibility diagnosis (SufficientAssumptionsForInfeasibility)
+# ===========================================================================
+
+class TestInfeasibilityDiagnosis:
+
+    def test_feasible_has_no_infeasibility_reasons(self):
+        """Successful placement must have empty infeasibility_reasons."""
+        r = solve([make_vm("vm-1")], [make_bm("bm-1")])
+        assert r.success
+        assert r.infeasibility_reasons == []
+
+    def test_no_eligible_bms_identifies_vm(self):
+        """VM demand exceeds all BMs → vm_placement assumption in UNSAT core."""
+        # BM has 2 CPU; VM needs 64 → no eligible BMs at all
+        bms = [make_bm("bm-1", cpu=2)]
+        vms = [make_vm("vm-1", cpu=64)]
+        r = solve(vms, bms)
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+        assert len(r.infeasibility_reasons) > 0
+        cats = [r["category"] for r in r.infeasibility_reasons]
+        assert "vm_placement" in cats
+        vm_reason = next(x for x in r.infeasibility_reasons if x["category"] == "vm_placement")
+        assert vm_reason["vm_id"] == "vm-1"
+        assert vm_reason["eligible_bm_count"] == 0
+
+    def test_anti_affinity_forms_core(self):
+        """
+        2 VMs, 1 AG, anti-affinity max_per_ag=1 → both VMs can't fit in the only AG.
+        UNSAT core: 2×vm_placement + 1×anti_affinity assumption.
+        """
+        bms = [make_bm("bm-1", ag="ag-1")]
+        vms = [make_vm("vm-1", ip_type="routable"), make_vm("vm-2", ip_type="routable")]
+        rules = [AntiAffinityRule(
+            group_id="masters", vm_ids=["vm-1", "vm-2"], max_per_ag=1
+        )]
+        r = solve(vms, bms, rules=rules)
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+        cats = [x["category"] for x in r.infeasibility_reasons]
+        assert "vm_placement" in cats
+        assert "anti_affinity" in cats
+
+    def test_bm_count_limit_in_core(self):
+        """BM count limit forces infeasibility → bm_count_limit in core."""
+        bm = make_bm("bm-1").model_copy(
+            update={"max_vm_count": 1, "current_vm_count": 1}
+        )
+        vms = [make_vm("vm-1")]
+        r = solve(vms, [bm])
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+        cats = [x["category"] for x in r.infeasibility_reasons]
+        assert "bm_count_limit" in cats
+        bm_reason = next(x for x in r.infeasibility_reasons if x["category"] == "bm_count_limit")
+        assert bm_reason["bm_id"] == "bm-1"
+        assert bm_reason["available_slots"] == 0
+
+    def test_topology_rule_in_core(self):
+        """All BMs in zones occupied by cluster-B → topology_rule in core."""
+        bms = [make_bm("bm-1", dc="dc-1")]
+        vms = [make_vm("vm-1", cluster="A")]
+        existing = [ExistingVM(
+            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
+            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
+        )]
+        topo_rules = [TopologyRule(
+            rule_id="a-b-dc", cluster_ids=["A", "B"],
+            scope="datacenter", type="anti_affinity", enforcement="hard",
+        )]
+        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+        cats = [x["category"] for x in r.infeasibility_reasons]
+        assert "topology_rule" in cats
+        topo_reason = next(x for x in r.infeasibility_reasons if x["category"] == "topology_rule")
+        assert topo_reason["rule_id"] == "a-b-dc"
+        assert topo_reason["scope"] == "datacenter"

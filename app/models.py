@@ -251,6 +251,14 @@ class PlacementResult(BaseModel):
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+    infeasibility_reasons: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "When solver_status is INFEASIBLE, contains a structured explanation "
+            "of which constraints form a sufficient cause for infeasibility. "
+            "Each entry has 'category', 'message', and category-specific fields."
+        ),
+    )
 
     def to_assignment_map(self) -> dict[str, str]:
         """Convenience: vm_id -> baremetal_id."""
