@@ -370,6 +370,110 @@ class VMPlacementSolver:
 
         return penalties
 
+    def _compute_slot_score_bonus(self) -> list[cp_model.IntVar]:
+        """
+        計算每台 BM 的 slot score（可容納的 t-shirt size VM 數量）。
+
+        對每台 BM：
+        1. 計算放置後每個資源維度的剩餘容量
+        2. 對每個 t-shirt size，計算每個維度能容納幾個（floor division）
+        3. 取跨維度最小值 = 該 t-shirt size 實際可容納數量
+        4. 加總所有 t-shirt size → 該 BM 的 slot score
+
+        返回每台 BM 的 slot score 變數列表。
+        Slot score 越高 = 剩餘空間越有用 → 應被獎勵（在目標函數中取負號）。
+        """
+        tshirt_sizes = self.config.slot_tshirt_sizes
+        if not tshirt_sizes:
+            return []
+
+        scores = []
+        for bm in self.request.baremetals:
+            assigned_vars = [
+                (vm_id, self.assign[(vm_id, bm.id)])
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in self.assign
+            ]
+            if not assigned_vars:
+                continue
+
+            tshirt_slots = []
+            for t_idx, tshirt in enumerate(tshirt_sizes):
+                dim_slots = []
+                for field in RESOURCE_FIELDS:
+                    tshirt_d = getattr(tshirt, field)
+                    if tshirt_d == 0:
+                        continue  # 此維度無需求，不構成瓶頸
+
+                    total_d = getattr(bm.total_capacity, field)
+                    used_d = getattr(bm.used_capacity, field)
+
+                    # 新放入的 VM 消耗
+                    new_usage = sum(
+                        getattr(self.vm_map[vm_id].demand, field) * var
+                        for vm_id, var in assigned_vars
+                    )
+
+                    # 剩餘容量 = total - used - new_placement
+                    remaining = self.model.NewIntVar(
+                        0, total_d, f"rem_{bm.id}_{field}_t{t_idx}"
+                    )
+                    self.model.Add(remaining == total_d - used_d - new_usage)
+
+                    # 此維度可容納幾個此 t-shirt size
+                    slots_d = self.model.NewIntVar(
+                        0, total_d // tshirt_d if tshirt_d > 0 else 0,
+                        f"slotd_{bm.id}_{field}_t{t_idx}",
+                    )
+                    self.model.AddDivisionEquality(slots_d, remaining, tshirt_d)
+                    dim_slots.append(slots_d)
+
+                if dim_slots:
+                    # 跨維度取最小值 = 實際可容納數量（瓶頸維度決定）
+                    max_possible = min(
+                        getattr(bm.total_capacity, f) // getattr(tshirt, f)
+                        for f in RESOURCE_FIELDS
+                        if getattr(tshirt, f) > 0
+                    )
+                    slots_for_tshirt = self.model.NewIntVar(
+                        0, max_possible, f"slot_{bm.id}_t{t_idx}"
+                    )
+                    self.model.AddMinEquality(slots_for_tshirt, dim_slots)
+                    tshirt_slots.append(slots_for_tshirt)
+
+            if tshirt_slots:
+                # 加總所有 t-shirt size 的可容納數量
+                max_total = sum(
+                    min(
+                        getattr(bm.total_capacity, f) // getattr(ts, f)
+                        for f in RESOURCE_FIELDS
+                        if getattr(ts, f) > 0
+                    )
+                    for ts in tshirt_sizes
+                    if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
+                )
+                bm_score = self.model.NewIntVar(
+                    0, max_total, f"sscore_{bm.id}"
+                )
+                self.model.Add(bm_score == sum(tshirt_slots))
+
+                # 只計算被使用的 BM 的 slot score（未使用的 BM 不計入）
+                # 否則 solver 會偏好把 VM 放小 BM，讓大 BM 保持高 slot score
+                effective = self.model.NewIntVar(
+                    0, max_total, f"eff_sscore_{bm.id}"
+                )
+                self.model.AddMultiplicationEquality(
+                    effective, [self.bm_used[bm.id], bm_score]
+                )
+                scores.append(effective)
+
+        return scores
+
+    def _ensure_bm_used_vars(self):
+        """建立 bm_used 變數（如果尚未建立）。多個目標項可能都需要它。"""
+        if not self.bm_used:
+            self._build_bm_used_vars()
+
     def _add_objective(self):
         """
         組合所有目標函數項並設定 Minimize。
@@ -378,6 +482,7 @@ class VMPlacementSolver:
         1. 放置盡量多的 VM（partial placement 模式）
         2. 使用盡量少的 BM（consolidation）
         3. 利用率不超過安全上限（headroom）
+        4. 剩餘容量的可用性（slot score）
         """
         terms = []
 
@@ -386,13 +491,20 @@ class VMPlacementSolver:
             terms.append(-1_000_000 * total_placed)
 
         if self.config.w_consolidation > 0:
-            self._build_bm_used_vars()
+            self._ensure_bm_used_vars()
             terms.append(self.config.w_consolidation * sum(self.bm_used.values()))
 
         if self.config.w_headroom > 0:
             penalties = self._compute_headroom_penalties()
             if penalties:
                 terms.append(self.config.w_headroom * sum(penalties))
+
+        if self.config.w_slot_score > 0:
+            self._ensure_bm_used_vars()
+            slot_scores = self._compute_slot_score_bonus()
+            if slot_scores:
+                # 負號：slot score 越高越好（Minimize 中用負值 = 獎勵）
+                terms.append(-self.config.w_slot_score * sum(slot_scores))
 
         if terms:
             self.model.Minimize(sum(terms))

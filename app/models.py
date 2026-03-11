@@ -172,6 +172,13 @@ class SolverConfig(BaseModel):
     w_consolidation: int = 10
     w_headroom: int = 8
     headroom_upper_bound_pct: int = 90
+    # Slot score: penalize placements that leave unusable leftover capacity
+    w_slot_score: int = 0
+    slot_tshirt_sizes: list[Resources] = Field(default_factory=lambda: [
+        Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),    # small
+        Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),    # medium
+        Resources(cpu_cores=16, memory_mb=64_000, disk_gb=400),   # large
+    ])
 
 
 # ---------------------------------------------------------------------------

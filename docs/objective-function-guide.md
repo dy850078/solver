@@ -819,6 +819,320 @@ for bm_id in bm_ids:
 
 ---
 
+### Enhancement E：Slot Score（剩餘容量可用性）
+
+**問題**：Consolidation 把 VM 塞進最少 BM，但不關心「放完之後剩下的資源能不能被後續的 VM 使用」。Headroom 只看百分比，不看剩餘空間是否匹配真實的 VM 規格。
+
+**例子**：一台 BM 放完 VM 後剩 3 CPU，但最小的 VM t-shirt size 需要 4 CPU → 這 3 CPU 就是浪費（碎片化）。
+
+**Slot Score 定義**：
+對每台**被使用的** BM，計算放完 VM 後，剩餘容量還能裝幾個各種 t-shirt size 的 VM。
+加總所有 t-shirt size 的可容納數量 = 該 BM 的 slot score。
+
+```
+slot_score(bm) = Σ_tshirt min_dim(remaining_dim // tshirt_dim)
+```
+
+Slot score 越高 = 剩餘空間越「有用」→ 在目標函數中獎勵（取負號）。
+
+**重要設計考量**：
+1. **只計算被使用的 BM**。否則 solver 會把 VM 往小 BM 塞，保留大 BM 的高 slot score → 與 consolidation 矛盾。
+2. **預設權重 = 0**（opt-in）。Slot score 應作為 consolidation 的 tiebreaker，不能反過來壓過 consolidation。
+3. **需要 `AddMinEquality`**（之前只用過 `AddMaxEquality`），因為瓶頸維度決定可容納數量。
+4. **需要 `AddMultiplicationEquality`**（新 API），用來實現 `effective = bm_used × raw_score`。
+
+**CP-SAT 新 API**：
+
+```python
+# AddMinEquality — 最小值等式（和 AddMaxEquality 對稱）
+model.AddMinEquality(target, [v1, v2, v3])
+# 效果：target = min(v1, v2, v3)
+
+# AddMultiplicationEquality — 變數乘法
+model.AddMultiplicationEquality(target, [var_a, var_b])
+# 效果：target = var_a × var_b
+# 注意：參數是列表，不是兩個獨立參數
+```
+
+---
+
+#### Step E1：擴充 SolverConfig
+
+**做什麼**：在 `app/models.py` 的 `SolverConfig` 加入 slot score 相關欄位。
+
+**你的任務**：在 `headroom_upper_bound_pct` 後面加入：
+- `w_slot_score: int` — slot score 的權重（預設 0，opt-in）
+- `slot_tshirt_sizes: list[Resources]` — VM t-shirt size 定義列表
+
+思考問題：
+1. 為什麼預設 `w_slot_score=0` 而不是像 `w_consolidation=10` 那樣有預設值？
+   （提示：slot score 的效果可能與 consolidation 衝突，需要使用者明確啟用）
+2. `list[Resources]` 需要用 `Field(default_factory=...)` 嗎？為什麼？
+   （提示：mutable default 問題，同 `list[str]`）
+
+**驗證**：
+```bash
+python -m pytest tests/ -v -k "not SlotScore"
+# 應全部通過（32 - 3 = 29 個測試）
+```
+
+---
+
+#### Step E2：實作 `_compute_slot_score_bonus()`
+
+**做什麼**：對每台被使用的 BM，計算放完 VM 後各 t-shirt size 的可容納數量。
+
+**計算流程（對每台 BM）**：
+
+```
+A. 收集所有候選 (vm_id, assign_var) pair
+
+B. 對每個 t-shirt size，對每個資源維度：
+   remaining_d = total_d - used_d - Σ(demand × assign_var)
+   slots_d = floor(remaining_d / tshirt_d)
+
+C. slots_for_tshirt = min(slots_d 跨維度)  ← 瓶頸維度決定
+
+D. bm_score = Σ slots_for_tshirt 跨所有 t-shirt size
+
+E. effective_score = bm_used × bm_score  ← 只有被使用的 BM 才計入
+```
+
+**你的任務**：在 `_compute_headroom_penalties` 後面加入 `_compute_slot_score_bonus(self)`：
+
+```python
+def _compute_slot_score_bonus(self) -> list[cp_model.IntVar]:
+    tshirt_sizes = self.config.slot_tshirt_sizes
+    if not tshirt_sizes:
+        return []
+
+    scores = []
+    for bm in self.request.baremetals:
+        # A: 收集候選 assign var
+        assigned_vars = [
+            (vm_id, self.assign[(vm_id, bm.id)])
+            for vm_id in self.vm_map
+            if (vm_id, bm.id) in self.assign
+        ]
+        if not assigned_vars:
+            continue
+
+        tshirt_slots = []
+        for t_idx, tshirt in enumerate(tshirt_sizes):
+            dim_slots = []
+            for field in RESOURCE_FIELDS:
+                tshirt_d = getattr(tshirt, field)
+                if tshirt_d == 0:
+                    continue  # 為什麼跳過？（提示：除以零 + 此維度不是瓶頸）
+
+                total_d = getattr(bm.total_capacity, field)
+                used_d = getattr(bm.used_capacity, field)
+
+                # 新放入的 VM 消耗
+                new_usage = sum(
+                    getattr(self.vm_map[vm_id].demand, field) * var
+                    for vm_id, var in assigned_vars
+                )
+
+                # B: 剩餘容量
+                remaining = self.model.NewIntVar(
+                    0, ???, f"rem_{bm.id}_{field}_t{t_idx}"
+                    # 上界是多少？（提示：最大是 total_d）
+                )
+                self.model.Add(remaining == ??? - ??? - ???)
+
+                # B: 此維度可容納幾個
+                slots_d = self.model.NewIntVar(
+                    0, ???, f"slotd_{bm.id}_{field}_t{t_idx}"
+                    # 上界：total_d // tshirt_d
+                )
+                self.model.AddDivisionEquality(???, ???, ???)
+                dim_slots.append(slots_d)
+
+            if dim_slots:
+                # C: 跨維度取最小值（瓶頸維度決定）
+                max_possible = min(
+                    getattr(bm.total_capacity, f) // getattr(tshirt, f)
+                    for f in RESOURCE_FIELDS
+                    if getattr(tshirt, f) > 0
+                )
+                slots_for_tshirt = self.model.NewIntVar(
+                    0, max_possible, f"slot_{bm.id}_t{t_idx}"
+                )
+                self.model.AddMinEquality(???, ???)
+                tshirt_slots.append(slots_for_tshirt)
+
+        if tshirt_slots:
+            # D: 加總所有 t-shirt size 的可容納數量
+            bm_score = self.model.NewIntVar(0, ???, f"sscore_{bm.id}")
+            self.model.Add(bm_score == sum(tshirt_slots))
+
+            # E: 只計算被使用的 BM（乘以 bm_used）
+            effective = self.model.NewIntVar(0, ???, f"eff_sscore_{bm.id}")
+            self.model.AddMultiplicationEquality(
+                ???, [???, ???]
+            )
+            scores.append(effective)
+
+    return scores
+```
+
+填空提示：
+- `remaining` 的上界：`total_d`（最大剩餘 = 沒放任何 VM）
+- `remaining` 的等式：`total_d - used_d - new_usage`
+- `AddDivisionEquality(slots_d, remaining, tshirt_d)`：結果、被除數、除數
+- `AddMinEquality(slots_for_tshirt, dim_slots)`：target、變數列表
+- `AddMultiplicationEquality(effective, [self.bm_used[bm.id], bm_score])`
+- `bm_score` 和 `effective` 的上界：加總所有 t-shirt size 的最大可能 slot 數
+
+思考問題：
+1. 為什麼 `remaining` 的下界是 0 而不是負數？
+   （提示：capacity constraint 已經保證 total - used - placement >= 0）
+2. `AddMinEquality` 和 `AddMaxEquality` 的用法有什麼差異？
+   （提示：完全一樣，只是取 min vs max）
+3. 為什麼要 `AddMultiplicationEquality` 而不是直接 `bm_used * bm_score`？
+   （提示：CP-SAT 不支援兩個變數相乘的線性表達式，需要用專門的約束）
+
+**驗證**：
+```bash
+python -c "
+from app.models import *
+from app.solver import VMPlacementSolver
+bm = Baremetal(id='bm-1', total_capacity=Resources(cpu_cores=32, memory_mb=256000, disk_gb=2000))
+vm = VM(id='vm-1', demand=Resources(cpu_cores=8, memory_mb=16000, disk_gb=100))
+tshirts = [Resources(cpu_cores=4, memory_mb=16000, disk_gb=100)]
+req = PlacementRequest(vms=[vm], baremetals=[bm], config=SolverConfig(w_consolidation=0, w_headroom=0, w_slot_score=5, slot_tshirt_sizes=tshirts))
+solver = VMPlacementSolver(req)
+solver._build_variables()
+solver._build_bm_used_vars()
+scores = solver._compute_slot_score_bonus()
+print('scores count:', len(scores))
+# 預期：1（bm-1 有候選 VM）
+"
+```
+
+---
+
+#### Step E3：連接 `_add_objective()`
+
+**做什麼**：在 `_add_objective()` 中加入 slot score 項。
+
+**你的任務**：在 headroom 項之後加入：
+
+```python
+if self.config.w_slot_score > 0:
+    self._ensure_bm_used_vars()   # 為什麼需要這行？
+    slot_scores = self._compute_slot_score_bonus()
+    if slot_scores:
+        terms.append(??? * sum(slot_scores))
+        # 填入什麼？（提示：Minimize 中用負值 = 獎勵。slot score 越高越好）
+```
+
+思考問題：
+1. 為什麼要 `_ensure_bm_used_vars()` 而不是直接 `_build_bm_used_vars()`？
+   （提示：如果 consolidation 已經建了 `bm_used`，再建一次會報錯）
+2. `-self.config.w_slot_score` 的負號和 Minimize 的關係是什麼？
+   （提示：`Minimize(-5 * score)` 等價於 `Maximize(5 * score)`）
+3. `w_slot_score` 應該設多少才不會壓過 consolidation？
+   （提示：consolidation 每多用 1 台 BM = +10，slot score 差異通常 < 20，
+   所以 `w_slot_score=1` 就足夠當 tiebreaker）
+
+**驗證**：
+```bash
+python -m pytest tests/ -v -k "not SlotScore"
+# 應全部通過（現有測試不受影響，因為 w_slot_score 預設 0）
+```
+
+---
+
+#### Step E4：寫 TestSlotScore 測試類別
+
+**做什麼**：在 `tests/test_solver.py` 末尾加入三個測試。
+
+**測試設計原則**：
+- 只測 slot score 時，關閉 consolidation 和 headroom（設為 0）
+- 測 slot score + consolidation 時，確認 slot score 作為 tiebreaker 而非主導
+- 測 w_slot_score=0 時確認不影響結果
+
+**你的任務**：
+
+```python
+class TestSlotScore:
+
+    def test_slot_score_prefers_usable_remainder(self):
+        """
+        場景：2 台 BM 都能放 VM(cpu=8)。
+        BM-A: total=32 → 放完剩 24 cpu → small=6, medium=3, large=1 → score=10
+        BM-B: total=10 → 放完剩 2 cpu  → 全部 0 → score=0
+        只開 slot score，solver 應選 BM-A。
+        """
+        from app.models import Resources
+
+        bms = [
+            make_bm("bm-a", cpu=32, mem=256_000, disk=2000),
+            make_bm("bm-b", cpu=10, mem=256_000, disk=2000),
+        ]
+        vms = [make_vm("vm-1", cpu=8, mem=16_000)]
+
+        tshirts = [
+            Resources(cpu_cores=???, memory_mb=???, disk_gb=???),   # small
+            Resources(cpu_cores=???, memory_mb=???, disk_gb=???),   # medium
+            Resources(cpu_cores=???, memory_mb=???, disk_gb=???),   # large
+        ]
+
+        r = solve(
+            vms, bms,
+            w_consolidation=0, w_headroom=0, w_slot_score=5,
+            slot_tshirt_sizes=tshirts,
+        )
+
+        assert r.success
+        assert amap(r)["vm-1"] == "???", f"Expected ???, got: {amap(r)}"
+
+    def test_slot_score_breaks_consolidation_tie(self):
+        """
+        場景：2 台 BM 都夠放全部 VM，consolidation 會塞進 1 台（tie）。
+        Slot score 打破 tie：偏好放完後剩餘 slot 更多的 BM。
+
+        BM-A: total=32 cpu → 放 2 VM(4cpu) 後剩 24 → score 高
+        BM-B: total=12 cpu → 放 2 VM(4cpu) 後剩 4  → score 低
+        """
+        # ...省略，參考 test_slot_score_prefers_usable_remainder 的寫法...
+        # 注意：w_slot_score 設為 1（作為 tiebreaker，不壓過 w_consolidation=10）
+
+    def test_slot_score_zero_weight_disables(self):
+        """w_slot_score=0 時不影響結果（等同不開啟）。"""
+        # ...驗證 w_slot_score=0 時，行為和沒有 slot score 一樣...
+```
+
+**驗證**：
+```bash
+python -m pytest tests/ -v -k "SlotScore"
+# 預期：3 個新測試全部通過
+
+python -m pytest tests/ -v
+# 預期：全部 35 個測試通過
+```
+
+---
+
+#### 目標函數全貌（加入 Slot Score 後）
+
+```
+Minimize(
+    -1,000,000 × placed_count          ← P0：放越多越好（僅 partial mode）
+    + w_consolidation × Σ bm_used       ← P1：用越少 BM 越好
+    + w_headroom × Σ headroom_penalty   ← P2：避免超過利用率上限
+    - w_slot_score × Σ effective_score  ← P3：獎勵剩餘空間可用性
+)
+```
+
+權重建議：`w_consolidation=10, w_headroom=8, w_slot_score=1`。
+Slot score 的量級（通常 0–30）× 1 = 0–30，遠小於 consolidation 的 10 × N_BMs，
+確保 slot score 只在 consolidation 打平時才發揮作用。
+
+---
+
 ## 常見錯誤排查
 
 | 錯誤 | 可能原因 | 解法 |
@@ -829,6 +1143,8 @@ for bm_id in bm_ids:
 | headroom 測試失敗，solver 選錯 BM | `util_pct` 計算錯誤 | 手算：BM-B: `(2+8)*100 // 10 = 100`，over = `100-90 = 10` |
 | partial placement 放的數量錯誤 | 舊 `Maximize` 沒有完全移除 | 確認 `solve()` 裡只有 `self._add_objective()` |
 | 測試變慢很多 | 目標函數讓 solver 需要搜尋最優解 | 屬正常現象；可把 `max_solve_time_seconds` 加大 |
+| slot score 反而讓 VM 分散 | `w_slot_score` 太大壓過了 consolidation | 確保 `w_slot_score` ≪ `w_consolidation`（建議 1 vs 10）|
+| slot score 沒有效果 | 沒有乘以 `bm_used`，未使用的 BM 有高 score | 確認 `_ensure_bm_used_vars()` 有被呼叫，且用了 `AddMultiplicationEquality` |
 
 ---
 
@@ -846,7 +1162,9 @@ model.NewConstant(value)                      # 固定值
 model.Add(expr == value)                      # 等式
 model.Add(expr <= value)                      # 不等式
 model.AddMaxEquality(target, [v1, v2, ...])   # target = max(v1, v2, ...)
+model.AddMinEquality(target, [v1, v2, ...])   # target = min(v1, v2, ...)
 model.AddDivisionEquality(r, dividend, div)   # r = floor(dividend / div)
+model.AddMultiplicationEquality(t, [a, b])    # t = a × b（變數乘法）
 
 # 目標
 model.Minimize(expr)
