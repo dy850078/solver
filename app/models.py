@@ -12,7 +12,7 @@ Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 
 from __future__ import annotations
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -88,16 +88,18 @@ class Baremetal(BaseModel):
     A physical host. The Go scheduler fills in total_capacity and used_capacity
     from the inventory API. We compute available = total - used.
 
-    Pydantic 注意事項：
-      - Field(default_factory=Resources) 取代 dataclass 的 field(default_factory=Resources)
-        意思一樣：「預設值是一個新建的空 Resources()」
-      - available_capacity 用普通的 @property 就好，Pydantic 允許這樣做。
-        因為它不是輸入欄位，只是計算用，所以不需要出現在 JSON 裡。
+    Cross-scheduling additions:
+      - bm_role: BM role from Inventory API (e.g. "control-plane", "worker")
+      - max_vm_count: max total VMs allowed on this BM (None = unlimited)
+      - current_vm_count: how many VMs already exist on this BM (all clusters)
     """
     id: str
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
+    bm_role: str = ""
+    max_vm_count: int | None = None
+    current_vm_count: int = 0
 
     @property
     def available_capacity(self) -> Resources:
@@ -156,6 +158,44 @@ class AntiAffinityRule(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Cross-cluster constraints
+# ---------------------------------------------------------------------------
+
+class ExistingVM(BaseModel):
+    """
+    A VM that already exists on a BM (from a previous scheduling run).
+    Used for cross-cluster topology rules.
+    """
+    vm_id: str
+    cluster_id: str
+    baremetal_id: str
+    topology: Topology = Field(default_factory=Topology)
+
+
+# Topology scope hierarchy (finest → coarsest)
+TOPOLOGY_SCOPES = ["rack", "datacenter", "phase", "site"]
+
+
+class TopologyRule(BaseModel):
+    """
+    Cross-cluster topology affinity/anti-affinity rule.
+
+    - anti_affinity: VMs from these clusters must not share the same topology zone
+    - affinity: VMs from these clusters should prefer the same topology zone
+
+    enforcement:
+      - anti_affinity defaults to "hard" (can be "soft")
+      - affinity is always "soft" (hard is auto-downgraded with a warning)
+    """
+    rule_id: str
+    cluster_ids: list[str]
+    scope: Literal["rack", "datacenter", "phase", "site"]
+    type: Literal["affinity", "anti_affinity"]
+    enforcement: Literal["hard", "soft"] = "hard"
+    weight: int = 1
+
+
+# ---------------------------------------------------------------------------
 # Solver config: tuning knobs
 # ---------------------------------------------------------------------------
 
@@ -178,14 +218,16 @@ class PlacementRequest(BaseModel):
     """
     Input: what the Go scheduler sends to the Python solver.
 
-    使用方式：
-      request = PlacementRequest.model_validate_json(json_string)
-      request = PlacementRequest.model_validate(python_dict)
+    Cross-scheduling additions:
+      - existing_vms: VMs from other clusters already placed on BMs
+      - topology_rules: cross-cluster affinity/anti-affinity rules
     """
     vms: list[VM]
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
+    existing_vms: list[ExistingVM] = Field(default_factory=list)
+    topology_rules: list[TopologyRule] = Field(default_factory=list)
 
 
 class PlacementAssignment(BaseModel):
