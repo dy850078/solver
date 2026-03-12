@@ -435,3 +435,85 @@ class TestObjective:
         # 容量只夠放 2 台（8 cpu / 4 cpu per VM = 2）
         assert len(r.assignments) == 2, f"Expected 2 placed, got {len(r.assignments)}"
         assert len(r.unplaced_vms) == 1
+
+
+# ===========================================================================
+# 10. Slot Score: penalize wasteful leftover capacity
+# ===========================================================================
+
+class TestSlotScore:
+
+    def test_slot_score_prefers_usable_remainder(self):
+        """
+        Slot score：2 台 BM 都能放 1 個 VM(cpu=8)。
+        BM-A: total=32 cpu → 放完剩 24 cpu → 可裝 6 small(4cpu) or 3 medium(8cpu) or 1 large(16cpu)
+        BM-B: total=10 cpu → 放完剩 2 cpu  → 不能裝任何 t-shirt size
+        Slot score 應偏好 BM-A（剩餘空間更有用）。
+        """
+        from app.models import Resources
+
+        bms = [
+            make_bm("bm-a", cpu=32, mem=256_000, disk=2000),
+            make_bm("bm-b", cpu=10, mem=256_000, disk=2000),
+        ]
+        vms = [make_vm("vm-1", cpu=8, mem=16_000)]
+
+        tshirts = [
+            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
+            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
+            Resources(cpu_cores=16, memory_mb=64_000, disk_gb=400),
+        ]
+
+        r = solve(
+            vms, bms,
+            w_consolidation=0, w_headroom=0, w_slot_score=5,
+            slot_tshirt_sizes=tshirts,
+        )
+
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-a", f"Expected bm-a, got: {amap(r)}"
+
+    def test_slot_score_breaks_consolidation_tie(self):
+        """
+        Consolidation 做主：2 台 BM 各夠放全部 VM，consolidation 會塞進 1 台。
+        Slot score 做副：在「都只用 1 台」的前提下，偏好放完後剩餘 slot 更多的 BM。
+
+        BM-A: total=32 cpu → 放 2 VM(4cpu) 後剩 24 cpu → small=6, medium=3 → score=9
+        BM-B: total=12 cpu → 放 2 VM(4cpu) 後剩 4 cpu  → small=1, medium=0 → score=1
+        Consolidation 都是 1 台 → tie。Slot score 選 BM-A。
+        """
+        from app.models import Resources
+
+        bms = [
+            make_bm("bm-a", cpu=32, mem=256_000, disk=2000),
+            make_bm("bm-b", cpu=12, mem=256_000, disk=2000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(2)]
+
+        tshirts = [
+            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
+            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
+        ]
+
+        r = solve(
+            vms, bms,
+            w_consolidation=10, w_headroom=0, w_slot_score=1,
+            slot_tshirt_sizes=tshirts,
+        )
+
+        assert r.success
+        bm_ids_used = {a.baremetal_id for a in r.assignments}
+        assert bm_ids_used == {"bm-a"}, f"Expected bm-a only, got: {bm_ids_used}"
+
+    def test_slot_score_zero_weight_disables(self):
+        """w_slot_score=0 時不影響結果（等同不開啟）。"""
+        bms = [
+            make_bm("bm-1", cpu=64, mem=256_000),
+            make_bm("bm-2", cpu=64, mem=256_000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(3)]
+
+        r = solve(vms, bms, w_consolidation=10, w_headroom=0, w_slot_score=0)
+
+        assert r.success
+        assert len(r.assignments) == 3
