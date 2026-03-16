@@ -34,6 +34,7 @@ import logging
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
+from ortools.sat.python.cp_model_helper import CpSolverStatus
 
 from .models import (
     PlacementRequest,
@@ -159,8 +160,8 @@ class VMPlacementSolver:
                     max_per_ag=max_per_ag,
                 ))
                 logger.info(
-                    f"Auto anti-affinity: {ip_type}/{role} "
-                    f"({len(vm_ids)} VMs / {num_ags} AGs → max_per_ag={max_per_ag})"
+                    "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
+                    ip_type, role, len(vm_ids), num_ags, max_per_ag,
                 )
 
         return rules
@@ -208,7 +209,7 @@ class VMPlacementSolver:
                     continue  # skip this VM, it can't be placed
                 else:
                     # No eligible BM → impossible to solve
-                    logger.error(f"VM {vm.id} has no eligible BMs → infeasible")
+                    logger.error("VM %s has no eligible BMs → infeasible", vm.id)
                     self.model.add(0 == 1)  # force infeasibility
                     return
 
@@ -537,16 +538,14 @@ class VMPlacementSolver:
             solver.parameters.num_workers = self.config.num_workers
 
             logger.info(
-                f"Solving: {len(self.request.vms)} VMs, "
-                f"{len(self.request.baremetals)} BMs, "
-                f"{len(self.assign)} variables, "
-                f"{len(self.effective_rules)} rules, "
-                f"{len(self.ag_to_bms)} AGs"
+                "Solving: %d VMs, %d BMs, %d variables, %d rules, %d AGs",
+                len(self.request.vms), len(self.request.baremetals),
+                len(self.assign), len(self.effective_rules), len(self.ag_to_bms),
             )
 
             status = solver.solve(self.model)
             status_name = self._status_name(status)
-            logger.info(f"Status: {status_name}")
+            logger.info("Status: %s", status_name)
 
             # Extract results
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -599,7 +598,7 @@ class VMPlacementSolver:
         )
 
     @staticmethod
-    def _status_name(status: int) -> str:
+    def _status_name(status: CpSolverStatus) -> str:
         return {
             cp_model.OPTIMAL: "OPTIMAL",
             cp_model.FEASIBLE: "FEASIBLE",
