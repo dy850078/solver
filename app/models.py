@@ -30,35 +30,35 @@ class Resources(BaseModel):
 
     Pydantic 注意事項：
       - 欄位宣告方式和 dataclass 一樣：cpu_cores: int = 0
-      - 建立方式也一樣：Resources(cpu_cores=4, memory_mb=16000)
+      - 建立方式也一樣：Resources(cpu_cores=4, memory_mib=16000)
     """
     cpu_cores: int = 0
-    memory_mb: int = 0
-    disk_gb: int = 0
+    memory_mib: int = 0
+    storage_gb: int = 0
     gpu_count: int = 0
 
     def fits_in(self, capacity: Resources) -> bool:
         """Can this demand fit within the given capacity?"""
         return (
             self.cpu_cores <= capacity.cpu_cores
-            and self.memory_mb <= capacity.memory_mb
-            and self.disk_gb <= capacity.disk_gb
+            and self.memory_mib <= capacity.memory_mib
+            and self.storage_gb <= capacity.storage_gb
             and self.gpu_count <= capacity.gpu_count
         )
 
     def __add__(self, other: Resources) -> Resources:
         return Resources(
             cpu_cores=self.cpu_cores + other.cpu_cores,
-            memory_mb=self.memory_mb + other.memory_mb,
-            disk_gb=self.disk_gb + other.disk_gb,
+            memory_mib=self.memory_mib + other.memory_mib,
+            storage_gb=self.storage_gb + other.storage_gb,
             gpu_count=self.gpu_count + other.gpu_count,
         )
 
     def __sub__(self, other: Resources) -> Resources:
         return Resources(
             cpu_cores=self.cpu_cores - other.cpu_cores,
-            memory_mb=self.memory_mb - other.memory_mb,
-            disk_gb=self.disk_gb - other.disk_gb,
+            memory_mib=self.memory_mib - other.memory_mib,
+            storage_gb=self.storage_gb - other.storage_gb,
             gpu_count=self.gpu_count - other.gpu_count,
         )
 
@@ -175,9 +175,9 @@ class SolverConfig(BaseModel):
     # Slot score: penalize placements that leave unusable leftover capacity
     w_slot_score: int = 0
     slot_tshirt_sizes: list[Resources] = Field(default_factory=lambda: [
-        Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),    # small
-        Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),    # medium
-        Resources(cpu_cores=16, memory_mb=64_000, disk_gb=400),   # large
+        Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),    # small
+        Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),    # medium
+        Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400),   # large
     ])
 
 

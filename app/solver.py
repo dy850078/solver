@@ -49,7 +49,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # The resource fields we check for capacity constraints.
-RESOURCE_FIELDS = ["cpu_cores", "memory_mb", "disk_gb", "gpu_count"]
+RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
 class VMPlacementSolver:

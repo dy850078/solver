@@ -29,8 +29,8 @@ def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
     # Pydantic BaseModel 只接受 keyword arguments，不接受 positional arguments
     return Baremetal(
         id=bm_id,
-        total_capacity=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk, gpu_count=gpu),
-        used_capacity=Resources(cpu_cores=used_cpu, memory_mb=used_mem, disk_gb=used_disk),
+        total_capacity=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
+        used_capacity=Resources(cpu_cores=used_cpu, memory_mib=used_mem, storage_gb=used_disk),
         topology=Topology(site="site-a", phase="p1", datacenter=dc, rack=rack, ag=ag),
     )
 
@@ -39,7 +39,7 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
             ip_type="routable", candidates=None):
     return VM(
         id=vm_id,
-        demand=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk),
+        demand=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
         node_role=role,
         ip_type=ip_type,
         cluster_id=cluster,
@@ -337,10 +337,10 @@ class TestSerialization:
 
     def test_round_trip(self):
         req = json.dumps({
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
@@ -360,10 +360,10 @@ class TestSerialization:
     def test_http_solve_endpoint(self):
         """FastAPI POST /v1/placement/solve 回傳正確結果。"""
         resp = client.post("/v1/placement/solve", json={
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
@@ -459,9 +459,9 @@ class TestSlotScore:
         vms = [make_vm("vm-1", cpu=8, mem=16_000)]
 
         tshirts = [
-            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
-            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
-            Resources(cpu_cores=16, memory_mb=64_000, disk_gb=400),
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+            Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400),
         ]
 
         r = solve(
@@ -491,8 +491,8 @@ class TestSlotScore:
         vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(2)]
 
         tshirts = [
-            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
-            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
         ]
 
         r = solve(
