@@ -182,7 +182,7 @@ class VMPlacementSolver:
         """
         for vm in self.request.vms:
             for bm_id in self._get_eligible_baremetals(vm):
-                self.assign[(vm.id, bm_id)] = self.model.NewBoolVar(
+                self.assign[(vm.id, bm_id)] = self.model.new_bool_var(
                     f"assign_{vm.id}__{bm_id}"
                 )
 
@@ -209,13 +209,13 @@ class VMPlacementSolver:
                 else:
                     # No eligible BM → impossible to solve
                     logger.error(f"VM {vm.id} has no eligible BMs → infeasible")
-                    self.model.Add(0 == 1)  # force infeasibility
+                    self.model.add(0 == 1)  # force infeasibility
                     return
 
             if self.config.allow_partial_placement:
-                self.model.Add(sum(vm_vars) <= 1)
+                self.model.add(sum(vm_vars) <= 1)
             else:
-                self.model.Add(sum(vm_vars) == 1)
+                self.model.add(sum(vm_vars) == 1)
 
     def _add_capacity_constraints(self):
         """
@@ -253,7 +253,7 @@ class VMPlacementSolver:
                 )
 
                 # The constraint: total usage <= capacity
-                self.model.Add(usage <= capacity)
+                self.model.add(usage <= capacity)
 
     def _add_anti_affinity_constraints(self):
         """
@@ -279,7 +279,7 @@ class VMPlacementSolver:
                 ]
 
                 if vars_in_ag:
-                    self.model.Add(sum(vars_in_ag) <= rule.max_per_ag)
+                    self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -293,7 +293,7 @@ class VMPlacementSolver:
         → 只要有任何 VM 放在這台 BM，bm_used = 1
         """
         for bm in self.request.baremetals:
-            bm_used = self.model.NewBoolVar(f"bm_used_{bm.id}")
+            bm_used = self.model.new_bool_var(f"bm_used_{bm.id}")
 
             vm_vars_on_bm = [
                 self.assign[(vm_id, bm.id)]
@@ -302,9 +302,9 @@ class VMPlacementSolver:
             ]
 
             if vm_vars_on_bm:
-                self.model.AddMaxEquality(bm_used, vm_vars_on_bm)
+                self.model.add_max_equality(bm_used, vm_vars_on_bm)
             else:
-                self.model.Add(bm_used == 0)
+                self.model.add(bm_used == 0)
 
             self.bm_used[bm.id] = bm_used
 
@@ -344,28 +344,28 @@ class VMPlacementSolver:
                 )
 
                 # Step A: 計算放置後的使用量 × 100（避免浮點）
-                after_times_100 = self.model.NewIntVar(
+                after_times_100 = self.model.new_int_var(
                     0, total_d * 100, f"a100_{bm.id}_{field}"
                 )
-                self.model.Add(after_times_100 == (used_d + new_usage) * 100)
+                self.model.add(after_times_100 == (used_d + new_usage) * 100)
 
                 # Step B: 整數百分比（0–100）
-                util_pct = self.model.NewIntVar(0, 100, f"util_{bm.id}_{field}")
-                self.model.AddDivisionEquality(util_pct, after_times_100, total_d)
+                util_pct = self.model.new_int_var(0, 100, f"util_{bm.id}_{field}")
+                self.model.add_division_equality(util_pct, after_times_100, total_d)
 
                 # Step C: 超過安全上限的量（可能為負）
-                raw = self.model.NewIntVar(-100, 100, f"raw_{bm.id}_{field}")
-                self.model.Add(raw == util_pct - self.config.headroom_upper_bound_pct)
+                raw = self.model.new_int_var(-100, 100, f"raw_{bm.id}_{field}")
+                self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
                 # Step D: ReLU：截斷負值
-                over = self.model.NewIntVar(0, 100, f"over_{bm.id}_{field}")
-                self.model.AddMaxEquality(over, [self.model.NewConstant(0), raw])
+                over = self.model.new_int_var(0, 100, f"over_{bm.id}_{field}")
+                self.model.add_max_equality(over, [self.model.new_constant(0), raw])
                 dim_overs.append(over)
 
             if dim_overs:
                 # Step E: 跨維度取最大值
-                bm_penalty = self.model.NewIntVar(0, 100, f"hp_{bm.id}")
-                self.model.AddMaxEquality(bm_penalty, dim_overs)
+                bm_penalty = self.model.new_int_var(0, 100, f"hp_{bm.id}")
+                self.model.add_max_equality(bm_penalty, dim_overs)
                 penalties.append(bm_penalty)
 
         return penalties
@@ -415,17 +415,17 @@ class VMPlacementSolver:
                     )
 
                     # 剩餘容量 = total - used - new_placement
-                    remaining = self.model.NewIntVar(
+                    remaining = self.model.new_int_var(
                         0, total_d, f"rem_{bm.id}_{field}_t{t_idx}"
                     )
-                    self.model.Add(remaining == total_d - used_d - new_usage)
+                    self.model.add(remaining == total_d - used_d - new_usage)
 
                     # 此維度可容納幾個此 t-shirt size
-                    slots_d = self.model.NewIntVar(
+                    slots_d = self.model.new_int_var(
                         0, total_d // tshirt_d if tshirt_d > 0 else 0,
                         f"slotd_{bm.id}_{field}_t{t_idx}",
                     )
-                    self.model.AddDivisionEquality(slots_d, remaining, tshirt_d)
+                    self.model.add_division_equality(slots_d, remaining, tshirt_d)
                     dim_slots.append(slots_d)
 
                 if dim_slots:
@@ -435,10 +435,10 @@ class VMPlacementSolver:
                         for f in RESOURCE_FIELDS
                         if getattr(tshirt, f) > 0
                     )
-                    slots_for_tshirt = self.model.NewIntVar(
+                    slots_for_tshirt = self.model.new_int_var(
                         0, max_possible, f"slot_{bm.id}_t{t_idx}"
                     )
-                    self.model.AddMinEquality(slots_for_tshirt, dim_slots)
+                    self.model.add_min_equality(slots_for_tshirt, dim_slots)
                     tshirt_slots.append(slots_for_tshirt)
 
             if tshirt_slots:
@@ -452,17 +452,17 @@ class VMPlacementSolver:
                     for ts in tshirt_sizes
                     if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
                 )
-                bm_score = self.model.NewIntVar(
+                bm_score = self.model.new_int_var(
                     0, max_total, f"sscore_{bm.id}"
                 )
-                self.model.Add(bm_score == sum(tshirt_slots))
+                self.model.add(bm_score == sum(tshirt_slots))
 
                 # 只計算被使用的 BM 的 slot score（未使用的 BM 不計入）
                 # 否則 solver 會偏好把 VM 放小 BM，讓大 BM 保持高 slot score
-                effective = self.model.NewIntVar(
+                effective = self.model.new_int_var(
                     0, max_total, f"eff_sscore_{bm.id}"
                 )
-                self.model.AddMultiplicationEquality(
+                self.model.add_multiplication_equality(
                     effective, [self.bm_used[bm.id], bm_score]
                 )
                 scores.append(effective)
@@ -507,7 +507,7 @@ class VMPlacementSolver:
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
         if terms:
-            self.model.Minimize(sum(terms))
+            self.model.minimize(sum(terms))
 
     # ------------------------------------------------------------------
     # Step D: Solve and extract results
@@ -544,7 +544,7 @@ class VMPlacementSolver:
                 f"{len(self.ag_to_bms)} AGs"
             )
 
-            status = solver.Solve(self.model)
+            status = solver.solve(self.model)
             status_name = self._status_name(status)
             logger.info(f"Status: {status_name}")
 
@@ -579,7 +579,7 @@ class VMPlacementSolver:
             placed = False
             for bm in self.request.baremetals:
                 if (vm.id, bm.id) in self.assign:
-                    if solver.Value(self.assign[(vm.id, bm.id)]) == 1:
+                    if solver.value(self.assign[(vm.id, bm.id)]) == 1:
                         assignments.append(PlacementAssignment(
                             vm_id=vm.id,
                             baremetal_id=bm.id,
