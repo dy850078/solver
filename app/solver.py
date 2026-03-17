@@ -551,11 +551,14 @@ class VMPlacementSolver:
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 return self._extract_solution(solver, status_name, time.time() - start)
             else:
+                diagnostics = self._build_failure_diagnostics()
+                logger.warning("Solver failed with %s, diagnostics: %s", status_name, diagnostics)
                 return PlacementResult(
                     success=False,
                     solver_status=status_name,
                     solve_time_seconds=time.time() - start,
                     unplaced_vms=[vm.id for vm in self.request.vms],
+                    diagnostics=diagnostics,
                 )
 
         except Exception as e:
@@ -566,6 +569,55 @@ class VMPlacementSolver:
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
             )
+
+    def _build_failure_diagnostics(self) -> dict[str, object]:
+        """
+        Collect diagnostic info to help debug INFEASIBLE / UNKNOWN results.
+
+        Returns a dict included in PlacementResult.diagnostics so the caller
+        (Go scheduler) can understand why placement failed without reading logs.
+        """
+        diag: dict[str, object] = {}
+
+        # 1. 每個 VM 有多少 eligible BMs
+        eligible_counts: dict[str, int] = {}
+        no_eligible: list[str] = []
+        for vm in self.request.vms:
+            count = len(self._get_eligible_baremetals(vm))
+            eligible_counts[vm.id] = count
+            if count == 0:
+                no_eligible.append(vm.id)
+
+        diag["eligible_bm_count_per_vm"] = eligible_counts
+        if no_eligible:
+            diag["vms_with_no_eligible_bm"] = no_eligible
+
+        # 2. Anti-affinity rules 摘要
+        rules_summary = []
+        for rule in self.effective_rules:
+            # 計算這條 rule 的 VM 實際能觸及多少 AG
+            reachable_ags: set[str] = set()
+            for vm_id in rule.vm_ids:
+                if vm_id in self.vm_map:
+                    for bm_id in self._get_eligible_baremetals(self.vm_map[vm_id]):
+                        if bm_id in self.bm_map:
+                            reachable_ags.add(self.bm_map[bm_id].topology.ag)
+            min_ags_needed = -(-len(rule.vm_ids) // rule.max_per_ag)  # ceil division
+            rules_summary.append({
+                "group_id": rule.group_id,
+                "vm_count": len(rule.vm_ids),
+                "max_per_ag": rule.max_per_ag,
+                "min_ags_needed": min_ags_needed,
+                "reachable_ags": len(reachable_ags),
+                "feasible": len(reachable_ags) >= min_ags_needed,
+            })
+        if rules_summary:
+            diag["anti_affinity_rules"] = rules_summary
+
+        # 3. 總變數數量（0 代表完全沒有 eligible pair）
+        diag["total_variables"] = len(self.assign)
+
+        return diag
 
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float

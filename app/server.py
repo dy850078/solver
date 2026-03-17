@@ -23,6 +23,10 @@ from fastapi import FastAPI
 from .models import PlacementRequest, PlacementResult
 from .solver import VMPlacementSolver
 
+# 在 module 層級設定 logging，確保不管用哪種方式啟動都有 log：
+#   - python -m app.server（走 main()）
+#   - uvicorn app.server:api（不走 main()，但 import 時就會執行這行）
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # FastAPI instance — 命名為 api 避免與 app/ package 名稱混淆
@@ -51,8 +55,6 @@ def healthz() -> dict:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
     parser = argparse.ArgumentParser(description="VM Placement Solver")
     parser.add_argument("--port", type=int, default=50051)
     parser.add_argument("--cli", action="store_true", help="Run in CLI mode instead of HTTP server")
