@@ -95,6 +95,7 @@ class Baremetal(BaseModel):
         因為它不是輸入欄位，只是計算用，所以不需要出現在 JSON 裡。
     """
     id: str
+    hostname: str = ""
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
@@ -132,6 +133,7 @@ class VM(BaseModel):
       anti-affinity rules.
     """
     id: str
+    hostname: str = ""
     demand: Resources
     node_role: NodeRole = NodeRole.WORKER
     ip_type: str = ""
@@ -198,7 +200,9 @@ class PlacementRequest(BaseModel):
 class PlacementAssignment(BaseModel):
     """One VM → one BM assignment, with the AG for easy verification."""
     vm_id: str
+    vm_hostname: str = ""
     baremetal_id: str
+    bm_hostname: str = ""
     ag: str = ""
 
 

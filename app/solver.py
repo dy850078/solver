@@ -581,7 +581,9 @@ class VMPlacementSolver:
                     if solver.value(self.assign[(vm.id, bm.id)]) == 1:
                         assignments.append(PlacementAssignment(
                             vm_id=vm.id,
+                            vm_hostname=vm.hostname,
                             baremetal_id=bm.id,
+                            bm_hostname=bm.hostname,
                             ag=bm.topology.ag,
                         ))
                         placed = True

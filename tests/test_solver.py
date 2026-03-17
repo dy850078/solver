@@ -379,6 +379,30 @@ class TestSerialization:
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
 
+    def test_hostname_pass_through(self):
+        """hostname 從 request 原封不動帶到 response assignments。"""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{"id": "vm-1", "hostname": "k8s-master-01.prod",
+                     "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "baremetals": [{
+                "id": "bm-1", "hostname": "bare-001.rack1",
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        })
+        assert resp.status_code == 200
+        out = resp.json()
+        assert out["assignments"][0]["vm_hostname"] == "k8s-master-01.prod"
+        assert out["assignments"][0]["bm_hostname"] == "bare-001.rack1"
+
+    def test_hostname_defaults_to_empty(self):
+        """未提供 hostname 時，response 中為空字串。"""
+        r = solve([make_vm("vm-1")], [make_bm("bm-1")])
+        assert r.success
+        assert r.assignments[0].vm_hostname == ""
+        assert r.assignments[0].bm_hostname == ""
+
     def test_http_invalid_request_returns_422(self):
         """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
