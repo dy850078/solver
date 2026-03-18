@@ -781,7 +781,6 @@ class VMPlacementSolver:
             results["first_infeasible_at"] = "none (all steps passed — issue may be in objective)"
 
         return results
-        return result
 
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float
