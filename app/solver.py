@@ -637,7 +637,39 @@ class VMPlacementSolver:
         # 3. 總變數數量（0 代表完全沒有 eligible pair）
         diag["total_variables"] = len(self.assign)
 
-        # 4. Config 摘要 — 顯示哪些 objective 項是啟用的
+        # 4. Per-VM AG 分佈 — 每個 VM 在每個 AG 有幾台 eligible BM
+        vm_ag_breakdown: dict[str, dict[str, int]] = {}
+        for vm in self.request.vms:
+            ag_counts: dict[str, int] = defaultdict(int)
+            for bm_id in self._get_eligible_baremetals(vm):
+                if bm_id in self.bm_map:
+                    ag_counts[self.bm_map[bm_id].topology.ag] += 1
+            vm_ag_breakdown[vm.id] = dict(ag_counts)
+        diag["vm_ag_breakdown"] = vm_ag_breakdown
+
+        # 5. Per-BM 容量摘要（只列有 eligible VM 的 BM）
+        bm_capacity_summary: list[dict[str, object]] = []
+        for bm in self.request.baremetals:
+            has_eligible = any((vm.id, bm.id) in self.assign for vm in self.request.vms)
+            if not has_eligible:
+                continue
+            avail = bm.available_capacity
+            bm_capacity_summary.append({
+                "bm_id": bm.id,
+                "ag": bm.topology.ag,
+                "available": {f: getattr(avail, f) for f in RESOURCE_FIELDS},
+                "total": {f: getattr(bm.total_capacity, f) for f in RESOURCE_FIELDS},
+                "used": {f: getattr(bm.used_capacity, f) for f in RESOURCE_FIELDS},
+            })
+        diag["bm_capacity"] = bm_capacity_summary
+
+        # 6. VM demand 摘要
+        diag["vm_demands"] = {
+            vm.id: {f: getattr(vm.demand, f) for f in RESOURCE_FIELDS}
+            for vm in self.request.vms
+        }
+
+        # 7. Config 摘要 — 顯示哪些 objective 項是啟用的
         diag["config"] = {
             "w_consolidation": self.config.w_consolidation,
             "w_headroom": self.config.w_headroom,
@@ -647,88 +679,108 @@ class VMPlacementSolver:
             "slot_tshirt_sizes_count": len(self.config.slot_tshirt_sizes),
         }
 
-        # 5. 用 hard constraints only 重跑一次（不含 objective helper constraints）
-        #    這能確認 INFEASIBLE 是來自 hard constraints 還是 objective helpers
-        diag["hard_constraints_only"] = self._test_hard_constraints_only()
+        # 8. 分步 constraint 診斷 — 逐步加 constraint 看哪一步變 INFEASIBLE
+        diag["step_by_step"] = self._step_by_step_diagnosis()
 
         return diag
 
-    def _test_hard_constraints_only(self) -> dict[str, object]:
+    def _step_by_step_diagnosis(self) -> dict[str, object]:
         """
-        用一個全新的 model 只加 hard constraints（不加 objective）來測試。
-        如果這個能解，代表問題出在 objective helper constraints。
+        逐步加入 constraint 並各別 solve，找出是哪一層 constraint 造成 INFEASIBLE：
+          Step 1: 只有 one-BM-per-VM
+          Step 2: + capacity
+          Step 3: + anti-affinity
         """
-        test_model = cp_model.CpModel()
-        test_assign: dict[tuple[str, str], cp_model.IntVar] = {}
+        results: dict[str, object] = {}
 
-        # 建 variables
+        # --- Helper: build eligible pairs ---
+        eligible: dict[str, list[str]] = {}
         for vm in self.request.vms:
-            for bm_id in self._get_eligible_baremetals(vm):
-                test_assign[(vm.id, bm_id)] = test_model.new_bool_var(
-                    f"t_{vm.id}__{bm_id}"
-                )
+            eligible[vm.id] = self._get_eligible_baremetals(vm)
 
-        # Constraint: each VM on exactly one BM
-        for vm in self.request.vms:
-            vm_vars = [
-                test_assign[(vm.id, bm_id)]
-                for bm_id in self._get_eligible_baremetals(vm)
-                if (vm.id, bm_id) in test_assign
-            ]
-            if not vm_vars:
-                return {"status": "SKIP", "reason": f"VM {vm.id} has no eligible BMs"}
-            if self.config.allow_partial_placement:
-                test_model.add(sum(vm_vars) <= 1)
-            else:
-                test_model.add(sum(vm_vars) == 1)
+        def make_vars(model: cp_model.CpModel) -> dict[tuple[str, str], cp_model.IntVar]:
+            assign = {}
+            for vm in self.request.vms:
+                for bm_id in eligible[vm.id]:
+                    assign[(vm.id, bm_id)] = model.new_bool_var(f"t_{vm.id}__{bm_id}")
+            return assign
 
-        # Constraint: capacity
-        for bm in self.request.baremetals:
-            avail = bm.available_capacity
-            assigned_vars = [
-                (vm_id, test_assign[(vm_id, bm.id)])
-                for vm_id in self.vm_map
-                if (vm_id, bm.id) in test_assign
-            ]
-            if not assigned_vars:
-                continue
-            for field in RESOURCE_FIELDS:
-                capacity = getattr(avail, field)
-                usage = sum(
-                    getattr(self.vm_map[vm_id].demand, field) * var
-                    for vm_id, var in assigned_vars
-                )
-                test_model.add(usage <= capacity)
+        def add_one_bm_per_vm(model, assign):
+            for vm in self.request.vms:
+                vm_vars = [assign[(vm.id, bm_id)] for bm_id in eligible[vm.id]
+                           if (vm.id, bm_id) in assign]
+                if not vm_vars:
+                    model.add(0 == 1)  # force infeasible
+                    return
+                if self.config.allow_partial_placement:
+                    model.add(sum(vm_vars) <= 1)
+                else:
+                    model.add(sum(vm_vars) == 1)
 
-        # Constraint: anti-affinity
-        for rule in self.effective_rules:
-            for ag, ag_bm_ids in self.ag_to_bms.items():
-                vars_in_ag = [
-                    test_assign[(vm_id, bm_id)]
-                    for vm_id in rule.vm_ids
-                    for bm_id in ag_bm_ids
-                    if (vm_id, bm_id) in test_assign
-                ]
-                if vars_in_ag:
-                    test_model.add(sum(vars_in_ag) <= rule.max_per_ag)
+        def add_capacity(model, assign):
+            for bm in self.request.baremetals:
+                avail = bm.available_capacity
+                avars = [(vid, assign[(vid, bm.id)]) for vid in self.vm_map
+                         if (vid, bm.id) in assign]
+                if not avars:
+                    continue
+                for field in RESOURCE_FIELDS:
+                    cap = getattr(avail, field)
+                    usage = sum(getattr(self.vm_map[vid].demand, field) * v for vid, v in avars)
+                    model.add(usage <= cap)
 
-        # Solve (no objective)
-        test_solver = cp_model.CpSolver()
-        test_solver.parameters.max_time_in_seconds = 5.0
-        test_status = test_solver.solve(test_model)
-        status_name = self._status_name(test_status)
+        def add_anti_affinity(model, assign):
+            for rule in self.effective_rules:
+                for ag, ag_bm_ids in self.ag_to_bms.items():
+                    vag = [assign[(vid, bid)] for vid in rule.vm_ids
+                           for bid in ag_bm_ids if (vid, bid) in assign]
+                    if vag:
+                        model.add(sum(vag) <= rule.max_per_ag)
 
-        result: dict[str, object] = {"status": status_name}
-        if test_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            result["conclusion"] = (
-                "Hard constraints alone are FEASIBLE → problem is in objective "
-                "helper constraints (headroom penalty or slot score variable bounds)"
-            )
+        def quick_solve(model) -> str:
+            s = cp_model.CpSolver()
+            s.parameters.max_time_in_seconds = 5.0
+            return self._status_name(s.solve(model))
+
+        # Step 1: one-BM-per-VM only
+        m1 = cp_model.CpModel()
+        a1 = make_vars(m1)
+        add_one_bm_per_vm(m1, a1)
+        results["step1_one_bm_per_vm"] = quick_solve(m1)
+
+        # Step 2: + capacity
+        m2 = cp_model.CpModel()
+        a2 = make_vars(m2)
+        add_one_bm_per_vm(m2, a2)
+        add_capacity(m2, a2)
+        results["step2_plus_capacity"] = quick_solve(m2)
+
+        # Step 3: + anti-affinity
+        m3 = cp_model.CpModel()
+        a3 = make_vars(m3)
+        add_one_bm_per_vm(m3, a3)
+        add_capacity(m3, a3)
+        add_anti_affinity(m3, a3)
+        results["step3_plus_anti_affinity"] = quick_solve(m3)
+
+        # 找出是哪一步變 INFEASIBLE
+        steps = [
+            ("step1_one_bm_per_vm", "one-BM-per-VM constraint"),
+            ("step2_plus_capacity", "capacity constraints"),
+            ("step3_plus_anti_affinity", "anti-affinity constraints"),
+        ]
+        first_infeasible = None
+        for key, desc in steps:
+            if results[key] == "INFEASIBLE":
+                first_infeasible = desc
+                break
+
+        if first_infeasible:
+            results["first_infeasible_at"] = first_infeasible
         else:
-            result["conclusion"] = (
-                "Hard constraints alone are also INFEASIBLE → problem is in "
-                "capacity, anti-affinity, or candidate filtering"
-            )
+            results["first_infeasible_at"] = "none (all steps passed — issue may be in objective)"
+
+        return results
         return result
 
     def _extract_solution(
