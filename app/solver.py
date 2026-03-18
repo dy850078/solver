@@ -617,30 +617,23 @@ class VMPlacementSolver:
 
     def _build_failure_diagnostics(self) -> dict[str, object]:
         """
-        Collect diagnostic info to help debug INFEASIBLE / UNKNOWN results.
+        Collect concise diagnostic info for INFEASIBLE / UNKNOWN results.
 
-        Returns a dict included in PlacementResult.diagnostics so the caller
-        (Go scheduler) can understand why placement failed without reading logs.
+        Designed to be readable at a glance by the Go scheduler caller.
         """
         diag: dict[str, object] = {}
 
-        # 1. 每個 VM 有多少 eligible BMs
-        eligible_counts: dict[str, int] = {}
+        # 1. VMs with no eligible BMs — the most common root cause
         no_eligible: list[str] = []
         for vm in self.request.vms:
-            count = len(self._get_eligible_baremetals(vm))
-            eligible_counts[vm.id] = count
-            if count == 0:
+            if not self._get_eligible_baremetals(vm):
                 no_eligible.append(vm.id)
-
-        diag["eligible_bm_count_per_vm"] = eligible_counts
         if no_eligible:
             diag["vms_with_no_eligible_bm"] = no_eligible
 
-        # 2. Anti-affinity rules 摘要
-        rules_summary = []
+        # 2. Anti-affinity rules — only flag infeasible ones
+        infeasible_rules = []
         for rule in self.effective_rules:
-            # 計算這條 rule 的 VM 實際能觸及多少 AG
             reachable_ags: set[str] = set()
             for vm_id in rule.vm_ids:
                 if vm_id in self.vm_map:
@@ -648,94 +641,57 @@ class VMPlacementSolver:
                         if bm_id in self.bm_map:
                             reachable_ags.add(self.bm_map[bm_id].topology.ag)
             min_ags_needed = -(-len(rule.vm_ids) // rule.max_per_ag)  # ceil division
-            rules_summary.append({
-                "group_id": rule.group_id,
-                "vm_count": len(rule.vm_ids),
-                "max_per_ag": rule.max_per_ag,
-                "min_ags_needed": min_ags_needed,
-                "reachable_ags": len(reachable_ags),
-                "feasible": len(reachable_ags) >= min_ags_needed,
-            })
-        if rules_summary:
-            diag["anti_affinity_rules"] = rules_summary
+            if len(reachable_ags) < min_ags_needed:
+                infeasible_rules.append({
+                    "group_id": rule.group_id,
+                    "vm_count": len(rule.vm_ids),
+                    "max_per_ag": rule.max_per_ag,
+                    "min_ags_needed": min_ags_needed,
+                    "reachable_ags": len(reachable_ags),
+                })
+        if infeasible_rules:
+            diag["infeasible_anti_affinity_rules"] = infeasible_rules
 
-        # 3. 總變數數量（0 代表完全沒有 eligible pair）
-        diag["total_variables"] = len(self.assign)
+        # 3. Constraint check — which layer causes INFEASIBLE
+        diag["constraint_check"] = self._constraint_layer_check()
 
-        # 4. Per-VM AG 分佈 — 每個 VM 在每個 AG 有幾台 eligible BM
-        vm_ag_breakdown: dict[str, dict[str, int]] = {}
-        for vm in self.request.vms:
-            ag_counts: dict[str, int] = defaultdict(int)
-            for bm_id in self._get_eligible_baremetals(vm):
-                if bm_id in self.bm_map:
-                    ag_counts[self.bm_map[bm_id].topology.ag] += 1
-            vm_ag_breakdown[vm.id] = dict(ag_counts)
-        diag["vm_ag_breakdown"] = vm_ag_breakdown
-
-        # 5. Per-BM 容量摘要（只列有 eligible VM 的 BM）
-        bm_capacity_summary: list[dict[str, object]] = []
-        for bm in self.request.baremetals:
-            has_eligible = any((vm.id, bm.id) in self.assign for vm in self.request.vms)
-            if not has_eligible:
-                continue
-            avail = bm.available_capacity
-            bm_capacity_summary.append({
-                "bm_id": bm.id,
-                "ag": bm.topology.ag,
-                "available": {f: getattr(avail, f) for f in RESOURCE_FIELDS},
-                "total": {f: getattr(bm.total_capacity, f) for f in RESOURCE_FIELDS},
-                "used": {f: getattr(bm.used_capacity, f) for f in RESOURCE_FIELDS},
-            })
-        diag["bm_capacity"] = bm_capacity_summary
-
-        # 6. VM demand 摘要
-        diag["vm_demands"] = {
-            vm.id: {f: getattr(vm.demand, f) for f in RESOURCE_FIELDS}
-            for vm in self.request.vms
+        # 4. Summary counts
+        diag["counts"] = {
+            "vms": len(self.request.vms),
+            "bms": len(self.request.baremetals),
+            "ags": len(self.ag_to_bms),
+            "variables": len(self.assign),
+            "rules": len(self.effective_rules),
         }
-
-        # 7. Config 摘要 — 顯示哪些 objective 項是啟用的
-        diag["config"] = {
-            "w_consolidation": self.config.w_consolidation,
-            "w_headroom": self.config.w_headroom,
-            "w_slot_score": self.config.w_slot_score,
-            "headroom_upper_bound_pct": self.config.headroom_upper_bound_pct,
-            "allow_partial_placement": self.config.allow_partial_placement,
-            "slot_tshirt_sizes_count": len(self.config.slot_tshirt_sizes),
-        }
-
-        # 8. 分步 constraint 診斷 — 逐步加 constraint 看哪一步變 INFEASIBLE
-        diag["step_by_step"] = self._step_by_step_diagnosis()
 
         return diag
 
-    def _step_by_step_diagnosis(self) -> dict[str, object]:
+    def _constraint_layer_check(self) -> dict[str, object]:
         """
-        逐步加入 constraint 並各別 solve，找出是哪一層 constraint 造成 INFEASIBLE：
-          Step 1: 只有 one-BM-per-VM
-          Step 2: + capacity
-          Step 3: + anti-affinity
-        """
-        results: dict[str, object] = {}
+        Incrementally add constraint layers and solve each to pinpoint
+        which layer first causes INFEASIBLE.
 
-        # --- Helper: build eligible pairs ---
-        eligible: dict[str, list[str]] = {}
-        for vm in self.request.vms:
-            eligible[vm.id] = self._get_eligible_baremetals(vm)
+        Returns a compact result like:
+          {"one_bm_per_vm": "OK", "capacity": "OK", "anti_affinity": "INFEASIBLE",
+           "failed_at": "anti_affinity"}
+        """
+        eligible: dict[str, list[str]] = {
+            vm.id: self._get_eligible_baremetals(vm) for vm in self.request.vms
+        }
 
         def make_vars(model: cp_model.CpModel) -> dict[tuple[str, str], cp_model.IntVar]:
-            assign = {}
-            for vm in self.request.vms:
-                for bm_id in eligible[vm.id]:
-                    assign[(vm.id, bm_id)] = model.new_bool_var(f"t_{vm.id}__{bm_id}")
-            return assign
+            return {
+                (vm.id, bm_id): model.new_bool_var(f"t_{vm.id}__{bm_id}")
+                for vm in self.request.vms
+                for bm_id in eligible[vm.id]
+            }
 
         def add_one_bm_per_vm(model, assign):
             for vm in self.request.vms:
-                vm_vars = [assign[(vm.id, bm_id)] for bm_id in eligible[vm.id]
-                           if (vm.id, bm_id) in assign]
+                vm_vars = [assign[(vm.id, bid)] for bid in eligible[vm.id]
+                           if (vm.id, bid) in assign]
                 if not vm_vars:
-                    model.add(0 == 1)  # force infeasible
+                    model.add(0 == 1)
                     return
                 if self.config.allow_partial_placement:
                     model.add(sum(vm_vars) <= 1)
@@ -750,9 +706,9 @@ class VMPlacementSolver:
                 if not avars:
                     continue
                 for field in RESOURCE_FIELDS:
-                    cap = getattr(avail, field)
-                    usage = sum(getattr(self.vm_map[vid].demand, field) * v for vid, v in avars)
-                    model.add(usage <= cap)
+                    usage = sum(getattr(self.vm_map[vid].demand, field) * v
+                                for vid, v in avars)
+                    model.add(usage <= getattr(avail, field))
 
         def add_anti_affinity(model, assign):
             for rule in self.effective_rules:
@@ -762,114 +718,32 @@ class VMPlacementSolver:
                     if vag:
                         model.add(sum(vag) <= rule.max_per_ag)
 
-        def solve_and_extract(model, assign):
-            """Solve and return (status_name, {vm_id: bm_id} or None)."""
+        def quick_solve(model) -> str:
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
             status = s.solve(model)
-            name = self._status_name(status)
-            if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                placement = {}
-                for vm in self.request.vms:
-                    for bm_id in eligible[vm.id]:
-                        if (vm.id, bm_id) in assign and s.value(assign[(vm.id, bm_id)]) == 1:
-                            placement[vm.id] = bm_id
-                            break
-                return name, placement
-            return name, None
+            return "OK" if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) \
+                else self._status_name(status)
 
-        # Step 1: one-BM-per-VM only
-        m1 = cp_model.CpModel()
-        a1 = make_vars(m1)
-        add_one_bm_per_vm(m1, a1)
-        s1, _ = solve_and_extract(m1, a1)
-        results["step1_one_bm_per_vm"] = s1
-
-        # Step 2: + capacity
-        m2 = cp_model.CpModel()
-        a2 = make_vars(m2)
-        add_one_bm_per_vm(m2, a2)
-        add_capacity(m2, a2)
-        s2, placement2 = solve_and_extract(m2, a2)
-        results["step2_plus_capacity"] = s2
-
-        # 如果 step2 成功，顯示 solution 以及它與 anti-affinity 的衝突
-        if placement2:
-            solution_info = {}
-            for vm_id, bm_id in placement2.items():
-                ag = self.bm_map[bm_id].topology.ag if bm_id in self.bm_map else "?"
-                solution_info[vm_id] = {"bm_id": bm_id, "ag": ag}
-            results["step2_solution"] = solution_info
-
-            # 檢查這個 solution 違反了哪條 anti-affinity
-            violations = []
-            for rule in self.effective_rules:
-                ag_vm_count: dict[str, list[str]] = defaultdict(list)
-                for vm_id in rule.vm_ids:
-                    if vm_id in placement2:
-                        bm_id = placement2[vm_id]
-                        ag = self.bm_map[bm_id].topology.ag if bm_id in self.bm_map else "?"
-                        ag_vm_count[ag].append(vm_id)
-                for ag, vms in ag_vm_count.items():
-                    if len(vms) > rule.max_per_ag:
-                        violations.append({
-                            "rule": rule.group_id,
-                            "ag": ag,
-                            "max_per_ag": rule.max_per_ag,
-                            "actual_count": len(vms),
-                            "vms_in_ag": vms,
-                        })
-            results["step2_anti_affinity_violations"] = violations
-
-        # Step 3: + anti-affinity
-        m3 = cp_model.CpModel()
-        a3 = make_vars(m3)
-        add_one_bm_per_vm(m3, a3)
-        add_capacity(m3, a3)
-        add_anti_affinity(m3, a3)
-        s3, _ = solve_and_extract(m3, a3)
-        results["step3_plus_anti_affinity"] = s3
-
-        # Anti-affinity constraint 詳情：每個 AG 有多少 vars
-        aa_constraint_details = []
-        for rule in self.effective_rules:
-            rule_detail = {"group_id": rule.group_id, "max_per_ag": rule.max_per_ag, "ags": {}}
-            for ag, ag_bm_ids in self.ag_to_bms.items():
-                var_count = sum(
-                    1 for vid in rule.vm_ids
-                    for bid in ag_bm_ids
-                    if (vid, bid) in self.assign
-                )
-                if var_count > 0:
-                    rule_detail["ags"][ag] = {"var_count": var_count}
-            aa_constraint_details.append(rule_detail)
-        results["anti_affinity_constraint_details"] = aa_constraint_details
-
-        # Step 3b: anti-affinity only (不含 capacity) 來區分交互問題
-        m3b = cp_model.CpModel()
-        a3b = make_vars(m3b)
-        add_one_bm_per_vm(m3b, a3b)
-        add_anti_affinity(m3b, a3b)
-        s3b, _ = solve_and_extract(m3b, a3b)
-        results["step3b_anti_affinity_without_capacity"] = s3b
-
-        # 找出是哪一步變 INFEASIBLE
-        steps = [
-            ("step1_one_bm_per_vm", "one-BM-per-VM constraint"),
-            ("step2_plus_capacity", "capacity constraints"),
-            ("step3_plus_anti_affinity", "anti-affinity constraints"),
+        # Layer 1: one-BM-per-VM
+        layers = [
+            ("one_bm_per_vm", [add_one_bm_per_vm]),
+            ("capacity", [add_one_bm_per_vm, add_capacity]),
+            ("anti_affinity", [add_one_bm_per_vm, add_capacity, add_anti_affinity]),
         ]
-        first_infeasible = None
-        for key, desc in steps:
-            if results[key] == "INFEASIBLE":
-                first_infeasible = desc
-                break
 
-        if first_infeasible:
-            results["first_infeasible_at"] = first_infeasible
-        else:
-            results["first_infeasible_at"] = "none (all steps passed — issue may be in objective)"
+        results: dict[str, object] = {}
+        failed_at = None
+        for name, builders in layers:
+            m = cp_model.CpModel()
+            a = make_vars(m)
+            for build in builders:
+                build(m, a)
+            results[name] = quick_solve(m)
+            if results[name] != "OK" and failed_at is None:
+                failed_at = name
 
+        results["failed_at"] = failed_at
         return results
 
     def _extract_solution(
