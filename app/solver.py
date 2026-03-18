@@ -737,23 +737,64 @@ class VMPlacementSolver:
                     if vag:
                         model.add(sum(vag) <= rule.max_per_ag)
 
-        def quick_solve(model) -> str:
+        def solve_and_extract(model, assign):
+            """Solve and return (status_name, {vm_id: bm_id} or None)."""
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
-            return self._status_name(s.solve(model))
+            status = s.solve(model)
+            name = self._status_name(status)
+            if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                placement = {}
+                for vm in self.request.vms:
+                    for bm_id in eligible[vm.id]:
+                        if (vm.id, bm_id) in assign and s.value(assign[(vm.id, bm_id)]) == 1:
+                            placement[vm.id] = bm_id
+                            break
+                return name, placement
+            return name, None
 
         # Step 1: one-BM-per-VM only
         m1 = cp_model.CpModel()
         a1 = make_vars(m1)
         add_one_bm_per_vm(m1, a1)
-        results["step1_one_bm_per_vm"] = quick_solve(m1)
+        s1, _ = solve_and_extract(m1, a1)
+        results["step1_one_bm_per_vm"] = s1
 
         # Step 2: + capacity
         m2 = cp_model.CpModel()
         a2 = make_vars(m2)
         add_one_bm_per_vm(m2, a2)
         add_capacity(m2, a2)
-        results["step2_plus_capacity"] = quick_solve(m2)
+        s2, placement2 = solve_and_extract(m2, a2)
+        results["step2_plus_capacity"] = s2
+
+        # 如果 step2 成功，顯示 solution 以及它與 anti-affinity 的衝突
+        if placement2:
+            solution_info = {}
+            for vm_id, bm_id in placement2.items():
+                ag = self.bm_map[bm_id].topology.ag if bm_id in self.bm_map else "?"
+                solution_info[vm_id] = {"bm_id": bm_id, "ag": ag}
+            results["step2_solution"] = solution_info
+
+            # 檢查這個 solution 違反了哪條 anti-affinity
+            violations = []
+            for rule in self.effective_rules:
+                ag_vm_count: dict[str, list[str]] = defaultdict(list)
+                for vm_id in rule.vm_ids:
+                    if vm_id in placement2:
+                        bm_id = placement2[vm_id]
+                        ag = self.bm_map[bm_id].topology.ag if bm_id in self.bm_map else "?"
+                        ag_vm_count[ag].append(vm_id)
+                for ag, vms in ag_vm_count.items():
+                    if len(vms) > rule.max_per_ag:
+                        violations.append({
+                            "rule": rule.group_id,
+                            "ag": ag,
+                            "max_per_ag": rule.max_per_ag,
+                            "actual_count": len(vms),
+                            "vms_in_ag": vms,
+                        })
+            results["step2_anti_affinity_violations"] = violations
 
         # Step 3: + anti-affinity
         m3 = cp_model.CpModel()
@@ -761,7 +802,31 @@ class VMPlacementSolver:
         add_one_bm_per_vm(m3, a3)
         add_capacity(m3, a3)
         add_anti_affinity(m3, a3)
-        results["step3_plus_anti_affinity"] = quick_solve(m3)
+        s3, _ = solve_and_extract(m3, a3)
+        results["step3_plus_anti_affinity"] = s3
+
+        # Anti-affinity constraint 詳情：每個 AG 有多少 vars
+        aa_constraint_details = []
+        for rule in self.effective_rules:
+            rule_detail = {"group_id": rule.group_id, "max_per_ag": rule.max_per_ag, "ags": {}}
+            for ag, ag_bm_ids in self.ag_to_bms.items():
+                var_count = sum(
+                    1 for vid in rule.vm_ids
+                    for bid in ag_bm_ids
+                    if (vid, bid) in self.assign
+                )
+                if var_count > 0:
+                    rule_detail["ags"][ag] = {"var_count": var_count}
+            aa_constraint_details.append(rule_detail)
+        results["anti_affinity_constraint_details"] = aa_constraint_details
+
+        # Step 3b: anti-affinity only (不含 capacity) 來區分交互問題
+        m3b = cp_model.CpModel()
+        a3b = make_vars(m3b)
+        add_one_bm_per_vm(m3b, a3b)
+        add_anti_affinity(m3b, a3b)
+        s3b, _ = solve_and_extract(m3b, a3b)
+        results["step3b_anti_affinity_without_capacity"] = s3b
 
         # 找出是哪一步變 INFEASIBLE
         steps = [
