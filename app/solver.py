@@ -62,9 +62,34 @@ class VMPlacementSolver:
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
         self.bm_map: dict[str, Baremetal] = {bm.id: bm for bm in request.baremetals}
 
+        # Deduplicate baremetals — the Go scheduler may send duplicate BM entries
+        # (e.g. when filtering candidates per-VM without dedup). Duplicates cause
+        # anti-affinity constraints to count the same assign variable multiple times,
+        # making valid placements appear infeasible.
+        seen_bm_ids: set[str] = set()
+        unique_bms: list[Baremetal] = []
+        for bm in request.baremetals:
+            if bm.id not in seen_bm_ids:
+                seen_bm_ids.add(bm.id)
+                unique_bms.append(bm)
+            else:
+                logger.warning("Duplicate BM %s removed from input", bm.id)
+        self.request = request.model_copy(update={"baremetals": unique_bms})
+
+        # Also deduplicate candidate_baremetals per VM
+        for vm in self.request.vms:
+            if vm.candidate_baremetals:
+                deduped = list(dict.fromkeys(vm.candidate_baremetals))
+                if len(deduped) < len(vm.candidate_baremetals):
+                    logger.warning(
+                        "VM %s had %d duplicate candidate BMs removed",
+                        vm.id, len(vm.candidate_baremetals) - len(deduped),
+                    )
+                    vm.candidate_baremetals = deduped
+
         # Group baremetals by AG (needed for anti-affinity constraints)
         self.ag_to_bms: dict[str, list[str]] = defaultdict(list)
-        for bm in request.baremetals:
+        for bm in self.request.baremetals:
             self.ag_to_bms[bm.topology.ag].append(bm.id)
 
         # Resolve anti-affinity rules (explicit + auto-generated)
