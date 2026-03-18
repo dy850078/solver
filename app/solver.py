@@ -310,10 +310,9 @@ class VMPlacementSolver:
 
     def _build_bm_used_vars(self):
         """
-        建立 bm_used[bm_id] 變數：這台 BM 是否被使用。
+        Create bm_used[bm_id] indicator: 1 if any VM is placed on this BM.
 
         bm_used[bm] = max(assign[vm_1, bm], assign[vm_2, bm], ...)
-        → 只要有任何 VM 放在這台 BM，bm_used = 1
         """
         for bm in self.request.baremetals:
             bm_used = self.model.new_bool_var(f"bm_used_{bm.id}")
@@ -333,14 +332,14 @@ class VMPlacementSolver:
 
     def _compute_headroom_penalties(self) -> list[cp_model.IntVar]:
         """
-        計算每台 BM 的 headroom penalty。
+        Compute per-BM headroom penalty.
 
-        對每台 BM：
-        1. 計算每個資源維度的利用率（after_usage / total）
-        2. 超過 headroom_upper_bound_pct 的部分計為 penalty
-        3. 跨維度取最大值（最壞情況決定 penalty）
+        For each BM, for each resource dimension:
+        1. Compute utilization % after placement
+        2. Penalize the amount exceeding headroom_upper_bound_pct
+        3. Take the max across dimensions (worst-case determines penalty)
 
-        返回每台 BM 的 penalty 變數列表。
+        Returns a list of penalty variables, one per BM.
         """
         penalties = []
         for bm in self.request.baremetals:
@@ -348,7 +347,7 @@ class VMPlacementSolver:
             for field in RESOURCE_FIELDS:
                 total_d = getattr(bm.total_capacity, field)
                 if total_d == 0:
-                    continue  # 避免除以零（gpu_count=0 的機器）
+                    continue  # skip zero-total dimensions (e.g. gpu_count=0)
 
                 used_d = getattr(bm.used_capacity, field)
 
@@ -360,15 +359,15 @@ class VMPlacementSolver:
                 if not assigned_vars:
                     continue
 
-                # 新放入的 VM 消耗
+                # New VM usage on this BM
                 new_usage = sum(
                     getattr(self.vm_map[vm_id].demand, field) * var
                     for vm_id, var in assigned_vars
                 )
 
-                # Step A: 計算放置後的使用量 × 100（避免浮點）
-                # 上界用 max(total, used + 所有候選 VM demand 加總) 避免已有高 used_d 時
-                # 造成假性 INFEASIBLE（capacity constraint 會正確限制實際放置量）
+                # Step A: post-placement usage * 100 (integer arithmetic, no floats)
+                # Upper bound uses max(total, used + all candidate demand) to avoid
+                # false INFEASIBLE when used_d is already high.
                 max_new_demand = sum(
                     getattr(self.vm_map[vm_id].demand, field)
                     for vm_id, _ in assigned_vars
@@ -379,22 +378,22 @@ class VMPlacementSolver:
                 )
                 self.model.add(after_times_100 == (used_d + new_usage) * 100)
 
-                # Step B: 整數百分比（可能 > 100 如果 BM 已接近滿載且有多個候選 VM）
+                # Step B: integer utilization % (can exceed 100 if BM is near-full)
                 max_util = upper_after // total_d if total_d > 0 else 0
                 util_pct = self.model.new_int_var(0, max_util, f"util_{bm.id}_{field}")
                 self.model.add_division_equality(util_pct, after_times_100, total_d)
 
-                # Step C: 超過安全上限的量（可能為負）
+                # Step C: amount exceeding the safe upper bound (may be negative)
                 raw = self.model.new_int_var(-max_util, max_util, f"raw_{bm.id}_{field}")
                 self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
-                # Step D: ReLU：截斷負值
+                # Step D: ReLU — clamp negative values to 0
                 over = self.model.new_int_var(0, max_util, f"over_{bm.id}_{field}")
                 self.model.add_max_equality(over, [self.model.new_constant(0), raw])
                 dim_overs.append(over)
 
             if dim_overs:
-                # Step E: 跨維度取最大值
+                # Step E: max across dimensions
                 bm_penalty = self.model.new_int_var(0, 1000, f"hp_{bm.id}")
                 self.model.add_max_equality(bm_penalty, dim_overs)
                 penalties.append(bm_penalty)
@@ -403,16 +402,15 @@ class VMPlacementSolver:
 
     def _compute_slot_score_bonus(self) -> list[cp_model.IntVar]:
         """
-        計算每台 BM 的 slot score（可容納的 t-shirt size VM 數量）。
+        Compute per-BM slot score (how many t-shirt size VMs can still fit).
 
-        對每台 BM：
-        1. 計算放置後每個資源維度的剩餘容量
-        2. 對每個 t-shirt size，計算每個維度能容納幾個（floor division）
-        3. 取跨維度最小值 = 該 t-shirt size 實際可容納數量
-        4. 加總所有 t-shirt size → 該 BM 的 slot score
+        For each BM:
+        1. Compute remaining capacity per dimension after placement
+        2. For each t-shirt size, floor-divide remaining by demand per dimension
+        3. Take min across dimensions = actual fit count for that t-shirt
+        4. Sum across all t-shirt sizes = BM slot score
 
-        返回每台 BM 的 slot score 變數列表。
-        Slot score 越高 = 剩餘空間越有用 → 應被獎勵（在目標函數中取負號）。
+        Higher score = more usable remaining space = rewarded (negated in objective).
         """
         tshirt_sizes = self.config.slot_tshirt_sizes
         if not tshirt_sizes:
@@ -434,20 +432,20 @@ class VMPlacementSolver:
                 for field in RESOURCE_FIELDS:
                     tshirt_d = getattr(tshirt, field)
                     if tshirt_d == 0:
-                        continue  # 此維度無需求，不構成瓶頸
+                        continue  # no demand on this dimension, not a bottleneck
 
                     total_d = getattr(bm.total_capacity, field)
                     used_d = getattr(bm.used_capacity, field)
 
-                    # 新放入的 VM 消耗
+                    # New VM usage on this BM
                     new_usage = sum(
                         getattr(self.vm_map[vm_id].demand, field) * var
                         for vm_id, var in assigned_vars
                     )
 
-                    # 剩餘容量 = total - used - new_placement
-                    # 下界用負值避免多 VM 候選時 variable bound 過緊造成假性 INFEASIBLE
-                    # （capacity constraint 保證實際放置時 remaining >= 0）
+                    # Remaining = total - used - new_placement
+                    # Lower bound can be negative to avoid false INFEASIBLE with
+                    # many candidate VMs (capacity constraint ensures actual >= 0)
                     max_new_d = sum(
                         getattr(self.vm_map[vm_id].demand, field)
                         for vm_id, _ in assigned_vars
@@ -458,9 +456,8 @@ class VMPlacementSolver:
                     )
                     self.model.add(remaining == total_d - used_d - new_usage)
 
-                    # 此維度可容納幾個此 t-shirt size
-                    # remaining 可能為負（capacity constraint 保證實際放置時不會）
-                    # division 的結果也可能為負，需要允許
+                    # How many of this t-shirt size fit on this dimension
+                    # (may be negative in the model; capacity constraint ensures non-negative at solution)
                     min_slots = (total_d - used_d - max_new_d) // tshirt_d if tshirt_d > 0 else 0
                     max_slots = total_d // tshirt_d if tshirt_d > 0 else 0
                     slots_d = self.model.new_int_var(
@@ -471,13 +468,13 @@ class VMPlacementSolver:
                     dim_slots.append(slots_d)
 
                 if dim_slots:
-                    # 跨維度取最小值 = 實際可容納數量（瓶頸維度決定）
+                    # Min across dimensions = actual fit count (bottleneck dimension decides)
                     max_possible = min(
                         getattr(bm.total_capacity, f) // getattr(tshirt, f)
                         for f in RESOURCE_FIELDS
                         if getattr(tshirt, f) > 0
                     )
-                    # min 可能為負（capacity constraint 保證實際放置時 >= 0）
+                    # min may be negative (capacity constraint ensures >= 0 at solution)
                     slots_for_tshirt = self.model.new_int_var(
                         -max_possible, max_possible, f"slot_{bm.id}_t{t_idx}"
                     )
@@ -485,7 +482,7 @@ class VMPlacementSolver:
                     tshirt_slots.append(slots_for_tshirt)
 
             if tshirt_slots:
-                # 加總所有 t-shirt size 的可容納數量
+                # Sum fit counts across all t-shirt sizes
                 max_total = sum(
                     min(
                         getattr(bm.total_capacity, f) // getattr(ts, f)
@@ -500,8 +497,8 @@ class VMPlacementSolver:
                 )
                 self.model.add(bm_score == sum(tshirt_slots))
 
-                # 只計算被使用的 BM 的 slot score（未使用的 BM 不計入）
-                # 否則 solver 會偏好把 VM 放小 BM，讓大 BM 保持高 slot score
+                # Only count slot score for used BMs — otherwise solver would
+                # prefer placing VMs on small BMs to keep large BMs' scores high
                 effective = self.model.new_int_var(
                     -max_total, max_total, f"eff_sscore_{bm.id}"
                 )
@@ -513,19 +510,19 @@ class VMPlacementSolver:
         return scores
 
     def _ensure_bm_used_vars(self):
-        """建立 bm_used 變數（如果尚未建立）。多個目標項可能都需要它。"""
+        """Build bm_used vars if not yet built. Multiple objective terms may need them."""
         if not self.bm_used:
             self._build_bm_used_vars()
 
     def _add_objective(self):
         """
-        組合所有目標函數項並設定 Minimize。
+        Combine all objective terms and set Minimize.
 
-        優先級（由高到低）：
-        1. 放置盡量多的 VM（partial placement 模式）
-        2. 使用盡量少的 BM（consolidation）
-        3. 利用率不超過安全上限（headroom）
-        4. 剩餘容量的可用性（slot score）
+        Priority (high to low):
+        1. Place as many VMs as possible (partial placement mode)
+        2. Use as few BMs as possible (consolidation)
+        3. Keep utilization below safe upper bound (headroom)
+        4. Maximize usability of remaining capacity (slot score)
         """
         terms = []
 
@@ -546,7 +543,7 @@ class VMPlacementSolver:
             self._ensure_bm_used_vars()
             slot_scores = self._compute_slot_score_bonus()
             if slot_scores:
-                # 負號：slot score 越高越好（Minimize 中用負值 = 獎勵）
+                # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
         if terms:

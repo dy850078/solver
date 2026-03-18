@@ -4,11 +4,6 @@ Entry points: HTTP server (FastAPI) and CLI mode.
 HTTP:  python -m app.server --port 50051
        uvicorn app.server:api --host 0.0.0.0 --port 50051
 CLI:   python -m app.server --cli --input request.json [--output result.json]
-
-FastAPI 的好處：
-  - PlacementRequest 是 Pydantic model，FastAPI 直接用它解析 request body
-  - 送來的 JSON 缺欄位或型別錯誤，FastAPI 自動回傳 422 和清楚的錯誤訊息
-  - GET /docs 自動產生互動式 API 文件（開發時很好用）
 """
 
 from __future__ import annotations
@@ -23,14 +18,11 @@ from fastapi import FastAPI
 from .models import PlacementRequest, PlacementResult
 from .solver import VMPlacementSolver
 
-# 在 module 層級設定 logging，確保不管用哪種方式啟動都有 log：
-#   - python -m app.server（走 main()）
-#   - uvicorn app.server:api（不走 main()，但 import 時就會執行這行）
+# Module-level logging setup — runs on both `python -m app.server` and `uvicorn app.server:api`
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# FastAPI instance — 命名為 api 避免與 app/ package 名稱混淆
-# uvicorn 啟動指令: uvicorn app.server:api --host 0.0.0.0 --port 50051
+# Named `api` to avoid collision with the `app/` package name
 api = FastAPI(
     title="VM Placement Solver",
     description="Optimizes VM-to-baremetal placement using OR-Tools CP-SAT solver",
@@ -40,12 +32,7 @@ api = FastAPI(
 
 @api.post("/v1/placement/solve", response_model=PlacementResult)
 def solve(request: PlacementRequest) -> PlacementResult:
-    """
-    Receive a placement request from the Go scheduler and return an optimized plan.
-
-    FastAPI 自動把 request body (JSON) 解析成 PlacementRequest，
-    並把回傳的 PlacementResult 序列化成 JSON response。
-    """
+    """Receive a placement request from the Go scheduler and return an optimized plan."""
     return VMPlacementSolver(request).solve()
 
 

@@ -1,0 +1,56 @@
+{
+  "_description": "Triggers INFEASIBLE: 3 master VMs need 3 different AGs (max_per_ag=1), but only 2 AGs available. Also VM demand exceeds most BM capacity.",
+  "vms": [
+    {
+      "id": "vm-master-1",
+      "hostname": "k8s-master-01",
+      "demand": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 500},
+      "node_role": "master",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    },
+    {
+      "id": "vm-master-2",
+      "hostname": "k8s-master-02",
+      "demand": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 500},
+      "node_role": "master",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    },
+    {
+      "id": "vm-master-3",
+      "hostname": "k8s-master-03",
+      "demand": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 500},
+      "node_role": "master",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    }
+  ],
+  "anti_affinity_rules": [
+    {
+      "group_id": "masters-ha",
+      "vm_ids": ["vm-master-1", "vm-master-2", "vm-master-3"],
+      "max_per_ag": 1
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 10,
+    "auto_generate_anti_affinity": false
+  }
+}
