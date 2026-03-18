@@ -62,30 +62,27 @@ class VMPlacementSolver:
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
         self.bm_map: dict[str, Baremetal] = {bm.id: bm for bm in request.baremetals}
 
-        # Deduplicate baremetals — the Go scheduler may send duplicate BM entries
-        # (e.g. when filtering candidates per-VM without dedup). Duplicates cause
-        # anti-affinity constraints to count the same assign variable multiple times,
-        # making valid placements appear infeasible.
+        # Validate: no duplicate baremetals allowed.
+        # Deduplication is the scheduler's responsibility — solver only detects
+        # and rejects invalid input so the scheduler can fix the bug upstream.
+        self._input_errors: list[str] = []
         seen_bm_ids: set[str] = set()
-        unique_bms: list[Baremetal] = []
         for bm in request.baremetals:
-            if bm.id not in seen_bm_ids:
-                seen_bm_ids.add(bm.id)
-                unique_bms.append(bm)
+            if bm.id in seen_bm_ids:
+                self._input_errors.append(f"duplicate BM '{bm.id}' in baremetals list")
             else:
-                logger.warning("Duplicate BM %s removed from input", bm.id)
-        self.request = request.model_copy(update={"baremetals": unique_bms})
+                seen_bm_ids.add(bm.id)
 
-        # Also deduplicate candidate_baremetals per VM
-        for vm in self.request.vms:
+        for vm in request.vms:
             if vm.candidate_baremetals:
-                deduped = list(dict.fromkeys(vm.candidate_baremetals))
-                if len(deduped) < len(vm.candidate_baremetals):
-                    logger.warning(
-                        "VM %s had %d duplicate candidate BMs removed",
-                        vm.id, len(vm.candidate_baremetals) - len(deduped),
-                    )
-                    vm.candidate_baremetals = deduped
+                seen_candidates: set[str] = set()
+                for cand in vm.candidate_baremetals:
+                    if cand in seen_candidates:
+                        self._input_errors.append(
+                            f"duplicate candidate BM '{cand}' in VM '{vm.id}'"
+                        )
+                    else:
+                        seen_candidates.add(cand)
 
         # Group baremetals by AG (needed for anti-affinity constraints)
         self.ag_to_bms: dict[str, list[str]] = defaultdict(list)
@@ -566,6 +563,19 @@ class VMPlacementSolver:
         This is the main entry point.
         """
         start = time.time()
+
+        # Reject requests with duplicate BMs — scheduler must fix upstream.
+        if self._input_errors:
+            for err in self._input_errors:
+                logger.error("Input validation failed: %s", err)
+            return PlacementResult(
+                success=False,
+                solver_status="INPUT_ERROR: duplicate baremetals detected — "
+                              "scheduler must deduplicate before calling solver",
+                solve_time_seconds=time.time() - start,
+                unplaced_vms=[vm.id for vm in self.request.vms],
+                diagnostics={"input_errors": self._input_errors},
+            )
 
         try:
             # Build the model
