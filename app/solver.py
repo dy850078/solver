@@ -345,27 +345,35 @@ class VMPlacementSolver:
                 )
 
                 # Step A: 計算放置後的使用量 × 100（避免浮點）
+                # 上界用 max(total, used + 所有候選 VM demand 加總) 避免已有高 used_d 時
+                # 造成假性 INFEASIBLE（capacity constraint 會正確限制實際放置量）
+                max_new_demand = sum(
+                    getattr(self.vm_map[vm_id].demand, field)
+                    for vm_id, _ in assigned_vars
+                )
+                upper_after = max(total_d, used_d + max_new_demand) * 100
                 after_times_100 = self.model.new_int_var(
-                    0, total_d * 100, f"a100_{bm.id}_{field}"
+                    0, upper_after, f"a100_{bm.id}_{field}"
                 )
                 self.model.add(after_times_100 == (used_d + new_usage) * 100)
 
-                # Step B: 整數百分比（0–100）
-                util_pct = self.model.new_int_var(0, 100, f"util_{bm.id}_{field}")
+                # Step B: 整數百分比（可能 > 100 如果 BM 已接近滿載且有多個候選 VM）
+                max_util = upper_after // total_d if total_d > 0 else 0
+                util_pct = self.model.new_int_var(0, max_util, f"util_{bm.id}_{field}")
                 self.model.add_division_equality(util_pct, after_times_100, total_d)
 
                 # Step C: 超過安全上限的量（可能為負）
-                raw = self.model.new_int_var(-100, 100, f"raw_{bm.id}_{field}")
+                raw = self.model.new_int_var(-max_util, max_util, f"raw_{bm.id}_{field}")
                 self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
                 # Step D: ReLU：截斷負值
-                over = self.model.new_int_var(0, 100, f"over_{bm.id}_{field}")
+                over = self.model.new_int_var(0, max_util, f"over_{bm.id}_{field}")
                 self.model.add_max_equality(over, [self.model.new_constant(0), raw])
                 dim_overs.append(over)
 
             if dim_overs:
                 # Step E: 跨維度取最大值
-                bm_penalty = self.model.new_int_var(0, 100, f"hp_{bm.id}")
+                bm_penalty = self.model.new_int_var(0, 1000, f"hp_{bm.id}")
                 self.model.add_max_equality(bm_penalty, dim_overs)
                 penalties.append(bm_penalty)
 
@@ -416,14 +424,25 @@ class VMPlacementSolver:
                     )
 
                     # 剩餘容量 = total - used - new_placement
+                    # 下界用負值避免多 VM 候選時 variable bound 過緊造成假性 INFEASIBLE
+                    # （capacity constraint 保證實際放置時 remaining >= 0）
+                    max_new_d = sum(
+                        getattr(self.vm_map[vm_id].demand, field)
+                        for vm_id, _ in assigned_vars
+                    )
                     remaining = self.model.new_int_var(
-                        0, total_d, f"rem_{bm.id}_{field}_t{t_idx}"
+                        total_d - used_d - max_new_d, total_d,
+                        f"rem_{bm.id}_{field}_t{t_idx}",
                     )
                     self.model.add(remaining == total_d - used_d - new_usage)
 
                     # 此維度可容納幾個此 t-shirt size
+                    # remaining 可能為負（capacity constraint 保證實際放置時不會）
+                    # division 的結果也可能為負，需要允許
+                    min_slots = (total_d - used_d - max_new_d) // tshirt_d if tshirt_d > 0 else 0
+                    max_slots = total_d // tshirt_d if tshirt_d > 0 else 0
                     slots_d = self.model.new_int_var(
-                        0, total_d // tshirt_d if tshirt_d > 0 else 0,
+                        min(min_slots, 0), max_slots,
                         f"slotd_{bm.id}_{field}_t{t_idx}",
                     )
                     self.model.add_division_equality(slots_d, remaining, tshirt_d)
@@ -436,8 +455,9 @@ class VMPlacementSolver:
                         for f in RESOURCE_FIELDS
                         if getattr(tshirt, f) > 0
                     )
+                    # min 可能為負（capacity constraint 保證實際放置時 >= 0）
                     slots_for_tshirt = self.model.new_int_var(
-                        0, max_possible, f"slot_{bm.id}_t{t_idx}"
+                        -max_possible, max_possible, f"slot_{bm.id}_t{t_idx}"
                     )
                     self.model.add_min_equality(slots_for_tshirt, dim_slots)
                     tshirt_slots.append(slots_for_tshirt)
@@ -454,14 +474,14 @@ class VMPlacementSolver:
                     if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
                 )
                 bm_score = self.model.new_int_var(
-                    0, max_total, f"sscore_{bm.id}"
+                    -max_total, max_total, f"sscore_{bm.id}"
                 )
                 self.model.add(bm_score == sum(tshirt_slots))
 
                 # 只計算被使用的 BM 的 slot score（未使用的 BM 不計入）
                 # 否則 solver 會偏好把 VM 放小 BM，讓大 BM 保持高 slot score
                 effective = self.model.new_int_var(
-                    0, max_total, f"eff_sscore_{bm.id}"
+                    -max_total, max_total, f"eff_sscore_{bm.id}"
                 )
                 self.model.add_multiplication_equality(
                     effective, [self.bm_used[bm.id], bm_score]
@@ -617,7 +637,99 @@ class VMPlacementSolver:
         # 3. 總變數數量（0 代表完全沒有 eligible pair）
         diag["total_variables"] = len(self.assign)
 
+        # 4. Config 摘要 — 顯示哪些 objective 項是啟用的
+        diag["config"] = {
+            "w_consolidation": self.config.w_consolidation,
+            "w_headroom": self.config.w_headroom,
+            "w_slot_score": self.config.w_slot_score,
+            "headroom_upper_bound_pct": self.config.headroom_upper_bound_pct,
+            "allow_partial_placement": self.config.allow_partial_placement,
+            "slot_tshirt_sizes_count": len(self.config.slot_tshirt_sizes),
+        }
+
+        # 5. 用 hard constraints only 重跑一次（不含 objective helper constraints）
+        #    這能確認 INFEASIBLE 是來自 hard constraints 還是 objective helpers
+        diag["hard_constraints_only"] = self._test_hard_constraints_only()
+
         return diag
+
+    def _test_hard_constraints_only(self) -> dict[str, object]:
+        """
+        用一個全新的 model 只加 hard constraints（不加 objective）來測試。
+        如果這個能解，代表問題出在 objective helper constraints。
+        """
+        test_model = cp_model.CpModel()
+        test_assign: dict[tuple[str, str], cp_model.IntVar] = {}
+
+        # 建 variables
+        for vm in self.request.vms:
+            for bm_id in self._get_eligible_baremetals(vm):
+                test_assign[(vm.id, bm_id)] = test_model.new_bool_var(
+                    f"t_{vm.id}__{bm_id}"
+                )
+
+        # Constraint: each VM on exactly one BM
+        for vm in self.request.vms:
+            vm_vars = [
+                test_assign[(vm.id, bm_id)]
+                for bm_id in self._get_eligible_baremetals(vm)
+                if (vm.id, bm_id) in test_assign
+            ]
+            if not vm_vars:
+                return {"status": "SKIP", "reason": f"VM {vm.id} has no eligible BMs"}
+            if self.config.allow_partial_placement:
+                test_model.add(sum(vm_vars) <= 1)
+            else:
+                test_model.add(sum(vm_vars) == 1)
+
+        # Constraint: capacity
+        for bm in self.request.baremetals:
+            avail = bm.available_capacity
+            assigned_vars = [
+                (vm_id, test_assign[(vm_id, bm.id)])
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in test_assign
+            ]
+            if not assigned_vars:
+                continue
+            for field in RESOURCE_FIELDS:
+                capacity = getattr(avail, field)
+                usage = sum(
+                    getattr(self.vm_map[vm_id].demand, field) * var
+                    for vm_id, var in assigned_vars
+                )
+                test_model.add(usage <= capacity)
+
+        # Constraint: anti-affinity
+        for rule in self.effective_rules:
+            for ag, ag_bm_ids in self.ag_to_bms.items():
+                vars_in_ag = [
+                    test_assign[(vm_id, bm_id)]
+                    for vm_id in rule.vm_ids
+                    for bm_id in ag_bm_ids
+                    if (vm_id, bm_id) in test_assign
+                ]
+                if vars_in_ag:
+                    test_model.add(sum(vars_in_ag) <= rule.max_per_ag)
+
+        # Solve (no objective)
+        test_solver = cp_model.CpSolver()
+        test_solver.parameters.max_time_in_seconds = 5.0
+        test_status = test_solver.solve(test_model)
+        status_name = self._status_name(test_status)
+
+        result: dict[str, object] = {"status": status_name}
+        if test_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            result["conclusion"] = (
+                "Hard constraints alone are FEASIBLE → problem is in objective "
+                "helper constraints (headroom penalty or slot score variable bounds)"
+            )
+        else:
+            result["conclusion"] = (
+                "Hard constraints alone are also INFEASIBLE → problem is in "
+                "capacity, anti-affinity, or candidate filtering"
+            )
+        return result
 
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float
