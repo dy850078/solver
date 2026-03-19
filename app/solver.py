@@ -51,6 +51,34 @@ logger = logging.getLogger(__name__)
 RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
+def get_eligible_baremetals(
+    vm: VM,
+    bm_map: dict[str, Baremetal],
+    baremetals: list[Baremetal],
+) -> list[str]:
+    """
+    Which baremetals can this VM possibly go on?
+
+    If the Go scheduler provided a candidate list (from step 3 filtering),
+    we only consider those. Otherwise, we consider any BM with enough
+    available capacity.
+
+    This is a module-level function so both the solver and diagnostics
+    can share the same eligibility logic.
+    """
+    if vm.candidate_baremetals:
+        return [
+            bm_id for bm_id in vm.candidate_baremetals
+            if bm_id in bm_map
+            and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+        ]
+    else:
+        return [
+            bm.id for bm in baremetals
+            if vm.demand.fits_in(bm.available_capacity)
+        ]
+
+
 class VMPlacementSolver:
 
     def __init__(self, request: PlacementRequest):
@@ -107,29 +135,8 @@ class VMPlacementSolver:
     # ------------------------------------------------------------------
 
     def _get_eligible_baremetals(self, vm: VM) -> list[str]:
-        """
-        Which baremetals can this VM possibly go on?
-
-        If the Go scheduler provided a candidate list (from step 3 filtering),
-        we only consider those. Otherwise, we consider any BM with enough
-        available capacity.
-
-        This is a PRE-FILTER — it reduces the problem size before we even
-        start building the CP-SAT model. Fewer variables = faster solving.
-        """
-        if vm.candidate_baremetals:
-            # Trust step 3, but double-check capacity
-            return [
-                bm_id for bm_id in vm.candidate_baremetals
-                if bm_id in self.bm_map
-                and vm.demand.fits_in(self.bm_map[bm_id].available_capacity)
-            ]
-        else:
-            # Fallback: any BM with enough room
-            return [
-                bm.id for bm in self.request.baremetals
-                if vm.demand.fits_in(bm.available_capacity)
-            ]
+        """Delegate to module-level function for reuse by diagnostics."""
+        return get_eligible_baremetals(vm, self.bm_map, self.request.baremetals)
 
     # ------------------------------------------------------------------
     # Step B: Auto-generate anti-affinity rules
@@ -622,135 +629,18 @@ class VMPlacementSolver:
             )
 
     def _build_failure_diagnostics(self) -> dict[str, object]:
-        """
-        Collect concise diagnostic info for INFEASIBLE / UNKNOWN results.
+        """Delegate to DiagnosticsBuilder (app/diagnostics.py)."""
+        from .diagnostics import DiagnosticsBuilder
 
-        Designed to be readable at a glance by the Go scheduler caller.
-        """
-        diag: dict[str, object] = {}
-
-        # 1. VMs with no eligible BMs — the most common root cause
-        no_eligible: list[str] = []
-        for vm in self.request.vms:
-            if not self._get_eligible_baremetals(vm):
-                no_eligible.append(vm.id)
-        if no_eligible:
-            diag["vms_with_no_eligible_bm"] = no_eligible
-
-        # 2. Anti-affinity rules — only flag infeasible ones
-        infeasible_rules = []
-        for rule in self.effective_rules:
-            reachable_ags: set[str] = set()
-            for vm_id in rule.vm_ids:
-                if vm_id in self.vm_map:
-                    for bm_id in self._get_eligible_baremetals(self.vm_map[vm_id]):
-                        if bm_id in self.bm_map:
-                            reachable_ags.add(self.bm_map[bm_id].topology.ag)
-            min_ags_needed = -(-len(rule.vm_ids) // rule.max_per_ag)  # ceil division
-            if len(reachable_ags) < min_ags_needed:
-                infeasible_rules.append({
-                    "group_id": rule.group_id,
-                    "vm_count": len(rule.vm_ids),
-                    "max_per_ag": rule.max_per_ag,
-                    "min_ags_needed": min_ags_needed,
-                    "reachable_ags": len(reachable_ags),
-                })
-        if infeasible_rules:
-            diag["infeasible_anti_affinity_rules"] = infeasible_rules
-
-        # 3. Constraint check — which layer causes INFEASIBLE
-        diag["constraint_check"] = self._constraint_layer_check()
-
-        # 4. Summary counts
-        diag["counts"] = {
-            "vms": len(self.request.vms),
-            "bms": len(self.request.baremetals),
-            "ags": len(self.ag_to_bms),
-            "variables": len(self.assign),
-            "rules": len(self.effective_rules),
-        }
-
-        return diag
-
-    def _constraint_layer_check(self) -> dict[str, object]:
-        """
-        Incrementally add constraint layers and solve each to pinpoint
-        which layer first causes INFEASIBLE.
-
-        Returns a compact result like:
-          {"one_bm_per_vm": "OK", "capacity": "OK", "anti_affinity": "INFEASIBLE",
-           "failed_at": "anti_affinity"}
-        """
-        eligible: dict[str, list[str]] = {
-            vm.id: self._get_eligible_baremetals(vm) for vm in self.request.vms
-        }
-
-        def make_vars(model: cp_model.CpModel) -> dict[tuple[str, str], cp_model.IntVar]:
-            return {
-                (vm.id, bm_id): model.new_bool_var(f"t_{vm.id}__{bm_id}")
-                for vm in self.request.vms
-                for bm_id in eligible[vm.id]
-            }
-
-        def add_one_bm_per_vm(model, assign):
-            for vm in self.request.vms:
-                vm_vars = [assign[(vm.id, bid)] for bid in eligible[vm.id]
-                           if (vm.id, bid) in assign]
-                if not vm_vars:
-                    model.add(0 == 1)
-                    return
-                if self.config.allow_partial_placement:
-                    model.add(sum(vm_vars) <= 1)
-                else:
-                    model.add(sum(vm_vars) == 1)
-
-        def add_capacity(model, assign):
-            for bm in self.request.baremetals:
-                avail = bm.available_capacity
-                avars = [(vid, assign[(vid, bm.id)]) for vid in self.vm_map
-                         if (vid, bm.id) in assign]
-                if not avars:
-                    continue
-                for field in RESOURCE_FIELDS:
-                    usage = sum(getattr(self.vm_map[vid].demand, field) * v
-                                for vid, v in avars)
-                    model.add(usage <= getattr(avail, field))
-
-        def add_anti_affinity(model, assign):
-            for rule in self.effective_rules:
-                for ag, ag_bm_ids in self.ag_to_bms.items():
-                    vag = [assign[(vid, bid)] for vid in rule.vm_ids
-                           for bid in ag_bm_ids if (vid, bid) in assign]
-                    if vag:
-                        model.add(sum(vag) <= rule.max_per_ag)
-
-        def quick_solve(model) -> str:
-            s = cp_model.CpSolver()
-            s.parameters.max_time_in_seconds = 5.0
-            status = s.solve(model)
-            return "OK" if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) \
-                else self._status_name(status)
-
-        # Layer 1: one-BM-per-VM
-        layers = [
-            ("one_bm_per_vm", [add_one_bm_per_vm]),
-            ("capacity", [add_one_bm_per_vm, add_capacity]),
-            ("anti_affinity", [add_one_bm_per_vm, add_capacity, add_anti_affinity]),
-        ]
-
-        results: dict[str, object] = {}
-        failed_at = None
-        for name, builders in layers:
-            m = cp_model.CpModel()
-            a = make_vars(m)
-            for build in builders:
-                build(m, a)
-            results[name] = quick_solve(m)
-            if results[name] != "OK" and failed_at is None:
-                failed_at = name
-
-        results["failed_at"] = failed_at
-        return results
+        return DiagnosticsBuilder(
+            request=self.request,
+            vm_map=self.vm_map,
+            bm_map=self.bm_map,
+            ag_to_bms=self.ag_to_bms,
+            effective_rules=self.effective_rules,
+            config=self.config,
+            num_variables=len(self.assign),
+        ).build()
 
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float
