@@ -34,7 +34,6 @@ import logging
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
-from ortools.sat.python.cp_model_helper import CpSolverStatus
 
 from .models import (
     PlacementRequest,
@@ -786,7 +785,7 @@ class VMPlacementSolver:
         )
 
     @staticmethod
-    def _status_name(status: CpSolverStatus) -> str:
+    def _status_name(status: cp_model.CpSolverStatus) -> str:
         return {
             cp_model.OPTIMAL: "OPTIMAL",
             cp_model.FEASIBLE: "FEASIBLE",
