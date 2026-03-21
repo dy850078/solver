@@ -9,10 +9,11 @@ Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 """
 
 from __future__ import annotations
+import os
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +150,15 @@ class AntiAffinityRule(BaseModel):
 class SolverConfig(BaseModel):
     """
     Solver behavior settings.
-    We'll add objective weights later when we build the scoring function.
+
+    Each field can be overridden via environment variable (prefix SOLVER_).
+    Env vars act as defaults — values explicitly provided in the request body
+    take precedence.
+
+    Example env vars:
+        SOLVER_MAX_SOLVE_TIME_SECONDS=60
+        SOLVER_NUM_WORKERS=4
+        SOLVER_W_CONSOLIDATION=15
     """
     max_solve_time_seconds: float = 30.0
     num_workers: int = 8
@@ -162,6 +171,35 @@ class SolverConfig(BaseModel):
     # Slot score: penalize placements that leave unusable leftover capacity
     w_slot_score: int = 0
     slot_tshirt_sizes: list[Resources] = Field(default_factory=list)
+
+    # Env var prefix for all SolverConfig fields
+    _ENV_PREFIX: str = "SOLVER_"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_env_defaults(cls, data: Any) -> Any:
+        """Fill missing fields from SOLVER_* environment variables."""
+        if not isinstance(data, dict):
+            return data
+        env_prefix = "SOLVER_"
+        for field_name, field_info in cls.model_fields.items():
+            if field_name in data:
+                continue  # explicitly provided — do not override
+            env_key = env_prefix + field_name.upper()
+            env_val = os.environ.get(env_key)
+            if env_val is None:
+                continue
+            # Convert string env value to the expected type
+            annotation = field_info.annotation
+            if annotation is bool:
+                data[field_name] = env_val.lower() in ("true", "1", "yes")
+            elif annotation is int:
+                data[field_name] = int(env_val)
+            elif annotation is float:
+                data[field_name] = float(env_val)
+            else:
+                data[field_name] = env_val
+        return data
 
 
 # ---------------------------------------------------------------------------

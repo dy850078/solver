@@ -1,0 +1,128 @@
+# =============================================================================
+# VM Scheduler Deployment with Solver Sidecar
+#
+# Go scheduler (main container) + Python solver (sidecar) in the same pod.
+# The scheduler calls the solver at http://localhost:50051/v1/placement/solve.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# ConfigMap: Solver default configuration via environment variables
+# These are read by SolverConfig @model_validator as defaults.
+# Values in the request body take precedence over these defaults.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: solver-config
+  labels:
+    app: vm-scheduler
+    component: solver
+data:
+  SOLVER_MAX_SOLVE_TIME_SECONDS: "30"
+  SOLVER_NUM_WORKERS: "8"
+  SOLVER_ALLOW_PARTIAL_PLACEMENT: "false"
+  SOLVER_AUTO_GENERATE_ANTI_AFFINITY: "true"
+  SOLVER_W_CONSOLIDATION: "10"
+  SOLVER_W_HEADROOM: "8"
+  SOLVER_HEADROOM_UPPER_BOUND_PCT: "90"
+  SOLVER_W_SLOT_SCORE: "0"
+
+---
+# ---------------------------------------------------------------------------
+# Deployment: Go scheduler + Python solver sidecar
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-scheduler
+  labels:
+    app: vm-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vm-scheduler
+  template:
+    metadata:
+      labels:
+        app: vm-scheduler
+    spec:
+      containers:
+        # ==== Main container: Go scheduler (placeholder) ====
+        - name: scheduler
+          image: registry.example.com/vm-scheduler:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: SOLVER_ENDPOINT
+              value: "http://localhost:50051"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+
+        # ==== Sidecar: Python VM placement solver ====
+        - name: solver
+          image: registry.example.com/vm-placement-solver:0.1.0
+          ports:
+            - containerPort: 50051
+              name: solver-http
+          envFrom:
+            - configMapRef:
+                name: solver-config
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 50051
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 50051
+            periodSeconds: 2
+            failureThreshold: 15
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+
+---
+# ---------------------------------------------------------------------------
+# Service: exposes Go scheduler only (solver is localhost-only within pod)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-scheduler
+  labels:
+    app: vm-scheduler
+spec:
+  selector:
+    app: vm-scheduler
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
