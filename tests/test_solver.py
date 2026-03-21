@@ -6,60 +6,15 @@ Run: pytest tests/test_solver.py -v
 """
 
 import json
-from fastapi.testclient import TestClient
 
 from app.models import (
-    Resources, Topology, Baremetal, VM, NodeRole,
-    AntiAffinityRule, SolverConfig,
-    PlacementRequest, PlacementResult, PlacementAssignment,
+    Resources, NodeRole,
+    AntiAffinityRule,
+    PlacementRequest, PlacementResult,
 )
 from app.solver import VMPlacementSolver
-from app.server import api
 
-client = TestClient(api)
-
-
-# ===========================================================================
-# Helpers — keep tests readable
-# ===========================================================================
-
-def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
-            used_cpu=0, used_mem=0, used_disk=0,
-            ag="ag-1", dc="dc-1", rack="rack-1"):
-    # Pydantic BaseModel 只接受 keyword arguments，不接受 positional arguments
-    return Baremetal(
-        id=bm_id,
-        total_capacity=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk, gpu_count=gpu),
-        used_capacity=Resources(cpu_cores=used_cpu, memory_mb=used_mem, disk_gb=used_disk),
-        topology=Topology(site="site-a", phase="p1", datacenter=dc, rack=rack, ag=ag),
-    )
-
-def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
-            role=NodeRole.WORKER, cluster="cluster-1",
-            ip_type="routable", candidates=None):
-    return VM(
-        id=vm_id,
-        demand=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk),
-        node_role=role,
-        ip_type=ip_type,
-        cluster_id=cluster,
-        candidate_baremetals=candidates or [],
-    )
-
-def solve(vms, bms, rules=None, **config_overrides):
-    """Solve with default config, overridable."""
-    cfg = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
-    cfg.update(config_overrides)
-    request = PlacementRequest(
-        vms=vms, baremetals=bms,
-        anti_affinity_rules=rules or [],
-        config=SolverConfig(**cfg),
-    )
-    return VMPlacementSolver(request).solve()
-
-def amap(result):
-    """Shorthand: vm_id -> bm_id dict."""
-    return result.to_assignment_map()
+from .conftest import make_bm, make_vm, solve, amap
 
 
 # ===========================================================================
@@ -337,33 +292,33 @@ class TestSerialization:
 
     def test_round_trip(self):
         req = json.dumps({
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
         })
 
-        # Pydantic: JSON string → model (取代 load_request_from_json)
+        # JSON string → Pydantic model
         request = PlacementRequest.model_validate_json(req)
         result = VMPlacementSolver(request).solve()
 
-        # Pydantic: model → JSON string → dict (取代 result_to_json)
+        # Pydantic model → JSON string → dict
         out = json.loads(result.model_dump_json())
 
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
         assert out["assignments"][0]["ag"] == "ag-1"
 
-    def test_http_solve_endpoint(self):
-        """FastAPI POST /v1/placement/solve 回傳正確結果。"""
+    def test_http_solve_endpoint(self, client):
+        """POST /v1/placement/solve returns correct result."""
         resp = client.post("/v1/placement/solve", json={
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
@@ -373,14 +328,38 @@ class TestSerialization:
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
 
-    def test_http_healthz(self):
-        """GET /healthz 回傳 healthy。"""
+    def test_http_healthz(self, client):
+        """GET /healthz returns healthy."""
         resp = client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
 
-    def test_http_invalid_request_returns_422(self):
-        """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
+    def test_hostname_pass_through(self, client):
+        """Hostname passes through from request to response assignments."""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{"id": "vm-1", "hostname": "k8s-master-01.prod",
+                     "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "baremetals": [{
+                "id": "bm-1", "hostname": "bare-001.rack1",
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        })
+        assert resp.status_code == 200
+        out = resp.json()
+        assert out["assignments"][0]["vm_hostname"] == "k8s-master-01.prod"
+        assert out["assignments"][0]["bm_hostname"] == "bare-001.rack1"
+
+    def test_hostname_defaults_to_empty(self):
+        """Missing hostname defaults to empty string in response."""
+        r = solve([make_vm("vm-1")], [make_bm("bm-1")])
+        assert r.success
+        assert r.assignments[0].vm_hostname == ""
+        assert r.assignments[0].bm_hostname == ""
+
+    def test_http_invalid_request_returns_422(self, client):
+        """Missing required fields → FastAPI returns 422."""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
         assert resp.status_code == 422
 
@@ -392,7 +371,7 @@ class TestSerialization:
 class TestObjective:
 
     def test_consolidation_prefers_fewer_bms(self):
-        """Consolidation：2 BM 都夠放，solver 應把全部 VM 放進 1 台。"""
+        """Consolidation: 2 BMs can hold all VMs; solver packs into 1."""
         bms = [
             make_bm("bm-1", cpu=64, mem=256_000),
             make_bm("bm-2", cpu=64, mem=256_000),
@@ -408,10 +387,10 @@ class TestObjective:
         assert len(bm_ids_used) == 1, f"Expected 1 BM used, got: {bm_ids_used}"
 
     def test_headroom_avoids_high_utilization(self):
-        """Headroom：BM-A 放置後 80%，BM-B 放置後 100%。solver 應選 BM-A。"""
+        """Headroom: BM-A at 80% after placement, BM-B at 100%. Solver picks BM-A."""
         bms = [
             make_bm("bm-a", cpu=10, mem=256_000, used_cpu=0),
-            make_bm("bm-b", cpu=10, mem=256_000, used_cpu=2),  # 已用 2 cpu
+            make_bm("bm-b", cpu=10, mem=256_000, used_cpu=2),  # 2 cpu already used
         ]
         vms = [make_vm("vm-1", cpu=8, mem=16_000)]
 
@@ -423,16 +402,13 @@ class TestObjective:
         assert amap(r)["vm-1"] == "bm-a", f"Expected bm-a, got: {amap(r)}"
 
     def test_partial_placement_priority_over_consolidation(self):
-        """
-        Partial placement 優先級高於 consolidation penalty。
-        即使 consolidation 希望少用 BM，多放 VM 永遠更重要。
-        """
+        """Partial placement priority beats consolidation — placing more VMs always wins."""
         bms = [make_bm("bm-1", cpu=8, mem=32_000, disk=200)]
         vms = [make_vm(f"vm-{i}") for i in range(3)]
 
         r = solve(vms, bms, allow_partial_placement=True, w_consolidation=10)
 
-        # 容量只夠放 2 台（8 cpu / 4 cpu per VM = 2）
+        # capacity fits only 2 (8 cpu / 4 cpu per VM = 2)
         assert len(r.assignments) == 2, f"Expected 2 placed, got {len(r.assignments)}"
         assert len(r.unplaced_vms) == 1
 
@@ -445,10 +421,10 @@ class TestSlotScore:
 
     def test_slot_score_prefers_usable_remainder(self):
         """
-        Slot score：2 台 BM 都能放 1 個 VM(cpu=8)。
-        BM-A: total=32 cpu → 放完剩 24 cpu → 可裝 6 small(4cpu) or 3 medium(8cpu) or 1 large(16cpu)
-        BM-B: total=10 cpu → 放完剩 2 cpu  → 不能裝任何 t-shirt size
-        Slot score 應偏好 BM-A（剩餘空間更有用）。
+        Both BMs can hold the VM(cpu=8).
+        BM-A: 32 cpu → 24 remaining → fits 6 small + 3 medium + 1 large
+        BM-B: 10 cpu →  2 remaining → fits no t-shirt size
+        Slot score prefers BM-A (more usable remainder).
         """
         from app.models import Resources
 
@@ -459,9 +435,9 @@ class TestSlotScore:
         vms = [make_vm("vm-1", cpu=8, mem=16_000)]
 
         tshirts = [
-            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
-            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
-            Resources(cpu_cores=16, memory_mb=64_000, disk_gb=400),
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+            Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400),
         ]
 
         r = solve(
@@ -475,12 +451,11 @@ class TestSlotScore:
 
     def test_slot_score_breaks_consolidation_tie(self):
         """
-        Consolidation 做主：2 台 BM 各夠放全部 VM，consolidation 會塞進 1 台。
-        Slot score 做副：在「都只用 1 台」的前提下，偏好放完後剩餘 slot 更多的 BM。
-
-        BM-A: total=32 cpu → 放 2 VM(4cpu) 後剩 24 cpu → small=6, medium=3 → score=9
-        BM-B: total=12 cpu → 放 2 VM(4cpu) 後剩 4 cpu  → small=1, medium=0 → score=1
-        Consolidation 都是 1 台 → tie。Slot score 選 BM-A。
+        Consolidation packs into 1 BM (both can hold all VMs).
+        Slot score breaks the tie:
+        BM-A: 32 cpu → 24 remaining → small=6, medium=3 → score=9
+        BM-B: 12 cpu →  4 remaining → small=1, medium=0 → score=1
+        Tie on consolidation → slot score picks BM-A.
         """
         from app.models import Resources
 
@@ -491,8 +466,8 @@ class TestSlotScore:
         vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(2)]
 
         tshirts = [
-            Resources(cpu_cores=4, memory_mb=16_000, disk_gb=100),
-            Resources(cpu_cores=8, memory_mb=32_000, disk_gb=200),
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
         ]
 
         r = solve(
@@ -506,7 +481,7 @@ class TestSlotScore:
         assert bm_ids_used == {"bm-a"}, f"Expected bm-a only, got: {bm_ids_used}"
 
     def test_slot_score_zero_weight_disables(self):
-        """w_slot_score=0 時不影響結果（等同不開啟）。"""
+        """w_slot_score=0 disables slot scoring."""
         bms = [
             make_bm("bm-1", cpu=64, mem=256_000),
             make_bm("bm-2", cpu=64, mem=256_000),

@@ -48,7 +48,35 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # The resource fields we check for capacity constraints.
-RESOURCE_FIELDS = ["cpu_cores", "memory_mb", "disk_gb", "gpu_count"]
+RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
+
+
+def get_eligible_baremetals(
+    vm: VM,
+    bm_map: dict[str, Baremetal],
+    baremetals: list[Baremetal],
+) -> list[str]:
+    """
+    Which baremetals can this VM possibly go on?
+
+    If the Go scheduler provided a candidate list (from step 3 filtering),
+    we only consider those. Otherwise, we consider any BM with enough
+    available capacity.
+
+    This is a module-level function so both the solver and diagnostics
+    can share the same eligibility logic.
+    """
+    if vm.candidate_baremetals:
+        return [
+            bm_id for bm_id in vm.candidate_baremetals
+            if bm_id in bm_map
+            and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+        ]
+    else:
+        return [
+            bm.id for bm in baremetals
+            if vm.demand.fits_in(bm.available_capacity)
+        ]
 
 
 class VMPlacementSolver:
@@ -61,9 +89,31 @@ class VMPlacementSolver:
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
         self.bm_map: dict[str, Baremetal] = {bm.id: bm for bm in request.baremetals}
 
+        # Validate: no duplicate baremetals allowed.
+        # Deduplication is the scheduler's responsibility — solver only detects
+        # and rejects invalid input so the scheduler can fix the bug upstream.
+        self._input_errors: list[str] = []
+        seen_bm_ids: set[str] = set()
+        for bm in request.baremetals:
+            if bm.id in seen_bm_ids:
+                self._input_errors.append(f"duplicate BM '{bm.id}' in baremetals list")
+            else:
+                seen_bm_ids.add(bm.id)
+
+        for vm in request.vms:
+            if vm.candidate_baremetals:
+                seen_candidates: set[str] = set()
+                for cand in vm.candidate_baremetals:
+                    if cand in seen_candidates:
+                        self._input_errors.append(
+                            f"duplicate candidate BM '{cand}' in VM '{vm.id}'"
+                        )
+                    else:
+                        seen_candidates.add(cand)
+
         # Group baremetals by AG (needed for anti-affinity constraints)
         self.ag_to_bms: dict[str, list[str]] = defaultdict(list)
-        for bm in request.baremetals:
+        for bm in self.request.baremetals:
             self.ag_to_bms[bm.topology.ag].append(bm.id)
 
         # Resolve anti-affinity rules (explicit + auto-generated)
@@ -85,29 +135,8 @@ class VMPlacementSolver:
     # ------------------------------------------------------------------
 
     def _get_eligible_baremetals(self, vm: VM) -> list[str]:
-        """
-        Which baremetals can this VM possibly go on?
-
-        If the Go scheduler provided a candidate list (from step 3 filtering),
-        we only consider those. Otherwise, we consider any BM with enough
-        available capacity.
-
-        This is a PRE-FILTER — it reduces the problem size before we even
-        start building the CP-SAT model. Fewer variables = faster solving.
-        """
-        if vm.candidate_baremetals:
-            # Trust step 3, but double-check capacity
-            return [
-                bm_id for bm_id in vm.candidate_baremetals
-                if bm_id in self.bm_map
-                and vm.demand.fits_in(self.bm_map[bm_id].available_capacity)
-            ]
-        else:
-            # Fallback: any BM with enough room
-            return [
-                bm.id for bm in self.request.baremetals
-                if vm.demand.fits_in(bm.available_capacity)
-            ]
+        """Delegate to module-level function for reuse by diagnostics."""
+        return get_eligible_baremetals(vm, self.bm_map, self.request.baremetals)
 
     # ------------------------------------------------------------------
     # Step B: Auto-generate anti-affinity rules
@@ -159,8 +188,8 @@ class VMPlacementSolver:
                     max_per_ag=max_per_ag,
                 ))
                 logger.info(
-                    f"Auto anti-affinity: {ip_type}/{role} "
-                    f"({len(vm_ids)} VMs / {num_ags} AGs → max_per_ag={max_per_ag})"
+                    "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
+                    ip_type, role, len(vm_ids), num_ags, max_per_ag,
                 )
 
         return rules
@@ -182,7 +211,7 @@ class VMPlacementSolver:
         """
         for vm in self.request.vms:
             for bm_id in self._get_eligible_baremetals(vm):
-                self.assign[(vm.id, bm_id)] = self.model.NewBoolVar(
+                self.assign[(vm.id, bm_id)] = self.model.new_bool_var(
                     f"assign_{vm.id}__{bm_id}"
                 )
 
@@ -208,14 +237,14 @@ class VMPlacementSolver:
                     continue  # skip this VM, it can't be placed
                 else:
                     # No eligible BM → impossible to solve
-                    logger.error(f"VM {vm.id} has no eligible BMs → infeasible")
-                    self.model.Add(0 == 1)  # force infeasibility
+                    logger.error("VM %s has no eligible BMs → infeasible", vm.id)
+                    self.model.add(0 == 1)  # force infeasibility
                     return
 
             if self.config.allow_partial_placement:
-                self.model.Add(sum(vm_vars) <= 1)
+                self.model.add(sum(vm_vars) <= 1)
             else:
-                self.model.Add(sum(vm_vars) == 1)
+                self.model.add(sum(vm_vars) == 1)
 
     def _add_capacity_constraints(self):
         """
@@ -253,7 +282,7 @@ class VMPlacementSolver:
                 )
 
                 # The constraint: total usage <= capacity
-                self.model.Add(usage <= capacity)
+                self.model.add(usage <= capacity)
 
     def _add_anti_affinity_constraints(self):
         """
@@ -279,7 +308,7 @@ class VMPlacementSolver:
                 ]
 
                 if vars_in_ag:
-                    self.model.Add(sum(vars_in_ag) <= rule.max_per_ag)
+                    self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -287,13 +316,12 @@ class VMPlacementSolver:
 
     def _build_bm_used_vars(self):
         """
-        建立 bm_used[bm_id] 變數：這台 BM 是否被使用。
+        Create bm_used[bm_id] indicator: 1 if any VM is placed on this BM.
 
         bm_used[bm] = max(assign[vm_1, bm], assign[vm_2, bm], ...)
-        → 只要有任何 VM 放在這台 BM，bm_used = 1
         """
         for bm in self.request.baremetals:
-            bm_used = self.model.NewBoolVar(f"bm_used_{bm.id}")
+            bm_used = self.model.new_bool_var(f"bm_used_{bm.id}")
 
             vm_vars_on_bm = [
                 self.assign[(vm_id, bm.id)]
@@ -302,22 +330,22 @@ class VMPlacementSolver:
             ]
 
             if vm_vars_on_bm:
-                self.model.AddMaxEquality(bm_used, vm_vars_on_bm)
+                self.model.add_max_equality(bm_used, vm_vars_on_bm)
             else:
-                self.model.Add(bm_used == 0)
+                self.model.add(bm_used == 0)
 
             self.bm_used[bm.id] = bm_used
 
     def _compute_headroom_penalties(self) -> list[cp_model.IntVar]:
         """
-        計算每台 BM 的 headroom penalty。
+        Compute per-BM headroom penalty.
 
-        對每台 BM：
-        1. 計算每個資源維度的利用率（after_usage / total）
-        2. 超過 headroom_upper_bound_pct 的部分計為 penalty
-        3. 跨維度取最大值（最壞情況決定 penalty）
+        For each BM, for each resource dimension:
+        1. Compute utilization % after placement
+        2. Penalize the amount exceeding headroom_upper_bound_pct
+        3. Take the max across dimensions (worst-case determines penalty)
 
-        返回每台 BM 的 penalty 變數列表。
+        Returns a list of penalty variables, one per BM.
         """
         penalties = []
         for bm in self.request.baremetals:
@@ -325,7 +353,7 @@ class VMPlacementSolver:
             for field in RESOURCE_FIELDS:
                 total_d = getattr(bm.total_capacity, field)
                 if total_d == 0:
-                    continue  # 避免除以零（gpu_count=0 的機器）
+                    continue  # skip zero-total dimensions (e.g. gpu_count=0)
 
                 used_d = getattr(bm.used_capacity, field)
 
@@ -337,51 +365,58 @@ class VMPlacementSolver:
                 if not assigned_vars:
                     continue
 
-                # 新放入的 VM 消耗
+                # New VM usage on this BM
                 new_usage = sum(
                     getattr(self.vm_map[vm_id].demand, field) * var
                     for vm_id, var in assigned_vars
                 )
 
-                # Step A: 計算放置後的使用量 × 100（避免浮點）
-                after_times_100 = self.model.NewIntVar(
-                    0, total_d * 100, f"a100_{bm.id}_{field}"
+                # Step A: post-placement usage * 100 (integer arithmetic, no floats)
+                # Upper bound uses max(total, used + all candidate demand) to avoid
+                # false INFEASIBLE when used_d is already high.
+                max_new_demand = sum(
+                    getattr(self.vm_map[vm_id].demand, field)
+                    for vm_id, _ in assigned_vars
                 )
-                self.model.Add(after_times_100 == (used_d + new_usage) * 100)
+                upper_after = max(total_d, used_d + max_new_demand) * 100
+                after_times_100 = self.model.new_int_var(
+                    0, upper_after, f"a100_{bm.id}_{field}"
+                )
+                self.model.add(after_times_100 == (used_d + new_usage) * 100)
 
-                # Step B: 整數百分比（0–100）
-                util_pct = self.model.NewIntVar(0, 100, f"util_{bm.id}_{field}")
-                self.model.AddDivisionEquality(util_pct, after_times_100, total_d)
+                # Step B: integer utilization % (can exceed 100 if BM is near-full)
+                max_util = upper_after // total_d if total_d > 0 else 0
+                util_pct = self.model.new_int_var(0, max_util, f"util_{bm.id}_{field}")
+                self.model.add_division_equality(util_pct, after_times_100, total_d)
 
-                # Step C: 超過安全上限的量（可能為負）
-                raw = self.model.NewIntVar(-100, 100, f"raw_{bm.id}_{field}")
-                self.model.Add(raw == util_pct - self.config.headroom_upper_bound_pct)
+                # Step C: amount exceeding the safe upper bound (may be negative)
+                raw = self.model.new_int_var(-max_util, max_util, f"raw_{bm.id}_{field}")
+                self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
-                # Step D: ReLU：截斷負值
-                over = self.model.NewIntVar(0, 100, f"over_{bm.id}_{field}")
-                self.model.AddMaxEquality(over, [self.model.NewConstant(0), raw])
+                # Step D: ReLU — clamp negative values to 0
+                over = self.model.new_int_var(0, max_util, f"over_{bm.id}_{field}")
+                self.model.add_max_equality(over, [self.model.new_constant(0), raw])
                 dim_overs.append(over)
 
             if dim_overs:
-                # Step E: 跨維度取最大值
-                bm_penalty = self.model.NewIntVar(0, 100, f"hp_{bm.id}")
-                self.model.AddMaxEquality(bm_penalty, dim_overs)
+                # Step E: max across dimensions
+                bm_penalty = self.model.new_int_var(0, 1000, f"hp_{bm.id}")
+                self.model.add_max_equality(bm_penalty, dim_overs)
                 penalties.append(bm_penalty)
 
         return penalties
 
     def _compute_slot_score_bonus(self) -> list[cp_model.IntVar]:
         """
-        計算每台 BM 的 slot score（可容納的 t-shirt size VM 數量）。
+        Compute per-BM slot score (how many t-shirt size VMs can still fit).
 
-        對每台 BM：
-        1. 計算放置後每個資源維度的剩餘容量
-        2. 對每個 t-shirt size，計算每個維度能容納幾個（floor division）
-        3. 取跨維度最小值 = 該 t-shirt size 實際可容納數量
-        4. 加總所有 t-shirt size → 該 BM 的 slot score
+        For each BM:
+        1. Compute remaining capacity per dimension after placement
+        2. For each t-shirt size, floor-divide remaining by demand per dimension
+        3. Take min across dimensions = actual fit count for that t-shirt
+        4. Sum across all t-shirt sizes = BM slot score
 
-        返回每台 BM 的 slot score 變數列表。
-        Slot score 越高 = 剩餘空間越有用 → 應被獎勵（在目標函數中取負號）。
+        Higher score = more usable remaining space = rewarded (negated in objective).
         """
         tshirt_sizes = self.config.slot_tshirt_sizes
         if not tshirt_sizes:
@@ -403,46 +438,57 @@ class VMPlacementSolver:
                 for field in RESOURCE_FIELDS:
                     tshirt_d = getattr(tshirt, field)
                     if tshirt_d == 0:
-                        continue  # 此維度無需求，不構成瓶頸
+                        continue  # no demand on this dimension, not a bottleneck
 
                     total_d = getattr(bm.total_capacity, field)
                     used_d = getattr(bm.used_capacity, field)
 
-                    # 新放入的 VM 消耗
+                    # New VM usage on this BM
                     new_usage = sum(
                         getattr(self.vm_map[vm_id].demand, field) * var
                         for vm_id, var in assigned_vars
                     )
 
-                    # 剩餘容量 = total - used - new_placement
-                    remaining = self.model.NewIntVar(
-                        0, total_d, f"rem_{bm.id}_{field}_t{t_idx}"
+                    # Remaining = total - used - new_placement
+                    # Lower bound can be negative to avoid false INFEASIBLE with
+                    # many candidate VMs (capacity constraint ensures actual >= 0)
+                    max_new_d = sum(
+                        getattr(self.vm_map[vm_id].demand, field)
+                        for vm_id, _ in assigned_vars
                     )
-                    self.model.Add(remaining == total_d - used_d - new_usage)
+                    remaining = self.model.new_int_var(
+                        total_d - used_d - max_new_d, total_d,
+                        f"rem_{bm.id}_{field}_t{t_idx}",
+                    )
+                    self.model.add(remaining == total_d - used_d - new_usage)
 
-                    # 此維度可容納幾個此 t-shirt size
-                    slots_d = self.model.NewIntVar(
-                        0, total_d // tshirt_d if tshirt_d > 0 else 0,
+                    # How many of this t-shirt size fit on this dimension
+                    # (may be negative in the model; capacity constraint ensures non-negative at solution)
+                    min_slots = (total_d - used_d - max_new_d) // tshirt_d if tshirt_d > 0 else 0
+                    max_slots = total_d // tshirt_d if tshirt_d > 0 else 0
+                    slots_d = self.model.new_int_var(
+                        min(min_slots, 0), max_slots,
                         f"slotd_{bm.id}_{field}_t{t_idx}",
                     )
-                    self.model.AddDivisionEquality(slots_d, remaining, tshirt_d)
+                    self.model.add_division_equality(slots_d, remaining, tshirt_d)
                     dim_slots.append(slots_d)
 
                 if dim_slots:
-                    # 跨維度取最小值 = 實際可容納數量（瓶頸維度決定）
+                    # Min across dimensions = actual fit count (bottleneck dimension decides)
                     max_possible = min(
                         getattr(bm.total_capacity, f) // getattr(tshirt, f)
                         for f in RESOURCE_FIELDS
                         if getattr(tshirt, f) > 0
                     )
-                    slots_for_tshirt = self.model.NewIntVar(
-                        0, max_possible, f"slot_{bm.id}_t{t_idx}"
+                    # min may be negative (capacity constraint ensures >= 0 at solution)
+                    slots_for_tshirt = self.model.new_int_var(
+                        -max_possible, max_possible, f"slot_{bm.id}_t{t_idx}"
                     )
-                    self.model.AddMinEquality(slots_for_tshirt, dim_slots)
+                    self.model.add_min_equality(slots_for_tshirt, dim_slots)
                     tshirt_slots.append(slots_for_tshirt)
 
             if tshirt_slots:
-                # 加總所有 t-shirt size 的可容納數量
+                # Sum fit counts across all t-shirt sizes
                 max_total = sum(
                     min(
                         getattr(bm.total_capacity, f) // getattr(ts, f)
@@ -452,17 +498,17 @@ class VMPlacementSolver:
                     for ts in tshirt_sizes
                     if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
                 )
-                bm_score = self.model.NewIntVar(
-                    0, max_total, f"sscore_{bm.id}"
+                bm_score = self.model.new_int_var(
+                    -max_total, max_total, f"sscore_{bm.id}"
                 )
-                self.model.Add(bm_score == sum(tshirt_slots))
+                self.model.add(bm_score == sum(tshirt_slots))
 
-                # 只計算被使用的 BM 的 slot score（未使用的 BM 不計入）
-                # 否則 solver 會偏好把 VM 放小 BM，讓大 BM 保持高 slot score
-                effective = self.model.NewIntVar(
-                    0, max_total, f"eff_sscore_{bm.id}"
+                # Only count slot score for used BMs — otherwise solver would
+                # prefer placing VMs on small BMs to keep large BMs' scores high
+                effective = self.model.new_int_var(
+                    -max_total, max_total, f"eff_sscore_{bm.id}"
                 )
-                self.model.AddMultiplicationEquality(
+                self.model.add_multiplication_equality(
                     effective, [self.bm_used[bm.id], bm_score]
                 )
                 scores.append(effective)
@@ -470,19 +516,19 @@ class VMPlacementSolver:
         return scores
 
     def _ensure_bm_used_vars(self):
-        """建立 bm_used 變數（如果尚未建立）。多個目標項可能都需要它。"""
+        """Build bm_used vars if not yet built. Multiple objective terms may need them."""
         if not self.bm_used:
             self._build_bm_used_vars()
 
     def _add_objective(self):
         """
-        組合所有目標函數項並設定 Minimize。
+        Combine all objective terms and set Minimize.
 
-        優先級（由高到低）：
-        1. 放置盡量多的 VM（partial placement 模式）
-        2. 使用盡量少的 BM（consolidation）
-        3. 利用率不超過安全上限（headroom）
-        4. 剩餘容量的可用性（slot score）
+        Priority (high to low):
+        1. Place as many VMs as possible (partial placement mode)
+        2. Use as few BMs as possible (consolidation)
+        3. Keep utilization below safe upper bound (headroom)
+        4. Maximize usability of remaining capacity (slot score)
         """
         terms = []
 
@@ -503,11 +549,11 @@ class VMPlacementSolver:
             self._ensure_bm_used_vars()
             slot_scores = self._compute_slot_score_bonus()
             if slot_scores:
-                # 負號：slot score 越高越好（Minimize 中用負值 = 獎勵）
+                # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
         if terms:
-            self.model.Minimize(sum(terms))
+            self.model.minimize(sum(terms))
 
     # ------------------------------------------------------------------
     # Step D: Solve and extract results
@@ -520,6 +566,19 @@ class VMPlacementSolver:
         This is the main entry point.
         """
         start = time.time()
+
+        # Reject requests with duplicate BMs — scheduler must fix upstream.
+        if self._input_errors:
+            for err in self._input_errors:
+                logger.error("Input validation failed: %s", err)
+            return PlacementResult(
+                success=False,
+                solver_status="INPUT_ERROR: duplicate baremetals detected — "
+                              "scheduler must deduplicate before calling solver",
+                solve_time_seconds=time.time() - start,
+                unplaced_vms=[vm.id for vm in self.request.vms],
+                diagnostics={"input_errors": self._input_errors},
+            )
 
         try:
             # Build the model
@@ -537,26 +596,27 @@ class VMPlacementSolver:
             solver.parameters.num_workers = self.config.num_workers
 
             logger.info(
-                f"Solving: {len(self.request.vms)} VMs, "
-                f"{len(self.request.baremetals)} BMs, "
-                f"{len(self.assign)} variables, "
-                f"{len(self.effective_rules)} rules, "
-                f"{len(self.ag_to_bms)} AGs"
+                "Solving: %d VMs, %d BMs, %d variables, %d rules, %d AGs",
+                len(self.request.vms), len(self.request.baremetals),
+                len(self.assign), len(self.effective_rules), len(self.ag_to_bms),
             )
 
-            status = solver.Solve(self.model)
+            status = solver.solve(self.model)
             status_name = self._status_name(status)
-            logger.info(f"Status: {status_name}")
+            logger.info("Status: %s", status_name)
 
             # Extract results
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 return self._extract_solution(solver, status_name, time.time() - start)
             else:
+                diagnostics = self._build_failure_diagnostics()
+                logger.warning("Solver failed with %s, diagnostics: %s", status_name, diagnostics)
                 return PlacementResult(
                     success=False,
                     solver_status=status_name,
                     solve_time_seconds=time.time() - start,
                     unplaced_vms=[vm.id for vm in self.request.vms],
+                    diagnostics=diagnostics,
                 )
 
         except Exception as e:
@@ -567,6 +627,20 @@ class VMPlacementSolver:
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
             )
+
+    def _build_failure_diagnostics(self) -> dict[str, object]:
+        """Delegate to DiagnosticsBuilder (app/diagnostics.py)."""
+        from .diagnostics import DiagnosticsBuilder
+
+        return DiagnosticsBuilder(
+            request=self.request,
+            vm_map=self.vm_map,
+            bm_map=self.bm_map,
+            ag_to_bms=self.ag_to_bms,
+            effective_rules=self.effective_rules,
+            config=self.config,
+            num_variables=len(self.assign),
+        ).build()
 
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float
@@ -579,10 +653,12 @@ class VMPlacementSolver:
             placed = False
             for bm in self.request.baremetals:
                 if (vm.id, bm.id) in self.assign:
-                    if solver.Value(self.assign[(vm.id, bm.id)]) == 1:
+                    if solver.value(self.assign[(vm.id, bm.id)]) == 1:
                         assignments.append(PlacementAssignment(
                             vm_id=vm.id,
+                            vm_hostname=vm.hostname,
                             baremetal_id=bm.id,
+                            bm_hostname=bm.hostname,
                             ag=bm.topology.ag,
                         ))
                         placed = True
@@ -599,7 +675,7 @@ class VMPlacementSolver:
         )
 
     @staticmethod
-    def _status_name(status: int) -> str:
+    def _status_name(status: cp_model.CpSolverStatus) -> str:
         return {
             cp_model.OPTIMAL: "OPTIMAL",
             cp_model.FEASIBLE: "FEASIBLE",

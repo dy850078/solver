@@ -1,0 +1,73 @@
+{
+  "_description": "Successful placement: 2 masters + 2 workers across 3 AGs with anti-affinity. All VMs fit comfortably.",
+  "vms": [
+    {
+      "id": "vm-master-1",
+      "hostname": "k8s-master-01",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    },
+    {
+      "id": "vm-master-2",
+      "hostname": "k8s-master-02",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    },
+    {
+      "id": "vm-worker-1",
+      "hostname": "k8s-worker-01",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    },
+    {
+      "id": "vm-worker-2",
+      "hostname": "k8s-worker-02",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-1"
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 100},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    },
+    {
+      "id": "bm-03",
+      "hostname": "bare-003.rack3",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000},
+      "used_capacity": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 200},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"}
+    }
+  ],
+  "anti_affinity_rules": [
+    {
+      "group_id": "masters-ha",
+      "vm_ids": ["vm-master-1", "vm-master-2"],
+      "max_per_ag": 1
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "headroom_upper_bound_pct": 90
+  }
+}
