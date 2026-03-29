@@ -8,7 +8,7 @@ dependencies = [
     "pydantic>=2.0",
     "fastapi>=0.100",
     "uvicorn>=0.20",
-    "swagger-ui-bundle>=1.1.0",
+    "pandas==2.3.3",
 ]
 
 [project.optional-dependencies]

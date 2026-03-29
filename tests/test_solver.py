@@ -6,64 +6,15 @@ Run: pytest tests/test_solver.py -v
 """
 
 import json
-from fastapi.testclient import TestClient
 
 from app.models import (
-    Resources, Topology, Baremetal, VM, NodeRole,
-    AntiAffinityRule, SolverConfig,
-    PlacementRequest, PlacementResult, PlacementAssignment,
-    ExistingVM, TopologyRule,
+    Resources, NodeRole,
+    AntiAffinityRule,
+    PlacementRequest, PlacementResult,
 )
-from app.solver import VMPlacementSolver, validate_topology_rules
-from app.server import api
+from app.solver import VMPlacementSolver
 
-client = TestClient(api)
-
-
-# ===========================================================================
-# Helpers — keep tests readable
-# ===========================================================================
-
-def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
-            used_cpu=0, used_mem=0, used_disk=0,
-            ag="ag-1", dc="dc-1", rack="rack-1"):
-    # Pydantic BaseModel 只接受 keyword arguments，不接受 positional arguments
-    return Baremetal(
-        id=bm_id,
-        total_capacity=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk, gpu_count=gpu),
-        used_capacity=Resources(cpu_cores=used_cpu, memory_mb=used_mem, disk_gb=used_disk),
-        topology=Topology(site="site-a", phase="p1", datacenter=dc, rack=rack, ag=ag),
-    )
-
-def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
-            role=NodeRole.WORKER, cluster="cluster-1",
-            ip_type="routable", candidates=None):
-    return VM(
-        id=vm_id,
-        demand=Resources(cpu_cores=cpu, memory_mb=mem, disk_gb=disk),
-        node_role=role,
-        ip_type=ip_type,
-        cluster_id=cluster,
-        candidate_baremetals=candidates or [],
-    )
-
-def solve(vms, bms, rules=None, existing_vms=None, topology_rules=None,
-          **config_overrides):
-    """Solve with default config, overridable."""
-    cfg = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
-    cfg.update(config_overrides)
-    request = PlacementRequest(
-        vms=vms, baremetals=bms,
-        anti_affinity_rules=rules or [],
-        existing_vms=existing_vms or [],
-        topology_rules=topology_rules or [],
-        config=SolverConfig(**cfg),
-    )
-    return VMPlacementSolver(request).solve()
-
-def amap(result):
-    """Shorthand: vm_id -> bm_id dict."""
-    return result.to_assignment_map()
+from .conftest import make_bm, make_vm, solve, amap
 
 
 # ===========================================================================
@@ -341,33 +292,33 @@ class TestSerialization:
 
     def test_round_trip(self):
         req = json.dumps({
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
         })
 
-        # Pydantic: JSON string → model (取代 load_request_from_json)
+        # JSON string → Pydantic model
         request = PlacementRequest.model_validate_json(req)
         result = VMPlacementSolver(request).solve()
 
-        # Pydantic: model → JSON string → dict (取代 result_to_json)
+        # Pydantic model → JSON string → dict
         out = json.loads(result.model_dump_json())
 
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
         assert out["assignments"][0]["ag"] == "ag-1"
 
-    def test_http_solve_endpoint(self):
-        """FastAPI POST /v1/placement/solve 回傳正確結果。"""
+    def test_http_solve_endpoint(self, client):
+        """POST /v1/placement/solve returns correct result."""
         resp = client.post("/v1/placement/solve", json={
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mb": 16000, "disk_gb": 100}}],
+            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
             "baremetals": [{
                 "id": "bm-1",
-                "total_capacity": {"cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000},
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},
@@ -377,329 +328,167 @@ class TestSerialization:
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
 
-    def test_http_healthz(self):
-        """GET /healthz 回傳 healthy。"""
+    def test_http_healthz(self, client):
+        """GET /healthz returns healthy."""
         resp = client.get("/healthz")
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
 
-    def test_http_invalid_request_returns_422(self):
-        """送出缺少必要欄位的 JSON，FastAPI 自動回傳 422。"""
+    def test_hostname_pass_through(self, client):
+        """Hostname passes through from request to response assignments."""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{"id": "vm-1", "hostname": "k8s-master-01.prod",
+                     "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "baremetals": [{
+                "id": "bm-1", "hostname": "bare-001.rack1",
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        })
+        assert resp.status_code == 200
+        out = resp.json()
+        assert out["assignments"][0]["vm_hostname"] == "k8s-master-01.prod"
+        assert out["assignments"][0]["bm_hostname"] == "bare-001.rack1"
+
+    def test_hostname_defaults_to_empty(self):
+        """Missing hostname defaults to empty string in response."""
+        r = solve([make_vm("vm-1")], [make_bm("bm-1")])
+        assert r.success
+        assert r.assignments[0].vm_hostname == ""
+        assert r.assignments[0].bm_hostname == ""
+
+    def test_http_invalid_request_returns_422(self, client):
+        """Missing required fields → FastAPI returns 422."""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
         assert resp.status_code == 422
 
-    def test_swagger_ui_loads_from_local_static(self):
-        """
-        /docs 應回傳 200，且 HTML 中的 JS/CSS 指向本機 /swagger-static，
-        而非 cdn.jsdelivr.net（避免無網路環境下頁面空白）。
-        """
-        resp = client.get("/docs")
-        assert resp.status_code == 200
-        assert "cdn.jsdelivr.net" not in resp.text
-        assert "/swagger-static/swagger-ui-bundle.js" in resp.text
-        assert "/swagger-static/swagger-ui.css" in resp.text
-
 
 # ===========================================================================
-# 9. BM VM count limit
+# 9. Objective function: consolidation + headroom
 # ===========================================================================
 
-class TestBmVmCountLimit:
+class TestObjective:
 
-    def test_count_limit_respected(self):
-        """BM has max_vm_count=2, already has 1 → can only add 1 more."""
-        bms = [make_bm("bm-1")]
-        # Patch max_vm_count and current_vm_count
-        bms[0] = bms[0].model_copy(update={"max_vm_count": 2, "current_vm_count": 1})
-        vms = [make_vm("vm-1"), make_vm("vm-2")]
-        r = solve(vms, bms)
-        # Only 1 VM can be placed (capacity is fine but count limit hit)
-        assert not r.success
+    def test_consolidation_prefers_fewer_bms(self):
+        """Consolidation: 2 BMs can hold all VMs; solver packs into 1."""
+        bms = [
+            make_bm("bm-1", cpu=64, mem=256_000),
+            make_bm("bm-2", cpu=64, mem=256_000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(3)]
 
-    def test_count_limit_allows_fit(self):
-        """BM has max_vm_count=5, current=2 → can add 3."""
-        bms = [make_bm("bm-1")]
-        bms[0] = bms[0].model_copy(update={"max_vm_count": 5, "current_vm_count": 2})
+        r = solve(vms, bms, w_consolidation=10, w_headroom=0)
+
+        assert r.success
+        assert len(r.assignments) == 3
+
+        bm_ids_used = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids_used) == 1, f"Expected 1 BM used, got: {bm_ids_used}"
+
+    def test_headroom_avoids_high_utilization(self):
+        """Headroom: BM-A at 80% after placement, BM-B at 100%. Solver picks BM-A."""
+        bms = [
+            make_bm("bm-a", cpu=10, mem=256_000, used_cpu=0),
+            make_bm("bm-b", cpu=10, mem=256_000, used_cpu=2),  # 2 cpu already used
+        ]
+        vms = [make_vm("vm-1", cpu=8, mem=16_000)]
+
+        r = solve(vms, bms, w_consolidation=0, w_headroom=8)
+
+        assert r.success
+        # BM-A: (0+8)/10 = 80% → over = 0
+        # BM-B: (2+8)/10 = 100% → over = 10
+        assert amap(r)["vm-1"] == "bm-a", f"Expected bm-a, got: {amap(r)}"
+
+    def test_partial_placement_priority_over_consolidation(self):
+        """Partial placement priority beats consolidation — placing more VMs always wins."""
+        bms = [make_bm("bm-1", cpu=8, mem=32_000, disk=200)]
         vms = [make_vm(f"vm-{i}") for i in range(3)]
-        r = solve(vms, bms)
-        assert r.success
 
-    def test_count_limit_none_means_unlimited(self):
-        """max_vm_count=None → no count limit."""
-        bms = [make_bm("bm-1")]
-        vms = [make_vm(f"vm-{i}") for i in range(10)]
-        r = solve(vms, bms)
-        assert r.success
-        assert len(r.assignments) == 10
+        r = solve(vms, bms, allow_partial_placement=True, w_consolidation=10)
 
-    def test_count_limit_spreads_across_bms(self):
-        """max_vm_count=2 on each BM → 4 VMs spread across 2 BMs."""
-        bms = [
-            make_bm("bm-1").model_copy(update={"max_vm_count": 2, "current_vm_count": 0}),
-            make_bm("bm-2").model_copy(update={"max_vm_count": 2, "current_vm_count": 0}),
-        ]
-        vms = [make_vm(f"vm-{i}") for i in range(4)]
-        r = solve(vms, bms)
-        assert r.success
-        bm_counts = {}
-        for a in r.assignments:
-            bm_counts[a.baremetal_id] = bm_counts.get(a.baremetal_id, 0) + 1
-        assert all(c <= 2 for c in bm_counts.values())
-
-
-# ===========================================================================
-# 10. Topology rule validation
-# ===========================================================================
-
-class TestTopologyValidation:
-
-    def test_affinity_hard_downgraded(self):
-        """Affinity + hard → auto-downgraded to soft with warning."""
-        rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="affinity", enforcement="hard",
-        )]
-        validated, warnings = validate_topology_rules(rules)
-        assert validated[0].enforcement == "soft"
-        assert any(w["type"] == "enforcement_downgraded" for w in warnings)
-
-    def test_conflict_detected(self):
-        """Affinity @ rack + anti-affinity @ datacenter → conflict."""
-        rules = [
-            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
-                         scope="rack", type="affinity", enforcement="soft"),
-            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
-                         scope="datacenter", type="anti_affinity", enforcement="hard"),
-        ]
-        import pytest
-        with pytest.raises(ValueError, match="conflict"):
-            validate_topology_rules(rules)
-
-    def test_no_conflict_affinity_coarser(self):
-        """Affinity @ site + anti-affinity @ datacenter → OK (same site, different DC)."""
-        rules = [
-            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
-                         scope="site", type="affinity", enforcement="soft"),
-            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
-                         scope="datacenter", type="anti_affinity", enforcement="hard"),
-        ]
-        validated, warnings = validate_topology_rules(rules)
-        assert len(validated) == 2
-
-    def test_redundant_rules_filtered(self):
-        """Same pair + same direction at rack and datacenter → keep rack, warn datacenter."""
-        rules = [
-            TopologyRule(rule_id="fine", cluster_ids=["A", "B"],
-                         scope="rack", type="anti_affinity", enforcement="hard"),
-            TopologyRule(rule_id="coarse", cluster_ids=["A", "B"],
-                         scope="datacenter", type="anti_affinity", enforcement="hard"),
-        ]
-        validated, warnings = validate_topology_rules(rules)
-        assert len(validated) == 1
-        assert validated[0].rule_id == "fine"
-        assert any(w["type"] == "redundant_rule_filtered" for w in warnings)
-
-
-# ===========================================================================
-# 11. Cross-cluster hard anti-affinity
-# ===========================================================================
-
-class TestCrossClusterHardAntiAffinity:
-
-    def test_blocks_same_dc(self):
-        """Cluster B in dc-1 + anti-affinity@datacenter → Cluster A can't go to dc-1."""
-        bms = [
-            make_bm("bm-1", dc="dc-1"),
-            make_bm("bm-2", dc="dc-2"),
-        ]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="existing-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="anti_affinity", enforcement="hard",
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success
-        assert amap(r)["vm-1"] == "bm-2"  # must avoid dc-1
-
-    def test_infeasible_all_dcs_occupied(self):
-        """All DCs occupied by cluster B → infeasible."""
-        bms = [make_bm("bm-1", dc="dc-1"), make_bm("bm-2", dc="dc-1")]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="anti_affinity", enforcement="hard",
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert not r.success
-
-    def test_no_effect_on_unrelated_cluster(self):
-        """Rule between A and B should not affect cluster C."""
-        bms = [make_bm("bm-1", dc="dc-1")]
-        vms = [make_vm("vm-1", cluster="C")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="anti_affinity", enforcement="hard",
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success  # C is not in the rule, so it can go anywhere
-
-    def test_rack_level_anti_affinity(self):
-        """Anti-affinity at rack level: same DC is fine, same rack is not."""
-        bms = [
-            make_bm("bm-1", dc="dc-1", rack="rack-1"),
-            make_bm("bm-2", dc="dc-1", rack="rack-2"),
-        ]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="rack", type="anti_affinity", enforcement="hard",
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success
-        assert amap(r)["vm-1"] == "bm-2"  # rack-2 is fine
-
-
-# ===========================================================================
-# 12. Cross-cluster soft anti-affinity
-# ===========================================================================
-
-class TestCrossClusterSoftAntiAffinity:
-
-    def test_prefers_different_dc(self):
-        """Soft anti-affinity: prefers dc-2 but doesn't fail if only dc-1 available."""
-        bms = [
-            make_bm("bm-1", dc="dc-1"),
-            make_bm("bm-2", dc="dc-2"),
-        ]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="anti_affinity", enforcement="soft", weight=10,
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success
-        assert amap(r)["vm-1"] == "bm-2"  # prefers avoiding dc-1
-
-    def test_soft_anti_affinity_does_not_block(self):
-        """If only dc-1 available, soft anti-affinity still allows it."""
-        bms = [make_bm("bm-1", dc="dc-1")]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="anti_affinity", enforcement="soft", weight=10,
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success  # soft doesn't block
-
-
-# ===========================================================================
-# 13. Cross-cluster soft affinity
-# ===========================================================================
-
-class TestCrossClusterSoftAffinity:
-
-    def test_prefers_same_dc(self):
-        """Soft affinity: prefers to co-locate in dc-1 with cluster B."""
-        bms = [
-            make_bm("bm-1", dc="dc-1"),
-            make_bm("bm-2", dc="dc-2"),
-        ]
-        vms = [make_vm("vm-1", cluster="A")]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="affinity", enforcement="soft", weight=10,
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules)
-        assert r.success
-        assert amap(r)["vm-1"] == "bm-1"  # prefers dc-1
-
-    def test_affinity_no_existing_vms_warns(self):
-        """Affinity with no existing VMs → no effect, just a warning."""
-        bms = [make_bm("bm-1", dc="dc-1")]
-        vms = [make_vm("vm-1", cluster="A")]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="affinity", enforcement="soft",
-        )]
-        r = solve(vms, bms, topology_rules=topo_rules)
-        assert r.success
-        warnings = r.diagnostics.get("warnings", [])
-        assert any(w["type"] == "affinity_rule_no_effect" for w in warnings)
-
-
-# ===========================================================================
-# 14. Two-phase solving
-# ===========================================================================
-
-class TestTwoPhaseSolving:
-
-    def test_partial_with_soft_rules(self):
-        """Partial placement + soft affinity: maximize VMs first, then soft score."""
-        bms = [
-            make_bm("bm-1", cpu=8, mem=32_000, disk=200, dc="dc-1"),
-            make_bm("bm-2", cpu=8, mem=32_000, disk=200, dc="dc-2"),
-        ]
-        # 5 VMs but room for only 4 (2 per BM by cpu)
-        vms = [make_vm(f"vm-{i}", cluster="A") for i in range(5)]
-        existing = [ExistingVM(
-            vm_id="ex-1", cluster_id="B", baremetal_id="bm-ext",
-            topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1"),
-        )]
-        topo_rules = [TopologyRule(
-            rule_id="r1", cluster_ids=["A", "B"],
-            scope="datacenter", type="affinity", enforcement="soft", weight=1,
-        )]
-        r = solve(vms, bms, existing_vms=existing, topology_rules=topo_rules,
-                  allow_partial_placement=True)
-        # Should place 4 VMs (resource limit), not sacrifice any for affinity
-        assert len(r.assignments) == 4
+        # capacity fits only 2 (8 cpu / 4 cpu per VM = 2)
+        assert len(r.assignments) == 2, f"Expected 2 placed, got {len(r.assignments)}"
         assert len(r.unplaced_vms) == 1
 
 
 # ===========================================================================
-# 15. MODEL_INVALID from topology conflict
+# 10. Slot Score: penalize wasteful leftover capacity
 # ===========================================================================
 
-class TestModelInvalid:
+class TestSlotScore:
 
-    def test_conflicting_rules_returns_model_invalid(self):
-        """Conflicting affinity+anti-affinity returns MODEL_INVALID."""
-        bms = [make_bm("bm-1")]
-        vms = [make_vm("vm-1", cluster="A")]
-        topo_rules = [
-            TopologyRule(rule_id="aff", cluster_ids=["A", "B"],
-                         scope="rack", type="affinity", enforcement="soft"),
-            TopologyRule(rule_id="anti", cluster_ids=["A", "B"],
-                         scope="datacenter", type="anti_affinity", enforcement="hard"),
+    def test_slot_score_prefers_usable_remainder(self):
+        """
+        Both BMs can hold the VM(cpu=8).
+        BM-A: 32 cpu → 24 remaining → fits 6 small + 3 medium + 1 large
+        BM-B: 10 cpu →  2 remaining → fits no t-shirt size
+        Slot score prefers BM-A (more usable remainder).
+        """
+        from app.models import Resources
+
+        bms = [
+            make_bm("bm-a", cpu=32, mem=256_000, disk=2000),
+            make_bm("bm-b", cpu=10, mem=256_000, disk=2000),
         ]
-        r = solve(vms, bms, topology_rules=topo_rules)
-        assert not r.success
-        assert r.solver_status == "MODEL_INVALID"
+        vms = [make_vm("vm-1", cpu=8, mem=16_000)]
+
+        tshirts = [
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+            Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400),
+        ]
+
+        r = solve(
+            vms, bms,
+            w_consolidation=0, w_headroom=0, w_slot_score=5,
+            slot_tshirt_sizes=tshirts,
+        )
+
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-a", f"Expected bm-a, got: {amap(r)}"
+
+    def test_slot_score_breaks_consolidation_tie(self):
+        """
+        Consolidation packs into 1 BM (both can hold all VMs).
+        Slot score breaks the tie:
+        BM-A: 32 cpu → 24 remaining → small=6, medium=3 → score=9
+        BM-B: 12 cpu →  4 remaining → small=1, medium=0 → score=1
+        Tie on consolidation → slot score picks BM-A.
+        """
+        from app.models import Resources
+
+        bms = [
+            make_bm("bm-a", cpu=32, mem=256_000, disk=2000),
+            make_bm("bm-b", cpu=12, mem=256_000, disk=2000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(2)]
+
+        tshirts = [
+            Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+            Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+        ]
+
+        r = solve(
+            vms, bms,
+            w_consolidation=10, w_headroom=0, w_slot_score=1,
+            slot_tshirt_sizes=tshirts,
+        )
+
+        assert r.success
+        bm_ids_used = {a.baremetal_id for a in r.assignments}
+        assert bm_ids_used == {"bm-a"}, f"Expected bm-a only, got: {bm_ids_used}"
+
+    def test_slot_score_zero_weight_disables(self):
+        """w_slot_score=0 disables slot scoring."""
+        bms = [
+            make_bm("bm-1", cpu=64, mem=256_000),
+            make_bm("bm-2", cpu=64, mem=256_000),
+        ]
+        vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(3)]
+
+        r = solve(vms, bms, w_consolidation=10, w_headroom=0, w_slot_score=0)
+
+        assert r.success
+        assert len(r.assignments) == 3

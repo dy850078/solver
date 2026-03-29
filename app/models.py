@@ -1,10 +1,8 @@
 """
 VM Placement Solver — Data Models
 
-Pydantic v2 BaseModel 取代 dataclass 的好處：
-  - model_validate_json(str) 直接把 JSON 字串轉成 Python 物件（不需要 serialization.py）
-  - model_dump_json() 把 Python 物件轉回 JSON 字串
-  - 建立物件時自動驗證型別，送錯資料立刻有清楚的錯誤訊息
+Uses Pydantic v2 BaseModel for automatic JSON serialization/deserialization
+and type validation on construction.
 
 Topology: site > phase > datacenter > rack
 Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
@@ -25,40 +23,36 @@ class Resources(BaseModel):
     """
     Represents resource capacity or demand.
 
-    為什麼用獨立的 class？因為 VM 和 Baremetal 都用同樣的維度（cpu, mem, disk, gpu），
-    寫一個 class 就可以讓 solver 用統一的方式處理所有維度。
-
-    Pydantic 注意事項：
-      - 欄位宣告方式和 dataclass 一樣：cpu_cores: int = 0
-      - 建立方式也一樣：Resources(cpu_cores=4, memory_mb=16000)
+    Shared by VM (demand) and Baremetal (capacity) so the solver
+    can handle all resource dimensions uniformly.
     """
     cpu_cores: int = 0
-    memory_mb: int = 0
-    disk_gb: int = 0
+    memory_mib: int = 0
+    storage_gb: int = 0
     gpu_count: int = 0
 
     def fits_in(self, capacity: Resources) -> bool:
         """Can this demand fit within the given capacity?"""
         return (
             self.cpu_cores <= capacity.cpu_cores
-            and self.memory_mb <= capacity.memory_mb
-            and self.disk_gb <= capacity.disk_gb
+            and self.memory_mib <= capacity.memory_mib
+            and self.storage_gb <= capacity.storage_gb
             and self.gpu_count <= capacity.gpu_count
         )
 
     def __add__(self, other: Resources) -> Resources:
         return Resources(
             cpu_cores=self.cpu_cores + other.cpu_cores,
-            memory_mb=self.memory_mb + other.memory_mb,
-            disk_gb=self.disk_gb + other.disk_gb,
+            memory_mib=self.memory_mib + other.memory_mib,
+            storage_gb=self.storage_gb + other.storage_gb,
             gpu_count=self.gpu_count + other.gpu_count,
         )
 
     def __sub__(self, other: Resources) -> Resources:
         return Resources(
             cpu_cores=self.cpu_cores - other.cpu_cores,
-            memory_mb=self.memory_mb - other.memory_mb,
-            disk_gb=self.disk_gb - other.disk_gb,
+            memory_mib=self.memory_mib - other.memory_mib,
+            storage_gb=self.storage_gb - other.storage_gb,
             gpu_count=self.gpu_count - other.gpu_count,
         )
 
@@ -86,14 +80,10 @@ class Topology(BaseModel):
 class Baremetal(BaseModel):
     """
     A physical host. The Go scheduler fills in total_capacity and used_capacity
-    from the inventory API. We compute available = total - used.
-
-    Cross-scheduling additions:
-      - bm_role: BM role from Inventory API (e.g. "control-plane", "worker")
-      - max_vm_count: max total VMs allowed on this BM (None = unlimited)
-      - current_vm_count: how many VMs already exist on this BM (all clusters)
+    from the inventory API. available_capacity is derived (total - used).
     """
     id: str
+    hostname: str = ""
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
@@ -111,10 +101,7 @@ class Baremetal(BaseModel):
 # ---------------------------------------------------------------------------
 
 class NodeRole(str, Enum):
-    """
-    str, Enum 讓 Pydantic 可以直接從 JSON 字串（如 "master"）解析成 NodeRole.MASTER。
-    不需要在 serialization.py 裡手動 NodeRole(d.get("node_role", "worker"))。
-    """
+    """Node role enum. str mixin allows Pydantic to parse directly from JSON strings."""
     MASTER = "master"
     WORKER = "worker"
     INFRA = "infra"
@@ -134,6 +121,7 @@ class VM(BaseModel):
       anti-affinity rules.
     """
     id: str
+    hostname: str = ""
     demand: Resources
     node_role: NodeRole = NodeRole.WORKER
     ip_type: str = ""
@@ -208,6 +196,13 @@ class SolverConfig(BaseModel):
     num_workers: int = 8
     allow_partial_placement: bool = False
     auto_generate_anti_affinity: bool = True
+    # Objective function weights
+    w_consolidation: int = 10
+    w_headroom: int = 8
+    headroom_upper_bound_pct: int = 90
+    # Slot score: penalize placements that leave unusable leftover capacity
+    w_slot_score: int = 0
+    slot_tshirt_sizes: list[Resources] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -215,13 +210,7 @@ class SolverConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 class PlacementRequest(BaseModel):
-    """
-    Input: what the Go scheduler sends to the Python solver.
-
-    Cross-scheduling additions:
-      - existing_vms: VMs from other clusters already placed on BMs
-      - topology_rules: cross-cluster affinity/anti-affinity rules
-    """
+    """Input: what the Go scheduler sends to the Python solver."""
     vms: list[VM]
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
@@ -233,18 +222,14 @@ class PlacementRequest(BaseModel):
 class PlacementAssignment(BaseModel):
     """One VM → one BM assignment, with the AG for easy verification."""
     vm_id: str
+    vm_hostname: str = ""
     baremetal_id: str
+    bm_hostname: str = ""
     ag: str = ""
 
 
 class PlacementResult(BaseModel):
-    """
-    Output: what the Python solver returns to the Go scheduler.
-
-    使用方式：
-      json_string = result.model_dump_json(indent=2)
-      python_dict = result.model_dump()
-    """
+    """Output: what the Python solver returns to the Go scheduler."""
     success: bool
     assignments: list[PlacementAssignment] = Field(default_factory=list)
     solver_status: str = ""

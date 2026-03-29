@@ -251,12 +251,80 @@ solver/
     └── objective-function-guide.md         # CP-SAT implementation guide
 ```
 
-## Branches
+## Testing with curl
 
-| Branch | Purpose |
-|--------|---------|
-| `master` | Active development |
-| `solution/objective-function` | Reference implementation — objective function (consolidation + headroom) |
+### 1. Start the server
+
+```bash
+python -m app.server --port 50051
+```
+
+### 2. Health check
+
+```bash
+curl http://localhost:50051/healthz
+# {"status":"healthy"}
+```
+
+### 3. Minimal solve request (inline JSON)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/solve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vms": [
+      {
+        "id": "vm-1",
+        "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
+      }
+    ],
+    "baremetals": [
+      {
+        "id": "bm-1",
+        "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+        "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+        "topology": {"ag": "ag-1"}
+      }
+    ]
+  }' | jq
+```
+
+### 4. Full-featured request (from example file)
+
+```bash
+# 4 VMs (2 masters + 2 workers), 3 BMs, anti-affinity rule, custom config
+curl -s -X POST http://localhost:50051/v1/placement/solve \
+  -H "Content-Type: application/json" \
+  -d @examples/success_basic.json | jq
+```
+
+### 5. Error case: INFEASIBLE
+
+```bash
+# Triggers INFEASIBLE — not enough AGs for anti-affinity or VM too large
+curl -s -X POST http://localhost:50051/v1/placement/solve \
+  -H "Content-Type: application/json" \
+  -d @examples/error_infeasible.json | jq
+```
+
+### 6. Error case: INPUT_ERROR (duplicate BMs)
+
+```bash
+# Triggers INPUT_ERROR — duplicate baremetal IDs in request
+curl -s -X POST http://localhost:50051/v1/placement/solve \
+  -H "Content-Type: application/json" \
+  -d @examples/error_duplicate_bm.json | jq
+```
+
+### 7. CLI mode (no server needed)
+
+```bash
+# Run solver directly on a JSON file
+python -m app.server --cli --input examples/success_basic.json
+
+# Save output to file
+python -m app.server --cli --input examples/success_basic.json --output output/result.json
+```
 
 ## Development Guidelines
 

@@ -1,0 +1,34 @@
+{
+  "vms": [
+    {
+      "id": "vm-01",
+      "hostname": "worker-01",
+      "demand": {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu_count": 0},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03", "bm-04", "bm-05", "bm-06", "bm-07", "bm-08", "bm-09"]
+    },
+    {
+      "id": "vm-02",
+      "hostname": "worker-02",
+      "demand": {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu_count": 0},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03", "bm-04", "bm-05", "bm-06", "bm-07", "bm-08", "bm-09"]
+    }
+  ],
+  "baremetals": [
+    {"id": "bm-01", "hostname": "host-01", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag1"}},
+    {"id": "bm-02", "hostname": "host-02", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag1"}},
+    {"id": "bm-03", "hostname": "host-03", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag1"}},
+    {"id": "bm-04", "hostname": "host-04", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag2"}},
+    {"id": "bm-05", "hostname": "host-05", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag2"}},
+    {"id": "bm-06", "hostname": "host-06", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag2"}},
+    {"id": "bm-07", "hostname": "host-07", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag3"}},
+    {"id": "bm-08", "hostname": "host-08", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag3"}},
+    {"id": "bm-09", "hostname": "host-09", "total_capacity": {"cpu_cores": 192, "memory_mib": 1572864, "storage_gb": 8192, "gpu_count": 0}, "used_capacity": {"cpu_cores": 80, "memory_mib": 600000, "storage_gb": 3000, "gpu_count": 0}, "topology": {"ag": "ag3"}}
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true
+  }
+}
