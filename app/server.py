@@ -11,9 +11,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
+import swagger_ui_bundle
 import uvicorn
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .models import PlacementRequest, PlacementResult
 from .solver import VMPlacementSolver
@@ -27,7 +32,22 @@ api = FastAPI(
     title="VM Placement Solver",
     description="Optimizes VM-to-baremetal placement using OR-Tools CP-SAT solver",
     version="0.1.0",
+    docs_url=None,   # 關閉預設 /docs（會從 CDN 載入，無網路時空白）
 )
+
+# 掛載本機靜態檔案到 /swagger-static
+api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
+
+
+@api.get("/docs", include_in_schema=False)
+def custom_swagger_ui() -> HTMLResponse:
+    """Swagger UI，使用本機靜態資源（不依賴 CDN）。"""
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="VM Placement Solver — API Docs",
+        swagger_js_url="/swagger-static/swagger-ui-bundle.js",
+        swagger_css_url="/swagger-static/swagger-ui.css",
+    )
 
 
 @api.post("/v1/placement/solve", response_model=PlacementResult)

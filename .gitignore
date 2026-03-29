@@ -42,9 +42,10 @@ logs/
 
 # Output files
 *.csv
-*.json
 *.xlsx
 output/
+*.json
+!examples/*.json
 
 # Temporary files
 tmp/

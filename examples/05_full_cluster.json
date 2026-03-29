@@ -1,0 +1,73 @@
+{
+  "_comment": "Realistic small cluster: 3 masters + 4 workers across 3 AGs, with BM vm count limits and a cross-cluster soft anti-affinity rule.",
+  "vms": [
+    { "id": "vm-master-1", "demand": { "cpu_cores": 4,  "memory_mb": 16000, "disk_gb": 100, "gpu_count": 0 }, "node_role": "master", "ip_type": "routable",     "cluster_id": "cluster-a" },
+    { "id": "vm-master-2", "demand": { "cpu_cores": 4,  "memory_mb": 16000, "disk_gb": 100, "gpu_count": 0 }, "node_role": "master", "ip_type": "routable",     "cluster_id": "cluster-a" },
+    { "id": "vm-master-3", "demand": { "cpu_cores": 4,  "memory_mb": 16000, "disk_gb": 100, "gpu_count": 0 }, "node_role": "master", "ip_type": "routable",     "cluster_id": "cluster-a" },
+    { "id": "vm-worker-1", "demand": { "cpu_cores": 8,  "memory_mb": 32000, "disk_gb": 200, "gpu_count": 0 }, "node_role": "worker", "ip_type": "non-routable", "cluster_id": "cluster-a" },
+    { "id": "vm-worker-2", "demand": { "cpu_cores": 8,  "memory_mb": 32000, "disk_gb": 200, "gpu_count": 0 }, "node_role": "worker", "ip_type": "non-routable", "cluster_id": "cluster-a" },
+    { "id": "vm-worker-3", "demand": { "cpu_cores": 8,  "memory_mb": 32000, "disk_gb": 200, "gpu_count": 0 }, "node_role": "worker", "ip_type": "non-routable", "cluster_id": "cluster-a" },
+    { "id": "vm-infra-1",  "demand": { "cpu_cores": 4,  "memory_mb": 16000, "disk_gb": 100, "gpu_count": 0 }, "node_role": "infra",  "ip_type": "routable",     "cluster_id": "cluster-a" }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-ag1-01",
+      "total_capacity": { "cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000, "gpu_count": 0 },
+      "used_capacity":  { "cpu_cores": 8,  "memory_mb": 32000,  "disk_gb": 200,  "gpu_count": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1" },
+      "bm_role": "worker",
+      "max_vm_count": 5,
+      "current_vm_count": 1
+    },
+    {
+      "id": "bm-ag1-02",
+      "total_capacity": { "cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000, "gpu_count": 0 },
+      "used_capacity":  { "cpu_cores": 0,  "memory_mb": 0,      "disk_gb": 0,    "gpu_count": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1" },
+      "bm_role": "worker",
+      "max_vm_count": 5,
+      "current_vm_count": 0
+    },
+    {
+      "id": "bm-ag2-01",
+      "total_capacity": { "cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000, "gpu_count": 0 },
+      "used_capacity":  { "cpu_cores": 0,  "memory_mb": 0,      "disk_gb": 0,    "gpu_count": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2" },
+      "bm_role": "worker",
+      "max_vm_count": 5,
+      "current_vm_count": 0
+    },
+    {
+      "id": "bm-ag3-01",
+      "total_capacity": { "cpu_cores": 64, "memory_mb": 256000, "disk_gb": 2000, "gpu_count": 0 },
+      "used_capacity":  { "cpu_cores": 0,  "memory_mb": 0,      "disk_gb": 0,    "gpu_count": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3" },
+      "bm_role": "worker",
+      "max_vm_count": 5,
+      "current_vm_count": 0
+    }
+  ],
+  "existing_vms": [
+    {
+      "vm_id": "vm-b-worker-1",
+      "cluster_id": "cluster-b",
+      "baremetal_id": "bm-ext-dc2",
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-9", "ag": "ag-3" }
+    }
+  ],
+  "topology_rules": [
+    {
+      "rule_id": "a-b-dc-soft-anti-affinity",
+      "cluster_ids": ["cluster-a", "cluster-b"],
+      "scope": "datacenter",
+      "type": "anti_affinity",
+      "enforcement": "soft",
+      "weight": 5
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "allow_partial_placement": false,
+    "max_solve_time_seconds": 30
+  }
+}
