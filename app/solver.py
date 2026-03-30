@@ -636,7 +636,7 @@ class VMPlacementSolver:
             if not assigned_vars:
                 continue
             new_count = sum(assigned_vars)
-            self.model.Add(bm.current_vm_count + new_count <= bm.max_vm_count)
+            self.model.add(bm.current_vm_count + new_count <= bm.max_vm_count)
 
     # ------------------------------------------------------------------
     # Cross-cluster topology constraints
@@ -675,7 +675,7 @@ class VMPlacementSolver:
                         continue
                     bm_zone = _get_topology_zone(bm.topology, rule.scope)
                     if bm_zone in occupied_zones:
-                        self.model.Add(self.assign[(vm.id, bm.id)] == 0)
+                        self.model.add(self.assign[(vm.id, bm.id)] == 0)
 
     def _build_soft_objective_terms(
         self, rules: list[TopologyRule]
@@ -717,11 +717,11 @@ class VMPlacementSolver:
                     if colocated_vars:
                         # score(vm, rule) = 1 if any of these is set
                         # Since exactly one BM is chosen, sum == 0 or 1
-                        indicator = self.model.NewBoolVar(
+                        indicator = self.model.new_bool_var(
                             f"aff_{rule.rule_id}_{vm.id}"
                         )
-                        self.model.Add(sum(colocated_vars) >= 1).OnlyEnforceIf(indicator)
-                        self.model.Add(sum(colocated_vars) == 0).OnlyEnforceIf(indicator.Not())
+                        self.model.add(sum(colocated_vars) >= 1).only_enforce_if(indicator)
+                        self.model.add(sum(colocated_vars) == 0).only_enforce_if(indicator.negated())
                         terms.append((indicator, rule.weight))
 
             elif rule.type == "anti_affinity":
@@ -739,11 +739,11 @@ class VMPlacementSolver:
                         if bm_zone in occupied_zones:
                             violation_vars.append(self.assign[(vm.id, bm.id)])
                     if violation_vars:
-                        indicator = self.model.NewBoolVar(
+                        indicator = self.model.new_bool_var(
                             f"soft_anti_{rule.rule_id}_{vm.id}"
                         )
-                        self.model.Add(sum(violation_vars) >= 1).OnlyEnforceIf(indicator)
-                        self.model.Add(sum(violation_vars) == 0).OnlyEnforceIf(indicator.Not())
+                        self.model.add(sum(violation_vars) >= 1).only_enforce_if(indicator)
+                        self.model.add(sum(violation_vars) == 0).only_enforce_if(indicator.negated())
                         # Negative weight = penalty
                         terms.append((indicator, -rule.weight))
 
@@ -870,7 +870,7 @@ class VMPlacementSolver:
             objective_parts.append(var * weight)
 
         if objective_parts:
-            self.model.Maximize(sum(objective_parts))
+            self.model.maximize(sum(objective_parts))
 
         return self._run_solver(self.config.max_solve_time_seconds, start)
 
@@ -888,14 +888,14 @@ class VMPlacementSolver:
 
         # Phase 1: maximize placement count
         total_placed = sum(self.assign[key] for key in self.assign)
-        self.model.Maximize(total_placed)
+        self.model.maximize(total_placed)
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = phase_timeout
         solver.parameters.num_workers = self.config.num_workers
 
         logger.info("Two-phase solve: Phase 1 — maximize placement count")
-        status = solver.Solve(self.model)
+        status = solver.solve(self.model)
 
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             status_name = self._status_name(status)
@@ -908,19 +908,19 @@ class VMPlacementSolver:
             )
 
         # Get optimal placement count
-        optimal_count = int(solver.ObjectiveValue())
+        optimal_count = int(solver.objective_value)
         logger.info(f"Phase 1 result: {optimal_count} VMs placed")
 
         # Phase 2: fix count, maximize soft score
         # Add constraint: total_placed == optimal_count
-        self.model.Add(total_placed == optimal_count)
+        self.model.add(total_placed == optimal_count)
 
         if soft_terms:
             soft_obj = sum(var * weight for var, weight in soft_terms)
-            self.model.Maximize(soft_obj)
+            self.model.maximize(soft_obj)
         else:
             # Clear the objective — just find any feasible with count fixed
-            self.model.Maximize(0)
+            self.model.maximize(0)
 
         logger.info("Two-phase solve: Phase 2 — maximize soft rule score")
         return self._run_solver(phase_timeout, start)
@@ -939,7 +939,7 @@ class VMPlacementSolver:
             f"{len(self.ag_to_bms)} AGs"
         )
 
-        status = solver.Solve(self.model)
+        status = solver.solve(self.model)
         status_name = self._status_name(status)
         logger.info(f"Status: {status_name}")
 
