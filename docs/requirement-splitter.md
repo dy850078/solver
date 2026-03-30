@@ -276,6 +276,50 @@ assign[(vm_id, bm_id)]   BoolVar  (由 VMPlacementSolver 建立)
   意義：vm_id 是否放在 bm_id 上
 ```
 
+### 為什麼 `count_vars` 和 `active_vars` 要分開？
+
+**問題根源**：解題前不知道 `count_var` 的值是多少。
+
+`count_var = IntVar(0..upper)` 表示「可能用 0 到 upper 台」，但真正的數量要等 CP-SAT 解完才知道。Splitter 沒辦法只建立「解題後才知道的數量」的 VM。
+
+**解法**：預先建立 `upper` 個 VM 槽位（上限數量），每個槽位配一個 BoolVar（`active_var`），用連結約束把兩者綁在一起：
+
+```
+sum(active_vars for spec) == count_var
+```
+
+**具體範例**（upper=5，解出 count=3）：
+
+```
+count_var = IntVar(0~5)   ← 解出來 = 3
+
+active_vars:
+  split-r1-s1-0 → BoolVar  ← 解出來 = 1 (active，需要放置)
+  split-r1-s1-1 → BoolVar  ← 解出來 = 1 (active，需要放置)
+  split-r1-s1-2 → BoolVar  ← 解出來 = 1 (active，需要放置)
+  split-r1-s1-3 → BoolVar  ← 解出來 = 0 (inactive，跳過)
+  split-r1-s1-4 → BoolVar  ← 解出來 = 0 (inactive，跳過)
+
+驗證約束：1+1+1+0+0 = 3 = count_var  ✓
+```
+
+這 5 個 VM 都進入 `synthetic_vms` 傳給 `VMPlacementSolver`，但 Solver 透過 `active_var` 的值決定每個槽位的行為：
+- `active_var=1` → `sum(assign[vm, *]) == 1`，必須被放置到某台 BM
+- `active_var=0` → `sum(assign[vm, *]) == 0`，強制不放置，讀取結果時直接跳過
+
+**兩個變數的分工**：
+
+| | `count_vars` | `active_vars` |
+|---|---|---|
+| 層次 | Splitter 決策層 | VM 槽位層 |
+| 類型 | IntVar（整數） | BoolVar（0 或 1） |
+| 回答的問題 | 用幾台 spec X？ | 第 k 個槽位要不要放置？ |
+| 使用者 | Splitter 資源約束 | VMPlacementSolver |
+
+`active_vars` 是 Splitter 與 VMPlacementSolver 之間的**橋接點**，讓兩個求解器共用同一個 CpModel 的決策變數。
+
+---
+
 ### Constraints（splitter 建立）
 
 **1. Coverage constraint**（每個資源維度）
