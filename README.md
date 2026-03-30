@@ -31,6 +31,7 @@ python -m pytest tests/ -v
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/placement/solve` | Submit a placement request, receive an optimized assignment |
+| `POST` | `/v1/placement/split-and-solve` | Split resource requirements into VMs and solve placement jointly |
 | `GET`  | `/healthz` | Health check |
 | `GET`  | `/docs` | Swagger UI (served locally, no CDN required) |
 | `GET`  | `/openapi.json` | OpenAPI schema |
@@ -148,6 +149,73 @@ What to verify:
 
 ---
 
+### Split-and-Solve Examples
+
+The split-and-solve endpoint accepts total resource requirements instead of explicit VM lists.
+The solver automatically determines the optimal VM spec × count combination.
+
+#### Example 06 — Basic Split (32 CPU → 4 × 8-CPU VMs)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/06_split_basic.json | python3 -m json.tool
+```
+
+What to verify:
+- `success` is `true`
+- `split_decisions` has 1 entry: `{"node_role": "worker", "count": 4, "vm_spec": {"cpu_cores": 8, ...}}`
+- `assignments` has 4 entries (one per generated VM)
+
+---
+
+#### Example 07 — Multi-Spec Split (solver picks optimal mix)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/07_split_multi_spec.json | python3 -m json.tool
+```
+
+What to verify:
+- `success` is `true`
+- `split_decisions` shows the chosen spec(s) and count(s)
+- Total allocated CPU >= 48, memory >= 192000, storage >= 1200
+- Resource waste is minimized (check `w_resource_waste: 10` in config)
+
+---
+
+#### Example 08 — Multi-Role Split (3 masters + N workers)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/08_split_multi_role.json | python3 -m json.tool
+```
+
+What to verify:
+- `success` is `true`
+- `split_decisions` has entries for both `master` and `worker` roles
+- Master count is exactly 3 (`min_total_vms` and `max_total_vms` both set to 3)
+- Masters are spread across different AGs (auto anti-affinity enabled)
+
+---
+
+#### Example 09 — Mixed Mode (explicit VMs + split requirements)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/09_split_mixed_mode.json | python3 -m json.tool
+```
+
+What to verify:
+- `success` is `true`
+- `assignments` includes both explicit VMs (`vm-infra-1`, `vm-l4lb-1`) and split VMs (`split-r0-*`)
+- `split_decisions` only covers worker role (infra and l4lb are explicit)
+
+---
+
 ### 5. CLI mode (no server needed)
 
 ```bash
@@ -217,6 +285,42 @@ cat result.json
 | `unplaced_vms` | `string[]` | VM IDs that could not be placed |
 | `diagnostics` | `object` | Warnings and validation messages |
 
+### SplitPlacementRequest (split-and-solve)
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `requirements` | `ResourceRequirement[]` | ✅ | Per-role total resource demands |
+| `vms` | `VM[]` | — | Explicit VMs that coexist with split VMs |
+| `baremetals` | `Baremetal[]` | ✅ | Available physical hosts |
+| `anti_affinity_rules` | `AntiAffinityRule[]` | — | AG spreading rules |
+| `existing_vms` | `ExistingVM[]` | — | VMs from other clusters |
+| `topology_rules` | `TopologyRule[]` | — | Cross-cluster topology rules |
+| `config` | `SolverConfig` | — | Solver tuning (includes `vm_specs` and `w_resource_waste`) |
+
+### ResourceRequirement
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `total_resources` | `Resources` | — | Total cpu/mem/disk/gpu needed for this role |
+| `cluster_id` | `string` | `""` | Cluster this requirement belongs to |
+| `node_role` | `"master"\|"worker"\|"infra"\|"l4lb"` | `"worker"` | Role for generated VMs |
+| `ip_type` | `string` | `""` | Network type for auto anti-affinity grouping |
+| `vm_specs` | `Resources[]\|null` | `null` | Available VM specs for this role; `null` = use `config.vm_specs` |
+| `min_total_vms` | `int\|null` | `null` | Minimum VMs to create |
+| `max_total_vms` | `int\|null` | `null` | Maximum VMs to create |
+
+### SplitPlacementResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | `bool` | `true` if all VMs were placed |
+| `assignments` | `{vm_id, baremetal_id, ag}[]` | Placement decisions (includes split VMs with `split-*` IDs) |
+| `split_decisions` | `{node_role, vm_spec, count}[]` | Chosen spec × count per role |
+| `solver_status` | `string` | `OPTIMAL`, `FEASIBLE`, `INFEASIBLE`, etc. |
+| `solve_time_seconds` | `float` | Wall time |
+| `unplaced_vms` | `string[]` | VM IDs that could not be placed |
+| `diagnostics` | `object` | Warnings and diagnostics |
+
 ### solver_status values
 
 | Status | Meaning |
@@ -237,18 +341,28 @@ solver/
 ├── app/
 │   ├── models.py          # Pydantic v2 data models
 │   ├── solver.py          # CP-SAT solver (VMPlacementSolver)
+│   ├── splitter.py        # ResourceSplitter — requirement splitting logic
+│   ├── split_solver.py    # Split-and-solve orchestrator
+│   ├── diagnostics.py     # Failure diagnostics
 │   └── server.py          # FastAPI app + uvicorn entrypoint
 ├── tests/
-│   └── test_solver.py     # pytest test suite
+│   ├── test_solver.py     # Placement solver test suite
+│   ├── test_splitter.py   # Requirement splitting test suite
+│   └── test_diagnostics.py # Diagnostics test suite
 ├── examples/              # Sample request JSON files
-│   ├── 01_minimal.json
+│   ├── 01_minimal.json          # /v1/placement/solve
 │   ├── 02_anti_affinity.json
 │   ├── 03_partial_placement.json
 │   ├── 04_cross_cluster_anti_affinity.json
-│   └── 05_full_cluster.json
+│   ├── 05_full_cluster.json
+│   ├── 06_split_basic.json      # /v1/placement/split-and-solve
+│   ├── 07_split_multi_spec.json
+│   ├── 08_split_multi_role.json
+│   └── 09_split_mixed_mode.json
 └── docs/
-    ├── why-cp-sat-replaces-round-robin.md  # Design rationale
-    └── objective-function-guide.md         # CP-SAT implementation guide
+    ├── requirement-splitting-design.md    # Split-and-solve design doc
+    ├── why-cp-sat-replaces-round-robin.md
+    └── objective-function-guide.md
 ```
 
 ## Testing with curl
@@ -316,7 +430,49 @@ curl -s -X POST http://localhost:50051/v1/placement/solve \
   -d @examples/error_duplicate_bm.json | jq
 ```
 
-### 7. CLI mode (no server needed)
+### 7. Split-and-solve: basic (from example file)
+
+```bash
+# Total 32 CPU → solver splits into 4 × 8-CPU VMs
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/06_split_basic.json | jq
+```
+
+### 8. Split-and-solve: inline JSON
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requirements": [{
+      "total_resources": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "vm_specs": [
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
+      ]
+    }],
+    "baremetals": [{
+      "id": "bm-1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"ag": "ag-1"}
+    }],
+    "config": {"w_resource_waste": 10}
+  }' | jq
+```
+
+### 9. Split-and-solve: multi-role (masters + workers)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/08_split_multi_role.json | jq
+```
+
+### 10. CLI mode (no server needed)
+
+> Note: CLI mode currently supports `/v1/placement/solve` only.
 
 ```bash
 # Run solver directly on a JSON file

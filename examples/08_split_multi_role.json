@@ -1,0 +1,75 @@
+{
+  "requirements": [
+    {
+      "total_resources": {
+        "cpu_cores": 12,
+        "memory_mib": 48000,
+        "storage_gb": 300,
+        "gpu_count": 0
+      },
+      "cluster_id": "cluster-a",
+      "node_role": "master",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}
+      ],
+      "min_total_vms": 3,
+      "max_total_vms": 3
+    },
+    {
+      "total_resources": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 1600,
+        "gpu_count": 0
+      },
+      "cluster_id": "cluster-a",
+      "node_role": "worker",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+      ]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-ag1-01",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"},
+      "max_vm_count": 8,
+      "current_vm_count": 0
+    },
+    {
+      "id": "bm-ag1-02",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"},
+      "max_vm_count": 8,
+      "current_vm_count": 0
+    },
+    {
+      "id": "bm-ag2-01",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"},
+      "max_vm_count": 8,
+      "current_vm_count": 0
+    },
+    {
+      "id": "bm-ag3-01",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"},
+      "max_vm_count": 8,
+      "current_vm_count": 0
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5
+  }
+}
