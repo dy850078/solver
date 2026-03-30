@@ -20,8 +20,16 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .models import PlacementRequest, PlacementResult
+_SWAGGER_STATIC_DIR = Path(swagger_ui_bundle.__file__).parent
+
+from .models import (
+    PlacementRequest,
+    PlacementResult,
+    SplitPlacementRequest,
+    SplitPlacementResult,
+)
 from .solver import VMPlacementSolver
+from .split_solver import solve_split_placement
 
 # Module-level logging setup — runs on both `python -m app.server` and `uvicorn app.server:api`
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -54,6 +62,12 @@ def custom_swagger_ui() -> HTMLResponse:
 def solve(request: PlacementRequest) -> PlacementResult:
     """Receive a placement request from the Go scheduler and return an optimized plan."""
     return VMPlacementSolver(request).solve()
+
+
+@api.post("/v1/placement/split-and-solve", response_model=SplitPlacementResult)
+def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
+    """Split resource requirements into VM specs and solve placement jointly."""
+    return solve_split_placement(request)
 
 
 @api.get("/healthz")

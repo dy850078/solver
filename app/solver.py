@@ -187,10 +187,19 @@ def validate_topology_rules(
 
 class VMPlacementSolver:
 
-    def __init__(self, request: PlacementRequest):
+    def __init__(
+        self,
+        request: PlacementRequest,
+        *,
+        model: cp_model.CpModel | None = None,
+        active_vars: dict[str, cp_model.IntVar] | None = None,
+    ):
         self.request = request
         self.config = request.config
         self.diagnostics: dict[str, Any] = {}
+
+        # Optional: active vars from ResourceSplitter (split-and-solve mode)
+        self.active_vars: dict[str, cp_model.IntVar] = active_vars or {}
 
         # Lookup maps
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
@@ -235,8 +244,8 @@ class VMPlacementSolver:
                 zone = _get_topology_zone(evm.topology, scope)
                 self.existing_cluster_zones[evm.cluster_id][scope].add(zone)
 
-        # CP-SAT model and variables (created fresh per solve phase)
-        self.model = cp_model.CpModel()
+        # CP-SAT model and variables (use shared model if provided, e.g. from splitter)
+        self.model = model if model is not None else cp_model.CpModel()
         self.assign: dict[tuple[str, str], cp_model.IntVar] = {}
 
         # Objective helper: bm_used[bm_id] = 1 if any VM is placed on that BM
@@ -305,16 +314,25 @@ class VMPlacementSolver:
                 if (vm.id, bm_id) in self.assign
             ]
 
+            # Synthetic VMs from splitter have an active var
+            active_var = self.active_vars.get(vm.id)
+
             if not vm_vars:
-                if self.config.allow_partial_placement:
+                if active_var is not None:
+                    # Synthetic VM with no eligible BMs: force inactive
+                    self.model.add(active_var == 0)
+                    continue
+                elif self.config.allow_partial_placement:
                     continue
                 else:
-                    # No eligible BM → impossible to solve
                     logger.error("VM %s has no eligible BMs → infeasible", vm.id)
                     self.model.add(0 == 1)  # force infeasibility
                     return
 
-            if self.config.allow_partial_placement:
+            if active_var is not None:
+                # Synthetic VM: placed iff active
+                self.model.add(sum(vm_vars) == active_var)
+            elif self.config.allow_partial_placement:
                 self.model.add(sum(vm_vars) <= 1)
             else:
                 self.model.add(sum(vm_vars) == 1)
@@ -449,18 +467,18 @@ class VMPlacementSolver:
 
     def _compute_slot_score_bonus(self) -> list[cp_model.IntVar]:
         """
-        Compute per-BM slot score (how many t-shirt size VMs can still fit).
+        Compute per-BM slot score (how many VM-spec-sized VMs can still fit).
 
         For each BM:
         1. Compute remaining capacity per dimension after placement
-        2. For each t-shirt size, floor-divide remaining by demand per dimension
-        3. Take min across dimensions = actual fit count for that t-shirt
-        4. Sum across all t-shirt sizes = BM slot score
+        2. For each VM spec, floor-divide remaining by demand per dimension
+        3. Take min across dimensions = actual fit count for that spec
+        4. Sum across all VM specs = BM slot score
 
         Higher score = more usable remaining space = rewarded (negated in objective).
         """
-        tshirt_sizes = self.config.slot_tshirt_sizes
-        if not tshirt_sizes:
+        vm_specs = self.config.vm_specs
+        if not vm_specs:
             return []
 
         scores = []
@@ -473,12 +491,12 @@ class VMPlacementSolver:
             if not assigned_vars:
                 continue
 
-            tshirt_slots = []
-            for t_idx, tshirt in enumerate(tshirt_sizes):
+            spec_slots = []
+            for t_idx, spec in enumerate(vm_specs):
                 dim_slots = []
                 for field in RESOURCE_FIELDS:
-                    tshirt_d = getattr(tshirt, field)
-                    if tshirt_d == 0:
+                    spec_d = getattr(spec, field)
+                    if spec_d == 0:
                         continue  # no demand on this dimension, not a bottleneck
 
                     total_d = getattr(bm.total_capacity, field)
@@ -503,46 +521,46 @@ class VMPlacementSolver:
                     )
                     self.model.add(remaining == total_d - used_d - new_usage)
 
-                    # How many of this t-shirt size fit on this dimension
+                    # How many of this VM spec fit on this dimension
                     # (may be negative in the model; capacity constraint ensures non-negative at solution)
-                    min_slots = (total_d - used_d - max_new_d) // tshirt_d if tshirt_d > 0 else 0
-                    max_slots = total_d // tshirt_d if tshirt_d > 0 else 0
+                    min_slots = (total_d - used_d - max_new_d) // spec_d if spec_d > 0 else 0
+                    max_slots = total_d // spec_d if spec_d > 0 else 0
                     slots_d = self.model.new_int_var(
                         min(min_slots, 0), max_slots,
                         f"slotd_{bm.id}_{field}_t{t_idx}",
                     )
-                    self.model.add_division_equality(slots_d, remaining, tshirt_d)
+                    self.model.add_division_equality(slots_d, remaining, spec_d)
                     dim_slots.append(slots_d)
 
                 if dim_slots:
                     # Min across dimensions = actual fit count (bottleneck dimension decides)
                     max_possible = min(
-                        getattr(bm.total_capacity, f) // getattr(tshirt, f)
+                        getattr(bm.total_capacity, f) // getattr(spec, f)
                         for f in RESOURCE_FIELDS
-                        if getattr(tshirt, f) > 0
+                        if getattr(spec, f) > 0
                     )
                     # min may be negative (capacity constraint ensures >= 0 at solution)
-                    slots_for_tshirt = self.model.new_int_var(
+                    slots_for_spec = self.model.new_int_var(
                         -max_possible, max_possible, f"slot_{bm.id}_t{t_idx}"
                     )
-                    self.model.add_min_equality(slots_for_tshirt, dim_slots)
-                    tshirt_slots.append(slots_for_tshirt)
+                    self.model.add_min_equality(slots_for_spec, dim_slots)
+                    spec_slots.append(slots_for_spec)
 
-            if tshirt_slots:
-                # Sum fit counts across all t-shirt sizes
+            if spec_slots:
+                # Sum fit counts across all VM specs
                 max_total = sum(
                     min(
                         getattr(bm.total_capacity, f) // getattr(ts, f)
                         for f in RESOURCE_FIELDS
                         if getattr(ts, f) > 0
                     )
-                    for ts in tshirt_sizes
+                    for ts in vm_specs
                     if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
                 )
                 bm_score = self.model.new_int_var(
                     -max_total, max_total, f"sscore_{bm.id}"
                 )
-                self.model.add(bm_score == sum(tshirt_slots))
+                self.model.add(bm_score == sum(spec_slots))
 
                 # Only count slot score for used BMs — otherwise solver would
                 # prefer placing VMs on small BMs to keep large BMs' scores high
@@ -592,6 +610,11 @@ class VMPlacementSolver:
             if slot_scores:
                 # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
+
+        # Resource waste from splitter (split-and-solve mode)
+        waste_terms = getattr(self, "_splitter_waste_terms", [])
+        if waste_terms and self.config.w_resource_waste > 0:
+            terms.append(self.config.w_resource_waste * sum(waste_terms))
 
         if terms:
             self.model.minimize(sum(terms))
@@ -751,7 +774,8 @@ class VMPlacementSolver:
             validated_rules, validation_warnings = validate_topology_rules(
                 list(self.request.topology_rules)
             )
-            self.diagnostics["warnings"] = validation_warnings
+            if validation_warnings:
+                self.diagnostics["warnings"] = validation_warnings
 
             # Check for affinity rules with no existing VMs
             current_cluster_ids = {vm.cluster_id for vm in self.request.vms}
@@ -784,35 +808,27 @@ class VMPlacementSolver:
             self._add_vm_count_constraints()
             self._add_hard_topology_constraints(validated_rules)
 
-            # Objective: consolidation + headroom (+ partial placement priority)
-            self._add_objective()
+            # Build soft objective terms from topology rules
+            soft_terms = self._build_soft_objective_terms(validated_rules)
 
-            # Solve
-            solver = cp_model.CpSolver()
-            solver.parameters.max_time_in_seconds = self.config.max_solve_time_seconds
-            solver.parameters.num_workers = self.config.num_workers
-
-            logger.info(
-                "Solving: %d VMs, %d BMs, %d variables, %d rules, %d AGs",
-                len(self.request.vms), len(self.request.baremetals),
-                len(self.assign), len(self.effective_rules), len(self.ag_to_bms),
+            # Decide solving strategy
+            needs_two_phase = (
+                self.config.allow_partial_placement and has_soft_rules
             )
 
-            status = solver.solve(self.model)
-            status_name = self._status_name(status)
-            logger.info("Status: %s", status_name)
-
             if needs_two_phase:
+                # Two-phase: maximize placement count, then optimize soft rules
+                self._add_objective()
                 return self._solve_two_phase(soft_terms, start)
+            elif soft_terms:
+                # Single-phase with soft terms
+                self._add_objective()
+                return self._solve_single(soft_terms, start)
             else:
-                diagnostics = self._build_failure_diagnostics()
-                logger.warning("Solver failed with %s, diagnostics: %s", status_name, diagnostics)
-                return PlacementResult(
-                    success=False,
-                    solver_status=status_name,
-                    solve_time_seconds=time.time() - start,
-                    unplaced_vms=[vm.id for vm in self.request.vms],
-                    diagnostics=diagnostics,
+                # No soft rules: just add objective and run solver
+                self._add_objective()
+                return self._run_solver(
+                    self.config.max_solve_time_seconds, start
                 )
 
         except ValueError as e:
@@ -928,14 +944,19 @@ class VMPlacementSolver:
         logger.info(f"Status: {status_name}")
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            # Store for split decision extraction
+            self._last_cp_solver = solver
             return self._extract_solution(solver, status_name, time.time() - start)
         else:
+            diagnostics = self._build_failure_diagnostics()
+            diagnostics.update(self.diagnostics)
+            logger.warning("Solver failed with %s", status_name)
             return PlacementResult(
                 success=False,
                 solver_status=status_name,
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
-                diagnostics=self.diagnostics,
+                diagnostics=diagnostics,
             )
 
     def _build_failure_diagnostics(self) -> dict[str, object]:
@@ -959,6 +980,11 @@ class VMPlacementSolver:
         unplaced = []
 
         for vm in self.request.vms:
+            # Skip inactive synthetic VMs (splitter decides they're not needed)
+            active_var = self.active_vars.get(vm.id)
+            if active_var is not None and solver.value(active_var) == 0:
+                continue
+
             placed = False
             for bm in self.request.baremetals:
                 if (vm.id, bm.id) in self.assign:

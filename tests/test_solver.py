@@ -423,7 +423,7 @@ class TestSlotScore:
         """
         Both BMs can hold the VM(cpu=8).
         BM-A: 32 cpu → 24 remaining → fits 6 small + 3 medium + 1 large
-        BM-B: 10 cpu →  2 remaining → fits no t-shirt size
+        BM-B: 10 cpu →  2 remaining → fits no VM spec
         Slot score prefers BM-A (more usable remainder).
         """
         from app.models import Resources
@@ -434,7 +434,7 @@ class TestSlotScore:
         ]
         vms = [make_vm("vm-1", cpu=8, mem=16_000)]
 
-        tshirts = [
+        specs = [
             Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
             Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
             Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400),
@@ -443,7 +443,7 @@ class TestSlotScore:
         r = solve(
             vms, bms,
             w_consolidation=0, w_headroom=0, w_slot_score=5,
-            slot_tshirt_sizes=tshirts,
+            vm_specs=specs,
         )
 
         assert r.success
@@ -465,7 +465,7 @@ class TestSlotScore:
         ]
         vms = [make_vm(f"vm-{i}", cpu=4, mem=16_000) for i in range(2)]
 
-        tshirts = [
+        specs = [
             Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
             Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
         ]
@@ -473,7 +473,7 @@ class TestSlotScore:
         r = solve(
             vms, bms,
             w_consolidation=10, w_headroom=0, w_slot_score=1,
-            slot_tshirt_sizes=tshirts,
+            vm_specs=specs,
         )
 
         assert r.success

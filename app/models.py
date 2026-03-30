@@ -202,7 +202,9 @@ class SolverConfig(BaseModel):
     headroom_upper_bound_pct: int = 90
     # Slot score: penalize placements that leave unusable leftover capacity
     w_slot_score: int = 0
-    slot_tshirt_sizes: list[Resources] = Field(default_factory=list)
+    vm_specs: list[Resources] = Field(default_factory=list)
+    # Resource waste weight for split-and-solve mode
+    w_resource_waste: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +234,64 @@ class PlacementResult(BaseModel):
     """Output: what the Python solver returns to the Go scheduler."""
     success: bool
     assignments: list[PlacementAssignment] = Field(default_factory=list)
+    solver_status: str = ""
+    solve_time_seconds: float = 0.0
+    unplaced_vms: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+    def to_assignment_map(self) -> dict[str, str]:
+        """Convenience: vm_id -> baremetal_id."""
+        return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Split-and-solve: requirement splitting models
+# ---------------------------------------------------------------------------
+
+class ResourceRequirement(BaseModel):
+    """
+    A per-role total resource requirement.
+
+    The solver will determine how many VMs of each spec to create,
+    such that the total allocated resources >= total_resources.
+    """
+    total_resources: Resources
+    cluster_id: str = ""
+    node_role: NodeRole = NodeRole.WORKER
+    ip_type: str = ""
+    vm_specs: list[Resources] | None = None  # spec pool for this role; None = use config.vm_specs
+    min_total_vms: int | None = None
+    max_total_vms: int | None = None
+
+
+class SplitPlacementRequest(BaseModel):
+    """
+    Like PlacementRequest, but with resource requirements to be split into VMs.
+
+    requirements: per-role total resource demands (solver decides VM count per spec)
+    vms: optional explicit VMs that coexist with split VMs
+    """
+    requirements: list[ResourceRequirement]
+    vms: list[VM] = Field(default_factory=list)
+    baremetals: list[Baremetal]
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+    existing_vms: list[ExistingVM] = Field(default_factory=list)
+    topology_rules: list[TopologyRule] = Field(default_factory=list)
+
+
+class SplitDecision(BaseModel):
+    """Records the chosen count for one (role, spec) combination."""
+    node_role: NodeRole
+    vm_spec: Resources
+    count: int
+
+
+class SplitPlacementResult(BaseModel):
+    """Extends PlacementResult with split decisions."""
+    success: bool
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
     solver_status: str = ""
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = Field(default_factory=list)
