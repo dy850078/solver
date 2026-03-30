@@ -161,7 +161,9 @@ class SolverConfig(BaseModel):
     headroom_upper_bound_pct: int = 90
     # Slot score: penalize placements that leave unusable leftover capacity
     w_slot_score: int = 0
-    slot_tshirt_sizes: list[Resources] = Field(default_factory=list)
+    vm_specs: list[Resources] = Field(default_factory=list)
+    # Requirement splitter: penalize over-allocation waste
+    w_resource_waste: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -196,4 +198,55 @@ class PlacementResult(BaseModel):
 
     def to_assignment_map(self) -> dict[str, str]:
         """Convenience: vm_id -> baremetal_id."""
+        return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Requirement splitter I/O
+# ---------------------------------------------------------------------------
+
+class ResourceRequirement(BaseModel):
+    """
+    A total resource budget for one node role that the splitter will
+    decompose into concrete VM instances.
+
+    vm_specs overrides config.vm_specs for this requirement only.
+    min/max_total_vms constrain how many VMs the splitter may create.
+    """
+    total_resources: Resources
+    node_role: NodeRole = NodeRole.WORKER
+    cluster_id: str = ""
+    ip_type: str = ""
+    vm_specs: list[Resources] | None = None
+    min_total_vms: int | None = None
+    max_total_vms: int | None = None
+
+
+class SplitPlacementRequest(BaseModel):
+    """Input for the split-and-solve endpoint."""
+    requirements: list[ResourceRequirement]
+    vms: list[VM] = Field(default_factory=list)
+    baremetals: list[Baremetal]
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class SplitDecision(BaseModel):
+    """How many VMs of a given spec the solver chose for one role."""
+    node_role: NodeRole
+    vm_spec: Resources
+    count: int
+
+
+class SplitPlacementResult(BaseModel):
+    """Output for the split-and-solve endpoint."""
+    success: bool
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    solver_status: str = ""
+    solve_time_seconds: float = 0.0
+    unplaced_vms: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+    def to_assignment_map(self) -> dict[str, str]:
         return {a.vm_id: a.baremetal_id for a in self.assignments}

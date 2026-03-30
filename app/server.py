@@ -11,29 +11,58 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from pathlib import Path
 
+import swagger_ui_bundle
 import uvicorn
 from fastapi import FastAPI
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
-from .models import PlacementRequest, PlacementResult
+from .models import PlacementRequest, PlacementResult, SplitPlacementRequest, SplitPlacementResult
 from .solver import VMPlacementSolver
+from .split_solver import solve_split_placement
 
 # Module-level logging setup — runs on both `python -m app.server` and `uvicorn app.server:api`
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+_SWAGGER_STATIC_DIR = Path(swagger_ui_bundle.__file__).parent
 
 # Named `api` to avoid collision with the `app/` package name
 api = FastAPI(
     title="VM Placement Solver",
     description="Optimizes VM-to-baremetal placement using OR-Tools CP-SAT solver",
     version="0.1.0",
+    docs_url=None,  # disable default /docs (loads from CDN, blank without network)
 )
+
+# Serve Swagger UI static assets locally
+api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
+
+
+@api.get("/docs", include_in_schema=False)
+def custom_swagger_ui() -> HTMLResponse:
+    """Swagger UI served from local static assets (no CDN dependency)."""
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="VM Placement Solver — API Docs",
+        swagger_js_url="/swagger-static/swagger-ui-bundle.js",
+        swagger_css_url="/swagger-static/swagger-ui.css",
+    )
 
 
 @api.post("/v1/placement/solve", response_model=PlacementResult)
 def solve(request: PlacementRequest) -> PlacementResult:
     """Receive a placement request from the Go scheduler and return an optimized plan."""
     return VMPlacementSolver(request).solve()
+
+
+@api.post("/v1/placement/split-and-solve", response_model=SplitPlacementResult)
+def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
+    """Split total resource requirements into VM specs and solve placement jointly."""
+    return solve_split_placement(request)
 
 
 @api.get("/healthz")

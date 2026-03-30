@@ -443,7 +443,7 @@ class TestSlotScore:
         r = solve(
             vms, bms,
             w_consolidation=0, w_headroom=0, w_slot_score=5,
-            slot_tshirt_sizes=tshirts,
+            vm_specs=tshirts,
         )
 
         assert r.success
@@ -473,7 +473,7 @@ class TestSlotScore:
         r = solve(
             vms, bms,
             w_consolidation=10, w_headroom=0, w_slot_score=1,
-            slot_tshirt_sizes=tshirts,
+            vm_specs=tshirts,
         )
 
         assert r.success

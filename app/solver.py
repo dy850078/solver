@@ -81,9 +81,16 @@ def get_eligible_baremetals(
 
 class VMPlacementSolver:
 
-    def __init__(self, request: PlacementRequest):
+    def __init__(
+        self,
+        request: PlacementRequest,
+        *,
+        model: cp_model.CpModel | None = None,
+        active_vars: dict[str, cp_model.IntVar] | None = None,
+    ):
         self.request = request
         self.config = request.config
+        self.active_vars: dict[str, cp_model.IntVar] = active_vars or {}
 
         # Lookup maps for quick access
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
@@ -119,8 +126,8 @@ class VMPlacementSolver:
         # Resolve anti-affinity rules (explicit + auto-generated)
         self.effective_rules = self._resolve_anti_affinity_rules()
 
-        # The CP-SAT model — we'll add variables and constraints to this
-        self.model = cp_model.CpModel()
+        # The CP-SAT model — shared with splitter when called from split_solver
+        self.model = model if model is not None else cp_model.CpModel()
 
         # Decision variables: assign[(vm_id, bm_id)] = BoolVar
         # Only created for eligible (vm, bm) pairs — this is important
@@ -224,6 +231,9 @@ class VMPlacementSolver:
 
         If allow_partial_placement is True, we use <= 1 instead
         (the VM might not be placed at all).
+
+        Synthetic VMs from the splitter carry an active_var. When active=0
+        the VM is unused; when active=1 it must be placed on exactly one BM.
         """
         for vm in self.request.vms:
             vm_vars = [
@@ -231,17 +241,24 @@ class VMPlacementSolver:
                 for bm_id in self._get_eligible_baremetals(vm)
                 if (vm.id, bm_id) in self.assign
             ]
+            active_var = self.active_vars.get(vm.id)
 
             if not vm_vars:
-                if self.config.allow_partial_placement:
+                if active_var is not None:
+                    # Splitter slot with no eligible BM → force inactive
+                    self.model.add(active_var == 0)
+                    continue
+                elif self.config.allow_partial_placement:
                     continue  # skip this VM, it can't be placed
                 else:
-                    # No eligible BM → impossible to solve
                     logger.error("VM %s has no eligible BMs → infeasible", vm.id)
                     self.model.add(0 == 1)  # force infeasibility
                     return
 
-            if self.config.allow_partial_placement:
+            if active_var is not None:
+                # Synthetic VM: placed on exactly one BM iff the splitter activates it
+                self.model.add(sum(vm_vars) == active_var)
+            elif self.config.allow_partial_placement:
                 self.model.add(sum(vm_vars) <= 1)
             else:
                 self.model.add(sum(vm_vars) == 1)
@@ -418,7 +435,7 @@ class VMPlacementSolver:
 
         Higher score = more usable remaining space = rewarded (negated in objective).
         """
-        tshirt_sizes = self.config.slot_tshirt_sizes
+        tshirt_sizes = self.config.vm_specs
         if not tshirt_sizes:
             return []
 
@@ -552,6 +569,10 @@ class VMPlacementSolver:
                 # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
+        waste_terms = getattr(self, "_splitter_waste_terms", [])
+        if waste_terms and self.config.w_resource_waste > 0:
+            terms.append(self.config.w_resource_waste * sum(waste_terms))
+
         if terms:
             self.model.minimize(sum(terms))
 
@@ -607,6 +628,7 @@ class VMPlacementSolver:
 
             # Extract results
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                self._last_cp_solver = solver
                 return self._extract_solution(solver, status_name, time.time() - start)
             else:
                 diagnostics = self._build_failure_diagnostics()
@@ -650,6 +672,9 @@ class VMPlacementSolver:
         unplaced = []
 
         for vm in self.request.vms:
+            active_var = self.active_vars.get(vm.id)
+            if active_var is not None and solver.value(active_var) == 0:
+                continue  # splitter decided this slot is unused
             placed = False
             for bm in self.request.baremetals:
                 if (vm.id, bm.id) in self.assign:
