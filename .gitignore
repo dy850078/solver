@@ -46,6 +46,9 @@ logs/
 *.xlsx
 output/
 
+# Keep example request files
+!examples/*.json
+
 # Temporary files
 tmp/
 temp/

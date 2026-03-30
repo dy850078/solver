@@ -110,6 +110,87 @@ python -m app.server --cli --input examples/success_basic.json
 python -m app.server --cli --input examples/success_basic.json --output output/result.json
 ```
 
+---
+
+## Split-and-Solve (`POST /v1/placement/split-and-solve`)
+
+Instead of pre-specifying exact VM counts, send a total resource budget and let the solver decide how many VMs of which spec to create, then place them — all in a single solve.
+
+### 8. Basic split: 32 CPU worker budget → 8-CPU VMs
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/split_basic.json | jq
+```
+
+Expected: `split_decisions[0].count == 4` (4 × 8 CPU), `assignments` has 4 entries.
+
+### 9. Multi-role split: 3 masters (forced) + worker budget
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/split_multi_role.json | jq
+```
+
+Expected: masters split into exactly 3 VMs (one per AG), workers auto-selected from the two spec options.
+
+### 10. Config-level vm_specs: solver picks from global spec pool
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d @examples/split_config_specs.json | jq
+```
+
+Expected: `split_decisions` shows the spec with zero (or minimal) waste from the 3-spec pool.
+
+### 11. Inline split request (no file needed)
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requirements": [{
+      "total_resources": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0},
+      "node_role": "worker",
+      "cluster_id": "cluster-1",
+      "vm_specs": [{"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}]
+    }],
+    "baremetals": [{
+      "id": "bm-1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "topology": {"ag": "ag-1"}
+    }],
+    "config": {"auto_generate_anti_affinity": false}
+  }' | jq
+```
+
+### Response shape (`SplitPlacementResult`)
+
+```json
+{
+  "success": true,
+  "split_decisions": [
+    {"node_role": "worker", "vm_spec": {"cpu_cores": 4, ...}, "count": 4}
+  ],
+  "assignments": [
+    {"vm_id": "split-r0-s0-0", "baremetal_id": "bm-1", "ag": "ag-1"},
+    ...
+  ],
+  "solver_status": "OPTIMAL",
+  "solve_time_seconds": 0.05,
+  "unplaced_vms": [],
+  "diagnostics": {}
+}
+```
+
+**`split_decisions`** — tells the Go scheduler how many VMs of each spec to provision in Kubernetes.
+**`assignments`** — maps each `vm_id` (synthetic ID) to a `baremetal_id` for placement.
+
+---
+
 ## Development Guidelines
 
 - Read `CLAUDE.md` before starting any work

@@ -1,0 +1,37 @@
+{
+  "_description": "Basic split-and-solve: 32 CPU / 128 GiB worker budget, solver picks 8-CPU VMs and places them across 2 BMs.",
+  "requirements": [
+    {
+      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0},
+      "node_role": "worker",
+      "cluster_id": "cluster-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0}
+      ]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5
+  }
+}
