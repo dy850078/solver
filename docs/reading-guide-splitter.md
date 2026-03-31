@@ -210,3 +210,149 @@ solve_split_placement() (split_solver.py)
 2. **改 w_resource_waste=0 跑 test_prefers_less_waste**：看 solver 是否不再偏好 zero-waste spec
 3. **在 `_build_requirement` 加一行 `print(f"upper_bound for spec {spec}: {upper}")`**：直觀理解 upper bound 計算
 4. **讀 `_add_one_bm_per_vm_constraint` 的 active_var 分支**，再對應到 `splitter.py` 的 link constraint，理解「兩邊如何呼應」
+
+---
+
+## 建模思維養成：從 count_var 到 active_var 的思考過程
+
+### 為什麼最直覺的 count_var 設計不夠用
+
+初學者面對 splitter 問題時，最自然的想法是：
+
+```python
+count_var["4c8g"] = IntVar(0..10)  # 讓 solver 決定要幾台 4c8g
+```
+
+解出數量後，再建立 VM instance 跑 placement solver。這是 **兩階段求解**：
+
+```
+階段一：splitter 解出數量 → 階段二：拿數量建 VM → 再跑 placement solver
+```
+
+致命問題：**階段一認為合法的 split，階段二可能放不下。** 例如 anti-affinity 約束可能導致 3 台 4c8g 在 placement 階段根本擺不進去，但 splitter 在階段一無從得知。兩個決策之間存在強耦合，拆開求解會丟失可行性保證。
+
+### active_var 的本質：讓兩個問題共享同一個模型
+
+核心 insight：**如果不知道最終要幾台，就把上界數量的 slot 全部先建出來，讓 solver 自己決定哪些 slot 要啟用。**
+
+```python
+# 假設最多需要 5 台 4c8g
+for i in range(5):
+    active_var[f"syn_4c8g_{i}"] = BoolVar()       # solver 決定開或關
+    assign[f"syn_4c8g_{i}", bm] = BoolVar()       # 同時建好 placement 變數
+
+# VM 被放到某台 BM 上 ⟺ 這個 slot 是 active 的
+sum(assign[vm, all_bms]) == active_var[vm]
+
+# count_var 就是 active 的加總（給人類看的）
+sum(active_vars_for_spec) == count_var
+```
+
+這樣 **split 和 placement 在同一個 CpModel 裡被同時求解**，solver 不會選出一個「擺不下的 split」。
+
+### 兩個變數各自的角色
+
+| 面向 | count_var | active_var |
+|------|-----------|-----------|
+| **層級** | Requirement 層級 | 個別 VM slot 層級 |
+| **型別** | IntVar(0..upper) | BoolVar |
+| **誰建立** | Splitter | Splitter（建 upper 個 slot） |
+| **誰使用** | Splitter 的 coverage constraints | Placement solver 的 assignment constraint |
+| **語意** | 「這個 spec 要幾台」 | 「這個 slot 是否啟用」 |
+
+---
+
+## 這個設計模式的來歷
+
+active_var 不是這個專案發明的，而是 CP/MIP 建模中的 **標準模式**：
+
+### Pre-allocation with Activation Variables
+
+在組合優化中，當「要用幾個」某種東西是未知的，標準做法是：
+
+1. **建出上界數量的 slot**
+2. **給每個 slot 一個 binary activation variable**
+3. **讓 solver 自己決定啟用哪些**
+
+這個模式在許多經典問題裡反覆出現：
+
+| 經典問題 | 未知數量 | Pre-allocate 什麼 |
+|---------|---------|------------------|
+| Vehicle Routing (VRP) | 要用幾台車 | 上界數量的車，每台有 `used[v]` BoolVar |
+| Facility Location | 要開幾個倉庫 | 所有候選位置，每個有 `open[f]` BoolVar |
+| Bin Packing | 要用幾個箱子 | 上界數量的箱子，每個有 `active[b]` BoolVar |
+| **Splitter（本專案）** | 要幾台某 spec 的 VM | 上界數量的 synthetic VM，每台有 `active_var` |
+
+> 建模的 sense 不是「想出新招」，而是「認出舊招」。
+> 模式庫越大，遇到新問題時能匹配到正確模式的速度就越快。
+
+---
+
+## CP-SAT 建模能力學習路徑
+
+### 第一階段：學會基本模式（1–3 個月）
+
+**目標**：建立常用建模模式的直覺
+
+1. **精讀 OR-Tools CP-SAT 官方範例**，特別是：
+   - [Bin Packing](https://developers.google.com/optimization/bin/bin_packing) — 正好是 activation variable 模式
+   - [VRP](https://developers.google.com/optimization/routing) — 多種變體，activation + routing
+   - [Job Shop Scheduling](https://developers.google.com/optimization/scheduling/job_shop) — interval variable 模式
+
+2. **每個範例問自己三個問題**：
+   - 決策變數是什麼？（什麼是 solver 需要決定的）
+   - 約束是什麼？（什麼是不能違反的）
+   - 目標是什麼？（什麼是要最大/最小化的）
+
+3. **建立個人模式庫** — 常用的核心模式：
+
+   | 模式 | 用途 | 本專案對應 |
+   |------|------|-----------|
+   | Binary activation | 未知數量的物件啟停 | `active_var` |
+   | Big-M linearization | 把 if-then 邏輯線性化 | — |
+   | Channeling constraints | `x == 3 ⟺ indicator[3] == 1` | — |
+   | Interval + NoOverlap | 排程問題的時間區間 | — |
+   | Element constraint | 用變數當 index 查表 | — |
+   | Symmetry breaking | 消除等價解加速搜尋 | `active[k] >= active[k+1]` |
+
+### 第二階段：學會問「這跟什麼問題同構？」（3–6 個月）
+
+**目標**：遇到新問題時，能快速辨識出對應的經典問題結構
+
+遇到新問題時，不要直接想「怎麼建模」，而是先問：
+
+> 「這個問題的本質結構，跟哪個經典問題最像？」
+
+以本專案的 splitter 為例：
+- 有一堆「需求」要分配到「容器」裡 → **Bin Packing**
+- 容器的數量不固定 → **Variable-size Bin Packing**
+- 分配的同時要考慮放到哪台機器 → **Joint Bin Packing + Assignment**
+
+認出是 bin packing 之後，activation variable 模式就是自然的選擇。
+
+**推薦資源**：
+- Coursera: [Modeling Discrete Optimization](https://www.coursera.org/learn/discrete-optimization)（University of Melbourne）— 建模思維最完整的課程
+- MiniZinc 教材 — MiniZinc 是高階建模語言，專注在「如何把問題表達成約束」而非底層 API
+
+### 第三階段：學會判斷 Joint Model vs Decomposition（6 個月以上）
+
+**目標**：判斷何時該把所有約束放進同一個模型，何時該拆分
+
+不是所有問題都適合塞進同一個模型：
+
+| 策略 | 適用場景 | 本專案例子 |
+|------|---------|-----------|
+| **Joint model** | 兩個決策之間有強耦合（一個影響另一個的可行性） | split + placement 合併求解 |
+| **Decomposition** | 問題太大 solver 跑不動，或子問題之間耦合弱 | 未來若 BM 數量達數千台，可能需要拆分 |
+
+這個階段需要實戰經驗：嘗試 joint model → 觀察求解時間 → 判斷是否需要拆分。
+
+### 學習時程建議
+
+```
+Week 1-2:   讀完 OR-Tools CP-SAT 所有官方教程，跑通每個範例
+Week 3-4:   自己從零實作 bin packing + job shop（不看答案）
+Week 5-8:   找 3-5 個真實問題建模（排班、配送、資源分配）
+Week 9-12:  修 Coursera Discrete Optimization 課程，學習 MiniZinc
+持續:        遇到問題先想「這跟什麼經典問題同構」再動手建模
+```
