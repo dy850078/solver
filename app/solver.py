@@ -126,6 +126,9 @@ class VMPlacementSolver:
         # Resolve anti-affinity rules (explicit + auto-generated)
         self.effective_rules = self._resolve_anti_affinity_rules()
 
+        # Waste penalty terms injected by split_solver (splitter integration)
+        self.splitter_waste_terms: list[cp_model.LinearExprT] = []
+
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
@@ -569,7 +572,7 @@ class VMPlacementSolver:
                 # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
-        waste_terms = getattr(self, "_splitter_waste_terms", [])
+        waste_terms = self.splitter_waste_terms
         if waste_terms and self.config.w_resource_waste > 0:
             terms.append(self.config.w_resource_waste * sum(waste_terms))
 
