@@ -66,8 +66,8 @@ def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResul
         model=model,
         active_vars=splitter.active_vars,
     )
-    # Inject waste terms; _add_objective reads them via getattr guard
-    solver_instance._splitter_waste_terms = splitter.build_waste_objective_terms()
+    # Inject waste terms; _add_objective reads them via conditional guard
+    solver_instance.splitter_waste_terms = splitter.build_waste_objective_terms()
 
     result = solver_instance.solve()
 

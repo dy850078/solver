@@ -137,6 +137,9 @@ class VMPlacementSolver:
         # Objective helper: bm_used[bm_id] = 1 if any VM is placed on that BM
         self.bm_used: dict[str, cp_model.IntVar] = {}
 
+        # Waste terms injected by split_solver (empty when not using splitter)
+        self.splitter_waste_terms: list = []
+
     # ------------------------------------------------------------------
     # Step A: Determine which (VM, BM) pairs are eligible
     # ------------------------------------------------------------------
@@ -569,7 +572,7 @@ class VMPlacementSolver:
                 # Negate: higher slot score is better (negative = reward in Minimize)
                 terms.append(-self.config.w_slot_score * sum(slot_scores))
 
-        waste_terms = getattr(self, "_splitter_waste_terms", [])
+        waste_terms = self.splitter_waste_terms
         if waste_terms and self.config.w_resource_waste > 0:
             terms.append(self.config.w_resource_waste * sum(waste_terms))
 
