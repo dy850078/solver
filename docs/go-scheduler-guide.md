@@ -107,6 +107,7 @@ Scheduler                                  Solver
 | `vm_specs` | list[Resources] \| null | — | 候選 spec；`null` 時 fallback 到 `config.vm_specs` |
 | `min_total_vms` | int \| null | — | 強制最少幾台（例如 master 固定 3 台：填 `3`） |
 | `max_total_vms` | int \| null | — | 強制最多幾台 |
+| `candidate_baremetals` | list[string] | — | 限制此 role 只能放在哪些 BM 上（空 = 不限制）。Go scheduler 依 BM/VM role 篩選後填入，例如 master 只能住 control-plane BM |
 
 ### `SolverConfig` 完整欄位（含新增）
 
@@ -245,6 +246,93 @@ POST /v1/placement/split-and-solve
 
 > **注意**：`used_capacity` 必須正確反映 BM 目前的使用量，solver 依此計算剩餘容量。
 > Scheduler 在送出 request 前應先查詢 inventory API 取得最新數字。
+
+---
+
+### 情境 C：Role-Based BM Filtering（master 只住 control-plane BM）
+
+適用：BM 有 role 區分（control-plane / worker），需限制 VM 只能放在對應 role 的 BM 上。
+
+**做法**：Go scheduler 在送出 request 前，依 BM/VM role 篩選出合格的 BM ID 列表，填入 `candidate_baremetals`。
+
+```json
+POST /v1/placement/split-and-solve
+{
+  "requirements": [
+    {
+      "total_resources": {
+        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300, "gpu_count": 0
+      },
+      "node_role": "master",
+      "cluster_id": "cluster-prod-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}
+      ],
+      "min_total_vms": 3,
+      "max_total_vms": 3,
+      "candidate_baremetals": ["bm-cp-01", "bm-cp-02", "bm-cp-03"]
+    },
+    {
+      "total_resources": {
+        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600, "gpu_count": 0
+      },
+      "node_role": "worker",
+      "cluster_id": "cluster-prod-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+      ],
+      "candidate_baremetals": ["bm-wk-01", "bm-wk-02"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-cp-01",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-cp-02",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    },
+    {
+      "id": "bm-cp-03",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"}
+    },
+    {
+      "id": "bm-wk-01",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-4", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-wk-02",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-5", "ag": "ag-2"}
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5
+  }
+}
+```
+
+> **重點**：
+> - `candidate_baremetals` 為**可選欄位**，空陣列或不填表示不限制（所有 BM 都可用）
+> - Solver 內部會將此清單傳遞給每個 synthetic VM，與原本 `/v1/placement/solve` 的 `VM.candidate_baremetals` 行為一致
+> - 若 `candidate_baremetals` 中的 BM ID 不在 `baremetals` 陣列中，該 ID 會被靜默忽略
+> - Splitter 在篩選 spec 時只會考慮 candidate BMs 的容量（避免選到只能放在非候選 BM 上的 spec）
 
 ---
 

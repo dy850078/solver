@@ -1,0 +1,75 @@
+{
+  "_description": "Role-based BM filtering: master VMs restricted to control-plane BMs, worker VMs restricted to worker BMs via candidate_baremetals.",
+  "requirements": [
+    {
+      "total_resources": {
+        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300, "gpu_count": 0
+      },
+      "node_role": "master",
+      "cluster_id": "cluster-prod-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}
+      ],
+      "min_total_vms": 3,
+      "max_total_vms": 3,
+      "candidate_baremetals": ["bm-cp-01", "bm-cp-02", "bm-cp-03"]
+    },
+    {
+      "total_resources": {
+        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600, "gpu_count": 0
+      },
+      "node_role": "worker",
+      "cluster_id": "cluster-prod-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+      ],
+      "candidate_baremetals": ["bm-wk-01", "bm-wk-02"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-cp-01",
+      "hostname": "ctrl-001.rack1.site-a",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-cp-02",
+      "hostname": "ctrl-002.rack2.site-a",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    },
+    {
+      "id": "bm-cp-03",
+      "hostname": "ctrl-003.rack3.site-a",
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"}
+    },
+    {
+      "id": "bm-wk-01",
+      "hostname": "worker-001.rack4.site-a",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-4", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-wk-02",
+      "hostname": "worker-002.rack5.site-a",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-5", "ag": "ag-2"}
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5
+  }
+}
