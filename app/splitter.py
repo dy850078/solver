@@ -89,13 +89,21 @@ class ResourceSplitter:
         Spec pool: requirement-level vm_specs takes precedence; falls back to
         config.vm_specs. Specs that don't fit any BM's available capacity are
         filtered out immediately (they can never be placed).
+
+        When *candidate_baremetals* is set on the requirement, only those BMs
+        are checked — a spec that fits some other BM but none of the
+        candidates would never be placed anyway.
         """
         candidates = req.vm_specs if req.vm_specs is not None else self.config.vm_specs
         if not candidates:
             return []
+        eligible_bms = self.baremetals
+        if req.candidate_baremetals:
+            candidate_set = set(req.candidate_baremetals)
+            eligible_bms = [bm for bm in self.baremetals if bm.id in candidate_set]
         usable = [
             spec for spec in candidates
-            if any(spec.fits_in(bm.available_capacity) for bm in self.baremetals)
+            if any(spec.fits_in(bm.available_capacity) for bm in eligible_bms)
         ]
         filtered_out = len(candidates) - len(usable)
         if filtered_out:
@@ -132,6 +140,7 @@ class ResourceSplitter:
                     node_role=req.node_role,
                     ip_type=req.ip_type,
                     cluster_id=req.cluster_id,
+                    candidate_baremetals=req.candidate_baremetals,
                 ))
 
             # Σ active == count  (so count drives how many slots are used)

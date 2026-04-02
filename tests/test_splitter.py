@@ -23,7 +23,7 @@ from .conftest import make_bm
 def make_req(
     cpu=0, mem=0, disk=0, gpu=0,
     role=NodeRole.WORKER, cluster="cluster-1", ip_type="routable",
-    vm_specs=None, min_vms=None, max_vms=None,
+    vm_specs=None, min_vms=None, max_vms=None, candidate_bms=None,
 ) -> ResourceRequirement:
     return ResourceRequirement(
         total_resources=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
@@ -33,6 +33,7 @@ def make_req(
         vm_specs=vm_specs,
         min_total_vms=min_vms,
         max_total_vms=max_vms,
+        candidate_baremetals=candidate_bms or [],
     )
 
 
@@ -277,6 +278,109 @@ class TestConfigSpecsFallback:
 
 # ===========================================================================
 # 8. HTTP endpoint smoke test
+# ===========================================================================
+
+# ===========================================================================
+# 8. candidate_baremetals restricts placement of synthetic VMs
+# ===========================================================================
+
+class TestCandidateBaremetals:
+
+    def test_synthetic_vms_restricted_to_candidates(self):
+        """Synthetic VMs should only land on candidate BMs."""
+        bms = [
+            make_bm("bm-cp-0", cpu=32, mem=128_000, disk=1000, ag="ag-0"),
+            make_bm("bm-cp-1", cpu=32, mem=128_000, disk=1000, ag="ag-1"),
+            make_bm("bm-wk-0", cpu=64, mem=256_000, disk=2000, ag="ag-0"),
+            make_bm("bm-wk-1", cpu=64, mem=256_000, disk=2000, ag="ag-1"),
+        ]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(
+            cpu=12, mem=48_000, disk=300,
+            role=NodeRole.MASTER, vm_specs=[spec],
+            candidate_bms=["bm-cp-0", "bm-cp-1"],
+        )
+
+        r = split_solve(req, bms)
+
+        assert r.success
+        for a in r.assignments:
+            assert a.baremetal_id in ("bm-cp-0", "bm-cp-1"), (
+                f"VM {a.vm_id} placed on {a.baremetal_id}, expected only cp BMs"
+            )
+
+    def test_empty_candidates_allows_all_bms(self):
+        """Default (empty list) means all BMs are eligible — backward compat."""
+        bms = [make_bm(f"bm-{i}", cpu=32, mem=128_000, disk=1000) for i in range(3)]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(cpu=8, mem=32_000, disk=200, vm_specs=[spec])
+
+        r = split_solve(req, bms)
+
+        assert r.success
+        assert len(r.assignments) >= 2
+
+    def test_spec_filtered_against_candidate_bms_only(self):
+        """A large spec that fits non-candidate BMs but not candidates is filtered."""
+        small_bm = make_bm("bm-small", cpu=8, mem=32_000, disk=200)
+        large_bm = make_bm("bm-large", cpu=128, mem=512_000, disk=4000)
+        small_spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        large_spec = Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)
+        req = make_req(
+            cpu=8, mem=32_000, disk=200,
+            vm_specs=[small_spec, large_spec],
+            candidate_bms=["bm-small"],  # only small BM is a candidate
+        )
+
+        r = split_solve(req, [small_bm, large_bm])
+
+        assert r.success
+        for d in r.split_decisions:
+            assert d.vm_spec == small_spec  # large spec filtered out
+
+    def test_multi_role_different_candidates(self):
+        """Masters and workers go to different BM groups via candidate lists."""
+        bms = [
+            make_bm("bm-cp-0", cpu=32, mem=128_000, disk=1000, ag="ag-0"),
+            make_bm("bm-cp-1", cpu=32, mem=128_000, disk=1000, ag="ag-1"),
+            make_bm("bm-wk-0", cpu=64, mem=256_000, disk=2000, ag="ag-0"),
+            make_bm("bm-wk-1", cpu=64, mem=256_000, disk=2000, ag="ag-1"),
+        ]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        reqs = [
+            make_req(cpu=8, mem=32_000, disk=200, role=NodeRole.MASTER,
+                     vm_specs=[spec], candidate_bms=["bm-cp-0", "bm-cp-1"]),
+            make_req(cpu=16, mem=64_000, disk=400, role=NodeRole.WORKER,
+                     vm_specs=[spec], candidate_bms=["bm-wk-0", "bm-wk-1"]),
+        ]
+
+        r = split_solve(reqs, bms)
+
+        assert r.success
+        assign_map = {a.vm_id: a.baremetal_id for a in r.assignments}
+        for vm_id, bm_id in assign_map.items():
+            if "r0" in vm_id:  # requirement 0 = master
+                assert bm_id.startswith("bm-cp"), f"Master VM on wrong BM: {bm_id}"
+            elif "r1" in vm_id:  # requirement 1 = worker
+                assert bm_id.startswith("bm-wk"), f"Worker VM on wrong BM: {bm_id}"
+
+    def test_nonexistent_candidate_bm_infeasible(self):
+        """Candidate list with only nonexistent BM IDs → infeasible."""
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(
+            cpu=8, mem=32_000, disk=200,
+            vm_specs=[spec],
+            candidate_bms=["nonexistent-bm"],
+        )
+
+        r = split_solve(req, bms)
+
+        assert not r.success
+
+
+# ===========================================================================
+# 9. HTTP endpoint smoke test
 # ===========================================================================
 
 class TestSplitEndpoint:
