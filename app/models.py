@@ -155,6 +155,10 @@ class SolverConfig(BaseModel):
     num_workers: int = 8
     allow_partial_placement: bool = False
     auto_generate_anti_affinity: bool = True
+    # HA policy: VMs in an auto-generated group should spread across at least
+    # this many AGs. When infra has fewer AGs (or the group has fewer VMs),
+    # the solver still succeeds but emits an advisory into diagnostics.
+    target_ag_spread: int = 3
     # Objective function weights
     w_consolidation: int = 10
     w_headroom: int = 8

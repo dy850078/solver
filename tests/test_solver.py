@@ -217,6 +217,111 @@ class TestAntiAffinity:
 
 
 # ===========================================================================
+# 4b. AG spread advisory: surface policy-target skew via diagnostics
+# ===========================================================================
+
+class TestAGSpreadAdvisory:
+    """
+    When auto-generated anti-affinity cannot meet the policy target
+    (config.target_ag_spread, default 3), the solver still succeeds but
+    emits a structured advisory into PlacementResult.diagnostics["advisories"].
+    """
+
+    def test_advisory_one_ag_many_vms(self):
+        """1 BM / 1 AG + 5 same-role VMs → advisory fires, solve succeeds."""
+        bms = [make_bm("bm-only", cpu=128, mem=512_000, disk=4000, ag="ag-only")]
+        vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" in r.diagnostics
+        advisories = r.diagnostics["advisories"]
+        assert len(advisories) == 1
+        a = advisories[0]
+        assert a["type"] == "ag_spread_below_target"
+        assert a["severity"] == "warning"
+        assert a["group_id"] == "auto/routable/worker"
+        assert a["details"]["num_ags"] == 1
+        assert a["details"]["effective_spread"] == 1
+        assert a["details"]["target_ag_spread"] == 3
+        assert a["details"]["vm_count"] == 5
+
+    def test_advisory_two_ags_below_target(self):
+        """2 AGs + 5 same-role VMs + target=3 → advisory fires."""
+        bms = [
+            make_bm("bm-a", ag="ag-a"),
+            make_bm("bm-b", ag="ag-b"),
+        ]
+        vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" in r.diagnostics
+        a = r.diagnostics["advisories"][0]
+        assert a["details"]["effective_spread"] == 2
+        assert a["details"]["target_ag_spread"] == 3
+
+    def test_no_advisory_when_target_met(self):
+        """3 AGs + 5 same-role VMs + target=3 → no advisory."""
+        bms = []
+        for ag_i in range(3):
+            for bm_i in range(2):
+                bms.append(make_bm(f"bm-ag{ag_i}-{bm_i}", ag=f"ag-{ag_i}"))
+        vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" not in r.diagnostics
+
+    def test_no_advisory_when_rich_infra(self):
+        """5 AGs + 5 same-role VMs + target=3 → no advisory, max_per_ag=1."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(5)]
+        vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" not in r.diagnostics
+        # Rich infra still spreads VMs as widely as possible (max_per_ag=1)
+        ags = {a.ag for a in r.assignments}
+        assert len(ags) == 5
+
+    def test_custom_target_ag_spread(self):
+        """target=5 + only 3 AGs → advisory fires, verifying policy is configurable."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
+        vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True, target_ag_spread=5)
+
+        assert r.success
+        assert "advisories" in r.diagnostics
+        a = r.diagnostics["advisories"][0]
+        assert a["details"]["effective_spread"] == 3
+        assert a["details"]["target_ag_spread"] == 5
+
+    def test_no_advisory_when_group_trivial(self):
+        """1 BM + 1 VM → no auto-rule, no advisory."""
+        bms = [make_bm("bm-only", ag="ag-only")]
+        vms = [make_vm("vm-0", role=NodeRole.WORKER, ip_type="routable")]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" not in r.diagnostics
+
+    def test_advisory_small_group_below_target(self):
+        """5 AGs but only 2 VMs in group + target=3 → advisory fires (group too small)."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(5)]
+        vms = [make_vm(f"m-{i}", role=NodeRole.MASTER, ip_type="routable") for i in range(2)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert "advisories" in r.diagnostics
+        a = r.diagnostics["advisories"][0]
+        # effective_spread = min(num_ags=5, n_vms=2) = 2 < target=3
+        assert a["details"]["effective_spread"] == 2
+        assert a["details"]["num_ags"] == 5
+        assert a["details"]["vm_count"] == 2
+
+
+# ===========================================================================
 # 5. Partial placement
 # ===========================================================================
 
