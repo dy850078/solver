@@ -220,6 +220,7 @@ class ResourceRequirement(BaseModel):
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
+    candidate_baremetals: list[str] = Field(default_factory=list)
 
 
 class SplitPlacementRequest(BaseModel):
