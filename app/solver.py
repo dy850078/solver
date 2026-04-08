@@ -123,6 +123,10 @@ class VMPlacementSolver:
         for bm in self.request.baremetals:
             self.ag_to_bms[bm.topology.ag].append(bm.id)
 
+        # Non-fatal advisories collected during rule resolution (e.g. policy
+        # target not met). Surfaced via PlacementResult.diagnostics["advisories"].
+        self.advisories: list[dict] = []
+
         # Resolve anti-affinity rules (explicit + auto-generated)
         self.effective_rules = self._resolve_anti_affinity_rules()
 
@@ -188,12 +192,15 @@ class VMPlacementSolver:
             if vm.id not in covered and vm.ip_type:
                 groups[(vm.ip_type, vm.node_role.value)].append(vm.id)
 
+        target_spread = self.config.target_ag_spread
+
         for (ip_type, role), vm_ids in groups.items():
             if len(vm_ids) >= 2 and num_ags > 0:
                 import math
                 max_per_ag = math.ceil(len(vm_ids) / num_ags)
+                group_id = f"auto/{ip_type}/{role}"
                 rules.append(AntiAffinityRule(
-                    group_id=f"auto/{ip_type}/{role}",
+                    group_id=group_id,
                     vm_ids=vm_ids,
                     max_per_ag=max_per_ag,
                 ))
@@ -201,6 +208,32 @@ class VMPlacementSolver:
                     "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
                     ip_type, role, len(vm_ids), num_ags, max_per_ag,
                 )
+
+                # Policy check: is the actual spread below the policy target?
+                # effective_spread is the most AGs we could possibly use for
+                # this group, bounded by both infra and group size.
+                effective_spread = min(num_ags, len(vm_ids))
+                if effective_spread < target_spread:
+                    msg = (
+                        f"Anti-affinity for {ip_type}/{role} below policy target: "
+                        f"actual spread={effective_spread}, target={target_spread} "
+                        f"({num_ags} AG(s), {len(vm_ids)} VMs)."
+                    )
+                    self.advisories.append({
+                        "type": "ag_spread_below_target",
+                        "severity": "warning",
+                        "group_id": group_id,
+                        "message": msg,
+                        "details": {
+                            "vm_count": len(vm_ids),
+                            "num_ags": num_ags,
+                            "effective_spread": effective_spread,
+                            "target_ag_spread": target_spread,
+                            "max_per_ag": max_per_ag,
+                            "ag_names": sorted(self.ag_to_bms.keys()),
+                        },
+                    })
+                    logger.warning("Spread advisory: %s", msg)
 
         return rules
 
@@ -601,7 +634,7 @@ class VMPlacementSolver:
                               "scheduler must deduplicate before calling solver",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
-                diagnostics={"input_errors": self._input_errors},
+                diagnostics=self._with_advisories({"input_errors": self._input_errors}),
             )
 
         try:
@@ -634,7 +667,7 @@ class VMPlacementSolver:
                 self._last_cp_solver = solver
                 return self._extract_solution(solver, status_name, time.time() - start)
             else:
-                diagnostics = self._build_failure_diagnostics()
+                diagnostics = self._with_advisories(self._build_failure_diagnostics())
                 logger.warning("Solver failed with %s, diagnostics: %s", status_name, diagnostics)
                 return PlacementResult(
                     success=False,
@@ -651,7 +684,15 @@ class VMPlacementSolver:
                 solver_status=f"ERROR: {e}",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
+                diagnostics=self._with_advisories({}),
             )
+
+    def _with_advisories(self, diagnostics: dict) -> dict:
+        """Merge collected advisories into a diagnostics dict (no-op if none)."""
+        if self.advisories:
+            diagnostics = dict(diagnostics)
+            diagnostics["advisories"] = self.advisories
+        return diagnostics
 
     def _build_failure_diagnostics(self) -> dict[str, object]:
         """Delegate to DiagnosticsBuilder (app/diagnostics.py)."""
@@ -700,6 +741,7 @@ class VMPlacementSolver:
             solver_status=status,
             solve_time_seconds=elapsed,
             unplaced_vms=unplaced,
+            diagnostics=self._with_advisories({}),
         )
 
     @staticmethod
