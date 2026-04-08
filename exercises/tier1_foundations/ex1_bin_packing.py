@@ -66,6 +66,7 @@
 """
 
 from ortools.sat.python import cp_model
+from collections import defaultdict
 
 
 def bin_pack(bm_cpu: int, bm_mem: int, vms: list[tuple[int, int]]) -> list[bool]:
@@ -82,5 +83,26 @@ def bin_pack(bm_cpu: int, bm_mem: int, vms: list[tuple[int, int]]) -> list[bool]
     """
     if not vms:
         return []
+    result = []
+    model = cp_model.CpModel()
 
-    raise NotImplementedError("YOUR CODE HERE")
+    # Variables
+    assign_vars = [model.new_bool_var(f"assign_{vm_idx}") for vm_idx in range(len(vms))]
+
+    # Constriants
+    cpu_usage = sum(v * vms[i][0] for i, v in enumerate(assign_vars))
+    model.add(cpu_usage <= bm_cpu)
+    mem_usage = sum(v * vms[i][1] for i, v in enumerate(assign_vars))
+    model.add(mem_usage <= bm_mem)
+
+    # Objective
+    model.maximize(sum(assign_vars))
+
+    # Solve
+    solver = cp_model.CpSolver()
+    solver.solve(model) 
+
+    # Extract result
+    result = [solver.value(v) == 1 for v in assign_vars]    
+            
+    return result
