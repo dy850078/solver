@@ -94,7 +94,43 @@ def optimal_split(target: int, specs: list[int], max_per_spec: int) -> dict[int,
     Returns:
         {spec: count} 映射
     """
-    if target <= 0:
+    if target <= 0 or len(specs) == 0 or max_per_spec < target:
         return {spec: 0 for spec in specs}
 
-    raise NotImplementedError("YOUR CODE HERE")
+    model = cp_model.CpModel()
+
+    # Variables
+    assign_var: dict[tuple[int, int], cp_model.IntVar] = {}
+    for spec in specs:
+        for idx in range(max_per_spec):
+            assign_var[(spec, idx)] = model.new_bool_var(f"assign_{spec}_{idx}")
+
+    # Constraints
+    for spec in specs:
+        var_list = [
+            var for (spec_model, idx), var in assign_var.items() if spec_model == spec
+        ]
+        for idx in range(len(var_list) - 1):
+            model.add(var_list[idx] >= var_list[idx + 1])
+
+    model.add(sum(var * pair[0] for pair, var in assign_var.items()) >= target)
+
+    # Objective
+    model.minimize(sum(var * pair[0] for pair, var in assign_var.items()) - target)
+
+    # Solve
+    solver = cp_model.CpSolver()
+    solver.solve(model)
+
+    # Extract solution
+    result: dict[int, int] = {}
+    for spec in specs:
+        result[spec] = sum(
+            [
+                solver.value(var)
+                for (spec_model, idx), var in assign_var.items()
+                if spec_model == spec
+            ]
+        )
+
+    return result
