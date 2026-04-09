@@ -94,7 +94,44 @@ def assign_vms(
     Returns:
         {vm_id: bm_id} 或 None (INFEASIBLE)
     """
+
     if not vms:
         return {}
 
-    raise NotImplementedError("YOUR CODE HERE")
+    model = cp_model.CpModel()
+
+    # Variables
+    assign: dict[tuple[str, str], cp_model.IntVar] = {}
+    for vm in vms:
+        for bm in bms:
+            assign[(vm["id"], bm["id"])] = model.new_bool_var(
+                f"assign_{vm['id']}_{bm['id']}"
+            )
+
+    # Constriants - One bm per vm
+    for vm in vms:
+        same_vm_var = [assign[(vm["id"], bm["id"])] for bm in bms]
+        model.add(sum(same_vm_var) == 1)
+
+    # Constraints - cpu
+    for bm in bms:
+        model.add(
+            sum(assign[(vm["id"], bm["id"])] * vm["cpu"] for vm in vms) <= bm["cpu"]
+        )
+        model.add(
+            sum(assign[(vm["id"], bm["id"])] * vm["mem"] for vm in vms) <= bm["mem"]
+        )
+
+    # Solve
+    solver = cp_model.CpSolver()
+    status = solver.solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return None
+    # Extract result
+    result: dict[str, str] = {}
+    for pair, var in assign.items():
+        if solver.value(var) == 1:
+            result[pair[0]] = pair[1]
+
+    return result

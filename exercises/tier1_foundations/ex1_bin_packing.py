@@ -66,7 +66,6 @@
 """
 
 from ortools.sat.python import cp_model
-from collections import defaultdict
 
 
 def bin_pack(bm_cpu: int, bm_mem: int, vms: list[tuple[int, int]]) -> list[bool]:
@@ -100,9 +99,8 @@ def bin_pack(bm_cpu: int, bm_mem: int, vms: list[tuple[int, int]]) -> list[bool]
 
     # Solve
     solver = cp_model.CpSolver()
-    solver.solve(model) 
-
+    solver.solve(model)
     # Extract result
-    result = [solver.value(v) == 1 for v in assign_vars]    
-            
+    result = [solver.value(v) == 1 for v in assign_vars]
+
     return result
