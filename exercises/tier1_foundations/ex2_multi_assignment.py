@@ -110,8 +110,7 @@ def assign_vms(
 
     # Constriants - One bm per vm
     for vm in vms:
-        same_vm_var = [assign[(vm["id"], bm["id"])] for bm in bms]
-        model.add(sum(same_vm_var) == 1)
+        model.add(sum(assign[(vm["id"], bm["id"])] for bm in bms) == 1)
 
     # Constraints - cpu
     for bm in bms:
