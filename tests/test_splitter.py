@@ -221,6 +221,87 @@ class TestSplitWithAntiAffinity:
         assert len(r.assignments) == 3
         assert len({a.ag for a in r.assignments}) == 3
 
+    def test_auto_anti_affinity_mixed_explicit_and_synthetic(self):
+        """Explicit VM + synthetic VMs in the same (ip_type, role) group.
+
+        1 explicit worker (8 CPU) + requirement for 16 CPU worker (spec=8 CPU,
+        upper=2 slots) → total active = 1 + 2 = 3 VMs, 3 AGs.
+        Dynamic max_per_ag = ceil(3/3) = 1 → each AG gets exactly 1 VM.
+        """
+        from app.models import VM
+
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}", cpu=64, mem=256_000, disk=2000)
+               for i in range(3)]
+        explicit = VM(
+            id="explicit-w1",
+            demand=Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+            node_role=NodeRole.WORKER,
+            ip_type="routable",
+            cluster_id="cluster-1",
+        )
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(
+            cpu=16, mem=64_000, disk=400,
+            role=NodeRole.WORKER, ip_type="routable",
+            vm_specs=[spec],
+        )
+
+        r = split_solve(req, bms, vms=[explicit],
+                        auto_generate_anti_affinity=True)
+
+        assert r.success
+        assert any(a.vm_id == "explicit-w1" for a in r.assignments)
+        # 1 explicit + 2 synthetic = 3 VMs across 3 AGs → 1 per AG
+        from collections import Counter
+        ag_counts = Counter(a.ag for a in r.assignments)
+        for ag, count in ag_counts.items():
+            assert count <= 1, (
+                f"AG {ag} has {count} VMs but max_per_ag should be 1 "
+                f"(3 VMs / 3 AGs)"
+            )
+
+    def test_auto_anti_affinity_dynamic_when_count_is_variable(self):
+        """When VM count is a decision variable, auto anti-affinity should
+        use dynamic max_per_ag based on actual active count, not upper bound.
+
+        Scenario: 32 CPU needed, spec=16 CPU → upper bound = 2 slots.
+        Two specs available: 8 CPU (upper=4) and 16 CPU (upper=2).
+        3 AGs available. Auto anti-affinity should spread based on actual
+        count, not the 6 total slots.
+
+        Without the dynamic fix, max_per_ag = ceil(6/3) = 2, allowing
+        2 VMs on the same AG. With the fix, if solver picks 2 × 16 CPU,
+        max_per_ag = ceil(2/3) = 1, forcing each VM to a different AG.
+        """
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}", cpu=64, mem=256_000, disk=2000)
+               for i in range(3)]
+        spec_small = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        spec_large = Resources(cpu_cores=16, memory_mib=64_000, storage_gb=400)
+        req = make_req(
+            cpu=32, mem=128_000, disk=800,
+            role=NodeRole.WORKER, ip_type="routable",
+            vm_specs=[spec_small, spec_large],
+        )
+
+        r = split_solve(req, bms, auto_generate_anti_affinity=True)
+
+        assert r.success
+        # Regardless of which spec combination the solver picks,
+        # VMs should be spread across AGs as much as possible.
+        assigned_ags = [a.ag for a in r.assignments]
+        from collections import Counter
+        ag_counts = Counter(assigned_ags)
+        num_vms = len(r.assignments)
+        num_ags = 3
+        # Dynamic max_per_ag = ceil(num_vms / num_ags)
+        import math
+        expected_max = math.ceil(num_vms / num_ags)
+        for ag, count in ag_counts.items():
+            assert count <= expected_max, (
+                f"AG {ag} has {count} VMs but dynamic max_per_ag should be "
+                f"{expected_max} (total {num_vms} VMs / {num_ags} AGs)"
+            )
+
 
 # ===========================================================================
 # 6. Mixed mode: explicit VMs + split requirements

@@ -29,19 +29,19 @@ HOW CP-SAT WORKS (brief primer):
 
 from __future__ import annotations
 
-import time
 import logging
+import time
 from collections import defaultdict
 
 from ortools.sat.python import cp_model
 
 from .models import (
-    PlacementRequest,
-    PlacementResult,
-    PlacementAssignment,
+    VM,
     AntiAffinityRule,
     Baremetal,
-    VM,
+    PlacementAssignment,
+    PlacementRequest,
+    PlacementResult,
     Resources,
 )
 
@@ -68,15 +68,12 @@ def get_eligible_baremetals(
     """
     if vm.candidate_baremetals:
         return [
-            bm_id for bm_id in vm.candidate_baremetals
-            if bm_id in bm_map
-            and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+            bm_id
+            for bm_id in vm.candidate_baremetals
+            if bm_id in bm_map and vm.demand.fits_in(bm_map[bm_id].available_capacity)
         ]
     else:
-        return [
-            bm.id for bm in baremetals
-            if vm.demand.fits_in(bm.available_capacity)
-        ]
+        return [bm.id for bm in baremetals if vm.demand.fits_in(bm.available_capacity)]
 
 
 class VMPlacementSolver:
@@ -197,42 +194,83 @@ class VMPlacementSolver:
         for (ip_type, role), vm_ids in groups.items():
             if len(vm_ids) >= 2 and num_ags > 0:
                 import math
-                max_per_ag = math.ceil(len(vm_ids) / num_ags)
+
+                has_synthetic = any(vid in self.active_vars for vid in vm_ids)
                 group_id = f"auto/{ip_type}/{role}"
-                rules.append(AntiAffinityRule(
-                    group_id=group_id,
-                    vm_ids=vm_ids,
-                    max_per_ag=max_per_ag,
-                ))
-                logger.info(
-                    "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
-                    ip_type, role, len(vm_ids), num_ags, max_per_ag,
-                )
+
+                if has_synthetic:
+                    # max_per_ag is unused — the actual constraint is
+                    # built dynamically in _add_anti_affinity_constraints.
+                    # We use 0 as a placeholder; it is ignored in actual calculations
+                    rules.append(
+                        AntiAffinityRule(
+                            group_id=group_id,
+                            vm_ids=vm_ids,
+                            max_per_ag=0,
+                        )
+                    )
+                    synthetic_count = sum(
+                        1 for vid in vm_ids if vid in self.active_vars
+                    )
+                    logger.info(
+                        "Auto anti-affinity: %s/%s (%d slots, %d synthetic"
+                        " / %d AGs → dynamic max_per_ag=ceil(active/%d))",
+                        ip_type,
+                        role,
+                        len(vm_ids),
+                        synthetic_count,
+                        num_ags,
+                        num_ags,
+                    )
+                else:
+                    max_per_ag = math.ceil(len(vm_ids) / num_ags)
+                    rules.append(
+                        AntiAffinityRule(
+                            group_id=group_id,
+                            vm_ids=vm_ids,
+                            max_per_ag=max_per_ag,
+                        )
+                    )
+                    logger.info(
+                        "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
+                        ip_type,
+                        role,
+                        len(vm_ids),
+                        num_ags,
+                        max_per_ag,
+                    )
 
                 # Policy check: is the actual spread below the policy target?
                 # effective_spread is the most AGs we could possibly use for
                 # this group, bounded by both infra and group size.
+                # For groups with synthetic VMs, use the upper bound count
+                # as a conservative estimate.
                 effective_spread = min(num_ags, len(vm_ids))
                 if effective_spread < target_spread:
+                    detail_max_per_ag = (
+                        "dynamic" if has_synthetic else math.ceil(len(vm_ids) / num_ags)
+                    )
                     msg = (
                         f"Anti-affinity for {ip_type}/{role} below policy target: "
                         f"actual spread={effective_spread}, target={target_spread} "
                         f"({num_ags} AG(s), {len(vm_ids)} VMs)."
                     )
-                    self.advisories.append({
-                        "type": "ag_spread_below_target",
-                        "severity": "warning",
-                        "group_id": group_id,
-                        "message": msg,
-                        "details": {
-                            "vm_count": len(vm_ids),
-                            "num_ags": num_ags,
-                            "effective_spread": effective_spread,
-                            "target_ag_spread": target_spread,
-                            "max_per_ag": max_per_ag,
-                            "ag_names": sorted(self.ag_to_bms.keys()),
-                        },
-                    })
+                    self.advisories.append(
+                        {
+                            "type": "ag_spread_below_target",
+                            "severity": "warning",
+                            "group_id": group_id,
+                            "message": msg,
+                            "details": {
+                                "vm_count": len(vm_ids),
+                                "num_ags": num_ags,
+                                "effective_spread": effective_spread,
+                                "target_ag_spread": target_spread,
+                                "max_per_ag": detail_max_per_ag,
+                                "ag_names": sorted(self.ag_to_bms.keys()),
+                            },
+                        }
+                    )
                     logger.warning("Spread advisory: %s", msg)
 
         return rules
@@ -349,8 +387,37 @@ class VMPlacementSolver:
 
         Example: 6 worker VMs, max_per_ag=2, 3 AGs
           → at most 2 workers per AG → workers spread across AGs ✓
+
+        For auto-generated rules containing synthetic VMs (splitter slots),
+        max_per_ag is computed dynamically because the actual VM count is a
+        decision variable. Instead of a fixed bound we use:
+          count_in_ag * num_ags <= total_active + (num_ags - 1)
+        which is equivalent to:
+          count_in_ag <= ceil(total_active / num_ags)
         """
+        num_ags = len(self.ag_to_bms)
+
         for rule in self.effective_rules:
+            # Check if this auto-generated rule contains synthetic VMs
+            # whose active count is a decision variable.
+            is_auto = rule.group_id.startswith("auto/")
+            synthetic_ids = (
+                [vid for vid in rule.vm_ids if vid in self.active_vars]
+                if is_auto
+                else []
+            )
+            use_dynamic = is_auto and len(synthetic_ids) > 0 and num_ags > 0
+
+            # Build total_active expression once (reused across AGs).
+            # total_active = Σ active_var[synthetic] + count(explicit in group)
+            if use_dynamic:
+                explicit_count = sum(
+                    1 for vid in rule.vm_ids if vid not in self.active_vars
+                )
+                total_active = (
+                    sum(self.active_vars[vid] for vid in synthetic_ids) + explicit_count
+                )
+
             for ag, ag_bm_ids in self.ag_to_bms.items():
                 # Collect assign vars for VMs in this rule × BMs in this AG
                 vars_in_ag = [
@@ -361,7 +428,14 @@ class VMPlacementSolver:
                 ]
 
                 if vars_in_ag:
-                    self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
+                    if use_dynamic:
+                        # count_in_ag * N <= total_active + (N - 1)
+                        # ≡ count_in_ag <= ceil(total_active / N)
+                        self.model.add(
+                            sum(vars_in_ag) * num_ags <= total_active + (num_ags - 1)
+                        )
+                    else:
+                        self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -443,7 +517,9 @@ class VMPlacementSolver:
                 self.model.add_division_equality(util_pct, after_times_100, total_d)
 
                 # Step C: amount exceeding the safe upper bound (may be negative)
-                raw = self.model.new_int_var(-max_util, max_util, f"raw_{bm.id}_{field}")
+                raw = self.model.new_int_var(
+                    -max_util, max_util, f"raw_{bm.id}_{field}"
+                )
                 self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
                 # Step D: ReLU — clamp negative values to 0
@@ -510,17 +586,23 @@ class VMPlacementSolver:
                         for vm_id, _ in assigned_vars
                     )
                     remaining = self.model.new_int_var(
-                        total_d - used_d - max_new_d, total_d,
+                        total_d - used_d - max_new_d,
+                        total_d,
                         f"rem_{bm.id}_{field}_t{t_idx}",
                     )
                     self.model.add(remaining == total_d - used_d - new_usage)
 
                     # How many of this t-shirt size fit on this dimension
                     # (may be negative in the model; capacity constraint ensures non-negative at solution)
-                    min_slots = (total_d - used_d - max_new_d) // tshirt_d if tshirt_d > 0 else 0
+                    min_slots = (
+                        (total_d - used_d - max_new_d) // tshirt_d
+                        if tshirt_d > 0
+                        else 0
+                    )
                     max_slots = total_d // tshirt_d if tshirt_d > 0 else 0
                     slots_d = self.model.new_int_var(
-                        min(min_slots, 0), max_slots,
+                        min(min_slots, 0),
+                        max_slots,
                         f"slotd_{bm.id}_{field}_t{t_idx}",
                     )
                     self.model.add_division_equality(slots_d, remaining, tshirt_d)
@@ -631,7 +713,7 @@ class VMPlacementSolver:
             return PlacementResult(
                 success=False,
                 solver_status="INPUT_ERROR: duplicate baremetals detected — "
-                              "scheduler must deduplicate before calling solver",
+                "scheduler must deduplicate before calling solver",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
                 diagnostics=self._with_advisories({"input_errors": self._input_errors}),
@@ -654,8 +736,11 @@ class VMPlacementSolver:
 
             logger.info(
                 "Solving: %d VMs, %d BMs, %d variables, %d rules, %d AGs",
-                len(self.request.vms), len(self.request.baremetals),
-                len(self.assign), len(self.effective_rules), len(self.ag_to_bms),
+                len(self.request.vms),
+                len(self.request.baremetals),
+                len(self.assign),
+                len(self.effective_rules),
+                len(self.ag_to_bms),
             )
 
             status = solver.solve(self.model)
@@ -668,7 +753,9 @@ class VMPlacementSolver:
                 return self._extract_solution(solver, status_name, time.time() - start)
             else:
                 diagnostics = self._with_advisories(self._build_failure_diagnostics())
-                logger.warning("Solver failed with %s, diagnostics: %s", status_name, diagnostics)
+                logger.warning(
+                    "Solver failed with %s, diagnostics: %s", status_name, diagnostics
+                )
                 return PlacementResult(
                     success=False,
                     solver_status=status_name,
@@ -723,13 +810,15 @@ class VMPlacementSolver:
             for bm in self.request.baremetals:
                 if (vm.id, bm.id) in self.assign:
                     if solver.value(self.assign[(vm.id, bm.id)]) == 1:
-                        assignments.append(PlacementAssignment(
-                            vm_id=vm.id,
-                            vm_hostname=vm.hostname,
-                            baremetal_id=bm.id,
-                            bm_hostname=bm.hostname,
-                            ag=bm.topology.ag,
-                        ))
+                        assignments.append(
+                            PlacementAssignment(
+                                vm_id=vm.id,
+                                vm_hostname=vm.hostname,
+                                baremetal_id=bm.id,
+                                bm_hostname=bm.hostname,
+                                ag=bm.topology.ag,
+                            )
+                        )
                         placed = True
                         break
             if not placed:
