@@ -1,0 +1,121 @@
+{
+  "scenario_id": "S2",
+  "name": "Bin Packing & Resource Waste",
+  "goal": "Prove solver reduces BM touched count and preserves future-fit capacity, vs round-robin scattering VMs across all BMs.",
+  "hypothesis": "RR rotates through BMs 1-VM-at-a-time and does not sort VMs by size. With 15 VMs and 10 BMs, RR touches ALL 10 BMs (each gets 1~2 VMs) and leaves zero clean machines for a follow-up cluster. Solver packs the same workload into ~3-4 BMs, preserving 6+ fully empty BMs for future placements. This is invariant to RR's BM iteration order.",
+
+  "inventory_setup": {
+    "description": "10 identical empty BMs spread across 3 AGs. No placeholders — clean slate lets the bin-packing difference show without confounding noise.",
+    "ags": [
+      { "id": "ag-s2-1" },
+      { "id": "ag-s2-2" },
+      { "id": "ag-s2-3" }
+    ],
+    "racks": [
+      { "id": "rack-s2-r01", "ag": "ag-s2-1" },
+      { "id": "rack-s2-r02", "ag": "ag-s2-1" },
+      { "id": "rack-s2-r03", "ag": "ag-s2-1" },
+      { "id": "rack-s2-r04", "ag": "ag-s2-1" },
+      { "id": "rack-s2-r05", "ag": "ag-s2-2" },
+      { "id": "rack-s2-r06", "ag": "ag-s2-2" },
+      { "id": "rack-s2-r07", "ag": "ag-s2-2" },
+      { "id": "rack-s2-r08", "ag": "ag-s2-3" },
+      { "id": "rack-s2-r09", "ag": "ag-s2-3" },
+      { "id": "rack-s2-r10", "ag": "ag-s2-3" }
+    ],
+    "baremetals": [
+      { "hostname": "bm-s2-01", "rack": "rack-s2-r01", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-02", "rack": "rack-s2-r02", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-03", "rack": "rack-s2-r03", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-04", "rack": "rack-s2-r04", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-05", "rack": "rack-s2-r05", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-06", "rack": "rack-s2-r06", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-07", "rack": "rack-s2-r07", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-08", "rack": "rack-s2-r08", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-09", "rack": "rack-s2-r09", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s2-10", "rack": "rack-s2-r10", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } }
+    ],
+    "placeholder_vms": []
+  },
+
+  "test_request": {
+    "cluster_id": "cluster-s2-prod",
+    "vms": [
+      { "hostname": "vm-s2-m1", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s2-m2", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s2-m3", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s2-w01", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w02", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w03", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w04", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w05", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w06", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w07", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w08", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w09", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w10", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w11", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s2-w12", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" }
+    ],
+    "anti_affinity_rules": [
+      {
+        "group_id": "s2-masters-ha",
+        "vm_hostnames": ["vm-s2-m1", "vm-s2-m2", "vm-s2-m3"],
+        "max_per_ag": 1,
+        "note": "Both RR and Solver should satisfy this. Included for realism; not the differentiator in S2."
+      }
+    ]
+  },
+
+  "capacity_math": {
+    "total_demand_cpu": 216,
+    "total_demand_note": "3*8 + 12*16 = 24 + 192 = 216 cores",
+    "single_bm_capacity_cpu": 64,
+    "minimum_bms_required": 4,
+    "minimum_bms_note": "ceil(216/64) = 4. Solver should hit this or one above.",
+    "provisioned_bms": 10,
+    "slack_bms": 6,
+    "slack_note": "6 BMs are 'future capacity' — whichever scheduler leaves more of them clean, wins."
+  },
+
+  "execution_steps": [
+    "1. Create 3 ags / 10 racks / 10 BMs in inventory (empty).",
+    "2. Confirm no VMs exist on any bm-s2-* before starting.",
+    "3. Call POST /api/v1/schedule (RR) with the test_request. Record full mapping.",
+    "4. Delete the 15 test VMs created by v1 (scenario reset — BMs should be empty again).",
+    "5. Call POST /api/v2/scheduler (solver) with the same test_request. Record full mapping.",
+    "6. Report back using reporting_template."
+  ],
+
+  "expected_outcome": {
+    "v1_round_robin": {
+      "bm_touched_count": 10,
+      "bm_touched_note": "Rotate behavior + 15 VMs > 10 BMs guarantees every BM receives at least 1 VM.",
+      "empty_bm_count_after": 0,
+      "largest_remaining_free_slot_cpu": "At most 48c (a BM with just one 16c worker). No BM remains at 64c.",
+      "master_ag_distribution": { "ag-s2-1": 1, "ag-s2-2": 1, "ag-s2-3": 1 },
+      "anti_affinity_violations": 0,
+      "verdict": "PASS placement, FAIL future-fit — any follow-up cluster needing a full 64c BM is blocked."
+    },
+    "v2_solver": {
+      "bm_touched_count": "3 or 4 (minimum 4 by arithmetic; solver may choose 4 for slack).",
+      "empty_bm_count_after": "6 or 7",
+      "largest_remaining_free_slot_cpu": 64,
+      "master_ag_distribution": { "ag-s2-1": 1, "ag-s2-2": 1, "ag-s2-3": 1 },
+      "anti_affinity_violations": 0,
+      "verdict": "PASS placement, PASS future-fit — 6+ clean BMs remain available."
+    },
+    "delta_story": "Same workload, same AG correctness. RR consumed 10 BMs of scheduling 'real estate'; solver consumed 4. If a second cluster arrives needing even a single 64c VM, RR pool cannot serve it without displacing existing workload. Solver pool can serve 6 more."
+  },
+
+  "metrics_derivable_from_mapping": [
+    "bm_touched_count = |distinct BMs in mapping|",
+    "empty_bm_count = 10 - bm_touched_count",
+    "per_bm_used_cpu = sum(vm.demand.cpu for vm mapped to that bm)",
+    "largest_remaining_free_slot_cpu = max(64 - per_bm_used_cpu) over all 10 BMs",
+    "headroom_variance = variance of (64 - per_bm_used_cpu) across all 10 BMs",
+    "master_ag_distribution = count of masters per AG (via bm -> rack -> ag lookup)"
+  ],
+
+  "reporting_template": "Scenario: S2\nAPI: v1\nStatus: OK\nMapping:\n  vm-s2-m1 -> bm-s2-??\n  vm-s2-m2 -> bm-s2-??\n  vm-s2-m3 -> bm-s2-??\n  vm-s2-w01 -> bm-s2-??\n  vm-s2-w02 -> bm-s2-??\n  ... (all 15 VMs)\nUnplaced: none\n\n---\n\nScenario: S2\nAPI: v2\nStatus: OK\nMapping:\n  vm-s2-m1 -> bm-s2-??\n  ... (all 15 VMs)\nUnplaced: none"
+}
