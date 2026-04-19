@@ -48,6 +48,7 @@ output/
 
 # Keep example request files
 !examples/*.json
+!examples/benchmark/*.json
 
 # Temporary files
 tmp/

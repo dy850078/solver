@@ -1,0 +1,91 @@
+{
+  "scenario_id": "S1",
+  "name": "AG Anti-Affinity (Masters HA)",
+  "goal": "Prove solver respects AG anti-affinity spreading while round-robin does not.",
+  "hypothesis": "RR iterates BMs in listing order and places the first 3 masters into the first 3 BMs; because bm-s1-01 and bm-s1-02 share ag-s1-1, RR produces an AG-collision (2 masters in the same AG). Solver guarantees 1 master per AG.",
+
+  "inventory_setup": {
+    "description": "Create 3 AGs, 6 racks (2 per AG), 6 empty BMs (1 per rack). No placeholder VMs.",
+    "ags": [
+      { "id": "ag-s1-1" },
+      { "id": "ag-s1-2" },
+      { "id": "ag-s1-3" }
+    ],
+    "racks": [
+      { "id": "rack-s1-r1", "ag": "ag-s1-1" },
+      { "id": "rack-s1-r2", "ag": "ag-s1-1" },
+      { "id": "rack-s1-r3", "ag": "ag-s1-2" },
+      { "id": "rack-s1-r4", "ag": "ag-s1-2" },
+      { "id": "rack-s1-r5", "ag": "ag-s1-3" },
+      { "id": "rack-s1-r6", "ag": "ag-s1-3" }
+    ],
+    "baremetals": [
+      { "hostname": "bm-s1-01", "rack": "rack-s1-r1", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s1-02", "rack": "rack-s1-r2", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s1-03", "rack": "rack-s1-r3", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s1-04", "rack": "rack-s1-r4", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s1-05", "rack": "rack-s1-r5", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } },
+      { "hostname": "bm-s1-06", "rack": "rack-s1-r6", "total_capacity": { "cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000, "gpu_count": 0 } }
+    ],
+    "placeholder_vms": []
+  },
+
+  "test_request": {
+    "cluster_id": "cluster-s1-prod",
+    "vms": [
+      { "hostname": "vm-s1-m1", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s1-m2", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s1-m3", "demand": { "cpu_cores": 8,  "memory_mib": 32768, "storage_gb": 200 }, "node_role": "master", "ip_type": "routable" },
+      { "hostname": "vm-s1-w1", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s1-w2", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" },
+      { "hostname": "vm-s1-w3", "demand": { "cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400 }, "node_role": "worker", "ip_type": "routable" }
+    ],
+    "anti_affinity_rules": [
+      {
+        "group_id": "s1-masters-ha",
+        "vm_hostnames": ["vm-s1-m1", "vm-s1-m2", "vm-s1-m3"],
+        "max_per_ag": 1,
+        "note": "If v2 auto-generates anti-affinity from node_role=master, this rule is redundant but harmless. Include it for v2 to be explicit. v1 likely ignores it."
+      }
+    ]
+  },
+
+  "execution_steps": [
+    "1. Create ags/racks/bms in inventory via inventory API.",
+    "2. Confirm no VMs exist on any bm-s1-* before starting.",
+    "3. Call POST /api/v1/schedule with the test_request (RR). Record assignment.",
+    "4. Delete the 6 test VMs created by v1 (or reset the scenario BMs to empty).",
+    "5. Call POST /api/v2/scheduler with the same test_request (solver). Record assignment.",
+    "6. Report back using the template in reporting_template."
+  ],
+
+  "expected_outcome": {
+    "v1_round_robin": {
+      "likely_mapping": {
+        "vm-s1-m1": "bm-s1-01",
+        "vm-s1-m2": "bm-s1-02",
+        "vm-s1-m3": "bm-s1-03",
+        "vm-s1-w1": "bm-s1-04",
+        "vm-s1-w2": "bm-s1-05",
+        "vm-s1-w3": "bm-s1-06"
+      },
+      "ag_distribution_for_masters": { "ag-s1-1": 2, "ag-s1-2": 1, "ag-s1-3": 0 },
+      "anti_affinity_violations": 1,
+      "verdict": "FAIL on AG spread"
+    },
+    "v2_solver": {
+      "ag_distribution_for_masters": { "ag-s1-1": 1, "ag-s1-2": 1, "ag-s1-3": 1 },
+      "anti_affinity_violations": 0,
+      "verdict": "PASS on AG spread"
+    }
+  },
+
+  "metrics": [
+    "master_ag_distribution: count of masters per AG (derived from mapping + bm->rack->ag)",
+    "anti_affinity_violations: number of AGs where master count > max_per_ag (=1)",
+    "placement_success: all 6 VMs placed, no unplaced",
+    "bm_count_used: distinct BMs holding at least one test VM"
+  ],
+
+  "reporting_template": "Scenario: S1\nAPI: v1\nStatus: OK\nMapping:\n  vm-s1-m1 -> bm-s1-??\n  vm-s1-m2 -> bm-s1-??\n  vm-s1-m3 -> bm-s1-??\n  vm-s1-w1 -> bm-s1-??\n  vm-s1-w2 -> bm-s1-??\n  vm-s1-w3 -> bm-s1-??\nUnplaced: none\n\n---\n\nScenario: S1\nAPI: v2\nStatus: OK\nMapping:\n  vm-s1-m1 -> bm-s1-??\n  ... (same 6 VMs)\nUnplaced: none"
+}
