@@ -354,6 +354,35 @@ class TestNodeRoles:
         assert r.success
         assert len(r.assignments) == 4
 
+    def test_allowed_node_roles_filters_placement(self):
+        """BMs with allowed_node_roles only accept matching role VMs."""
+        cp_bm = make_bm("bm-cp")
+        cp_bm.allowed_node_roles = [NodeRole.MASTER, NodeRole.INFRA, NodeRole.L4LB]
+        wk_bm = make_bm("bm-wk", ag="ag-2")
+        wk_bm.allowed_node_roles = [NodeRole.WORKER]
+
+        vms = [
+            make_vm("master-0", role=NodeRole.MASTER),
+            make_vm("worker-0", role=NodeRole.WORKER),
+        ]
+        r = solve(vms, [cp_bm, wk_bm])
+        assert r.success
+        assert amap(r) == {"master-0": "bm-cp", "worker-0": "bm-wk"}
+
+    def test_allowed_node_roles_infeasible_when_no_match(self):
+        """No BM accepts the role → infeasible."""
+        wk_bm = make_bm("bm-wk")
+        wk_bm.allowed_node_roles = [NodeRole.WORKER]
+
+        r = solve([make_vm("master-0", role=NodeRole.MASTER)], [wk_bm])
+        assert not r.success
+
+    def test_empty_allowed_roles_accepts_any(self):
+        """Default (empty list) means any role is allowed — backward compatible."""
+        bm = make_bm("bm-any")  # allowed_node_roles defaults to []
+        r = solve([make_vm("m-0", role=NodeRole.MASTER)], [bm])
+        assert r.success
+
 
 # ===========================================================================
 # 7. Realistic scenario

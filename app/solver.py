@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
+def bm_allows_role(bm: Baremetal, role) -> bool:
+    """BM allows a VM of the given role iff its allow-list is empty or contains the role."""
+    return not bm.allowed_node_roles or role in bm.allowed_node_roles
+
+
 def get_eligible_baremetals(
     vm: VM,
     bm_map: dict[str, Baremetal],
@@ -61,7 +66,8 @@ def get_eligible_baremetals(
 
     If the Go scheduler provided a candidate list (from step 3 filtering),
     we only consider those. Otherwise, we consider any BM with enough
-    available capacity.
+    available capacity. Either way, BMs whose `allowed_node_roles` excludes
+    this VM's role are filtered out.
 
     This is a module-level function so both the solver and diagnostics
     can share the same eligibility logic.
@@ -70,10 +76,16 @@ def get_eligible_baremetals(
         return [
             bm_id
             for bm_id in vm.candidate_baremetals
-            if bm_id in bm_map and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+            if bm_id in bm_map
+            and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+            and bm_allows_role(bm_map[bm_id], vm.node_role)
         ]
     else:
-        return [bm.id for bm in baremetals if vm.demand.fits_in(bm.available_capacity)]
+        return [
+            bm.id for bm in baremetals
+            if vm.demand.fits_in(bm.available_capacity)
+            and bm_allows_role(bm, vm.node_role)
+        ]
 
 
 class VMPlacementSolver:

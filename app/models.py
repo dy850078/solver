@@ -81,12 +81,18 @@ class Baremetal(BaseModel):
     """
     A physical host. The Go scheduler fills in total_capacity and used_capacity
     from the inventory API. available_capacity is derived (total - used).
+
+    `allowed_node_roles`: which VM roles are permitted on this BM.
+      Empty list = no restriction (any role). Non-empty = only those roles.
+      Used to model "control-plane BMs only accept master/infra/l4lb",
+      "worker BMs only accept worker", etc.
     """
     id: str
     hostname: str = ""
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
+    allowed_node_roles: list[NodeRole] = Field(default_factory=list)
 
     @property
     def available_capacity(self) -> Resources:
@@ -278,12 +284,17 @@ class PurchaseCandidate(BaseModel):
     `topology_template` controls AG / rack placement for spreading.
     All hypothetical BMs from the same candidate share this topology;
     to model a multi-AG purchase, declare one candidate per AG.
+
+    `allowed_node_roles` is copied onto each synthesized Baremetal so
+    the solver only places matching roles on them (e.g. "control-plane
+    candidates only host master/infra/l4lb"). Empty = no restriction.
     """
     spec: Resources
     topology_template: Topology = Field(default_factory=Topology)
     max_quantity: int | None = None
     cost: float = 1.0
     label: str = ""
+    allowed_node_roles: list[NodeRole] = Field(default_factory=list)
 
 
 class PurchasePlanningRequest(BaseModel):

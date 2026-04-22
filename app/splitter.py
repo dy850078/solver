@@ -38,6 +38,7 @@ from .models import (
     SplitDecision,
     VM,
 )
+from .solver import bm_allows_role
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +91,18 @@ class ResourceSplitter:
         config.vm_specs. Specs that don't fit any BM's available capacity are
         filtered out immediately (they can never be placed).
 
-        When *candidate_baremetals* is set on the requirement, only those BMs
-        are checked — a spec that fits some other BM but none of the
-        candidates would never be placed anyway.
+        BMs whose `allowed_node_roles` excludes this requirement's role are
+        excluded first (a spec that only fits role-incompatible BMs is unusable).
+        When *candidate_baremetals* is also set on the requirement, only the
+        intersection is checked.
         """
         candidates = req.vm_specs if req.vm_specs is not None else self.config.vm_specs
         if not candidates:
             return []
-        eligible_bms = self.baremetals
+        eligible_bms = [bm for bm in self.baremetals if bm_allows_role(bm, req.node_role)]
         if req.candidate_baremetals:
             candidate_set = set(req.candidate_baremetals)
-            eligible_bms = [bm for bm in self.baremetals if bm.id in candidate_set]
+            eligible_bms = [bm for bm in eligible_bms if bm.id in candidate_set]
         usable = [
             spec for spec in candidates
             if any(spec.fits_in(bm.available_capacity) for bm in eligible_bms)

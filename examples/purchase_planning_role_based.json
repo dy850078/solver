@@ -1,0 +1,75 @@
+{
+  "_description": "Purchase planning with role-based BM restrictions. PM evaluates how many control-plane BMs (for master/infra/l4lb) and worker BMs to buy. Each candidate declares allowed_node_roles so VMs only land on matching BM kinds.",
+  "requirements": [
+    {
+      "total_resources": {"cpu_cores": 12, "memory_mib": 48000, "storage_gb": 150, "gpu_count": 0},
+      "node_role": "master",
+      "cluster_id": "cluster-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 50, "gpu_count": 0}
+      ],
+      "min_total_vms": 3,
+      "max_total_vms": 3
+    },
+    {
+      "total_resources": {"cpu_cores": 128, "memory_mib": 512000, "storage_gb": 1600, "gpu_count": 0},
+      "node_role": "worker",
+      "cluster_id": "cluster-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0}
+      ]
+    }
+  ],
+  "purchase_candidates": [
+    {
+      "spec": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-cp-a", "ag": "ag-cp-a"},
+      "max_quantity": 3,
+      "cost": 1.5,
+      "label": "cp-a",
+      "allowed_node_roles": ["master", "infra", "l4lb"]
+    },
+    {
+      "spec": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-cp-b", "ag": "ag-cp-b"},
+      "max_quantity": 3,
+      "cost": 1.5,
+      "label": "cp-b",
+      "allowed_node_roles": ["master", "infra", "l4lb"]
+    },
+    {
+      "spec": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-cp-c", "ag": "ag-cp-c"},
+      "max_quantity": 3,
+      "cost": 1.5,
+      "label": "cp-c",
+      "allowed_node_roles": ["master", "infra", "l4lb"]
+    },
+    {
+      "spec": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-wk-a", "ag": "ag-wk-a"},
+      "max_quantity": 5,
+      "cost": 1.0,
+      "label": "wk-a",
+      "allowed_node_roles": ["worker"]
+    },
+    {
+      "spec": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-wk-b", "ag": "ag-wk-b"},
+      "max_quantity": 5,
+      "cost": 1.0,
+      "label": "wk-b",
+      "allowed_node_roles": ["worker"]
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5,
+    "w_purchase_cost": 1000
+  }
+}
