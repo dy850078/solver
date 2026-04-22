@@ -1,0 +1,64 @@
+{
+  "_description": "Purchase planning — greenfield. PM provides 128 CPU / 512 GiB worker requirement and two candidate BM specs across two AGs. Solver recommends the minimum purchase.",
+  "requirements": [
+    {
+      "total_resources": {"cpu_cores": 300, "memory_mib": 3686400, "storage_gb": 2000, "gpu_count": 0},
+      "node_role": "worker",
+      "cluster_id": "f25-prd1",
+      "ip_type": "non-routable",
+      "vm_specs": [
+        {"cpu_cores": 30, "memory_mib": 368640, "storage_gb": 200, "gpu_count": 0}
+      ]
+    },{
+      "total_resources": {"cpu_cores": 40, "memory_mib": 327680, "storage_gb": 1000, "gpu_count": 0},
+      "node_role": "master",
+      "cluster_id": "f25-prd1",
+      "ip_type": "non-routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu_count": 0}
+      ]
+    },{
+      "total_resources": {"cpu_cores": 40, "memory_mib": 327680, "storage_gb": 1000, "gpu_count": 0},
+      "node_role": "infra",
+      "cluster_id": "f25-prd1",
+      "ip_type": "non-routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu_count": 0}
+      ]
+    },{
+      "total_resources": {"cpu_cores": 40, "memory_mib": 327680, "storage_gb": 1000, "gpu_count": 0},
+      "node_role": "l4lb",
+      "cluster_id": "f25-prd1",
+      "ip_type": "non-routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu_count": 0}
+      ]
+    }
+  ],
+  "purchase_candidates": [
+    {
+      "spec": {"cpu_cores": 64, "memory_mib": 512000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "f12-ag1"},
+      "cost": 1.0,
+      "label": "oem-model-1-ag1"
+    },{
+      "spec": {"cpu_cores": 64, "memory_mib": 512000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-1", "ag": "f12-ag2"},
+      "cost": 1.0,
+      "label": "oem-model-1-ag2"
+    },{
+      "spec": {"cpu_cores": 64, "memory_mib": 512000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-3", "rack": "rack-1", "ag": "f12-ag3"},
+      "cost": 1.0,
+      "label": "oem-model-1-ag3"
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": true,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5,
+    "w_purchase_cost": 1000
+  }
+}
