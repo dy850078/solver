@@ -30,3 +30,8 @@ packages = ["app"]
 [tool.pytest.ini_options]
 # pytest 固定從 tests/ 找測試，不需要在 terminal 指定路徑
 testpaths = ["tests"]
+markers = [
+    "stress: long-running stress/scale tests (deselect with -m 'not stress')",
+    "slow: tests expected to exceed ~5s",
+    "huge: tests expected to exceed ~30s; run manually or on weekly CI",
+]
