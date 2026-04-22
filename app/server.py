@@ -20,7 +20,15 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .models import PlacementRequest, PlacementResult, SplitPlacementRequest, SplitPlacementResult
+from .models import (
+    PlacementRequest,
+    PlacementResult,
+    PurchasePlanningRequest,
+    PurchasePlanningResult,
+    SplitPlacementRequest,
+    SplitPlacementResult,
+)
+from .purchase_planner import plan_purchase
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
 
@@ -65,6 +73,19 @@ def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
     return solve_split_placement(request)
 
 
+@api.post("/v1/purchase-planning", response_model=PurchasePlanningResult)
+def purchase_planning(request: PurchasePlanningRequest) -> PurchasePlanningResult:
+    """
+    Evaluate how many Baremetals to buy from a set of candidate specs.
+
+    Inventory-free: PM provides candidate Baremetal specs (spec + topology +
+    optional quantity cap) and total cluster resource requirements; the solver
+    recommends the minimum purchase that fits, optionally mixed with already-
+    owned `existing_baremetals`.
+    """
+    return plan_purchase(request)
+
+
 @api.get("/healthz")
 def healthz() -> dict:
     return {"status": "healthy"}
@@ -82,9 +103,19 @@ def main() -> None:
         if not args.input:
             print("ERROR: --input required in CLI mode", file=sys.stderr)
             sys.exit(1)
+        import json
         with open(args.input) as f:
-            request = PlacementRequest.model_validate_json(f.read())
-        result = VMPlacementSolver(request).solve()
+            payload = f.read()
+        raw = json.loads(payload)
+        if "purchase_candidates" in raw:
+            request_model = PurchasePlanningRequest.model_validate(raw)
+            result = plan_purchase(request_model)
+        elif "requirements" in raw:
+            request_model = SplitPlacementRequest.model_validate(raw)
+            result = solve_split_placement(request_model)
+        else:
+            request_model = PlacementRequest.model_validate(raw)
+            result = VMPlacementSolver(request_model).solve()
         output = result.model_dump_json(indent=2)
         if args.output:
             with open(args.output, "w") as f:

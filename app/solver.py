@@ -130,6 +130,17 @@ class VMPlacementSolver:
         # Waste penalty terms injected by split_solver (splitter integration)
         self.splitter_waste_terms: list[cp_model.LinearExprT] = []
 
+        # Purchase cost weights injected by purchase_planner: maps hypothetical
+        # BM id -> integer cost weight. Solver multiplies each weight by
+        # `bm_used[bm_id]` and adds to the objective with w_purchase_cost.
+        self.purchase_cost_weights: dict[str, int] = {}
+
+        # Symmetry-breaking groups for interchangeable hypothetical BMs
+        # (same PurchaseCandidate). For each group [b0, b1, ...], adds
+        # bm_used[b0] >= bm_used[b1] >= ... so the solver picks the lowest
+        # indexes first instead of exploring equivalent permutations.
+        self.purchase_symmetry_groups: list[list[str]] = []
+
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
@@ -690,6 +701,24 @@ class VMPlacementSolver:
         waste_terms = self.splitter_waste_terms
         if waste_terms and self.config.w_resource_waste > 0:
             terms.append(self.config.w_resource_waste * sum(waste_terms))
+
+        # Purchase planner integration: symmetry breaking + cost minimization.
+        # Needs bm_used, which `_ensure_bm_used_vars` already builds lazily.
+        if self.purchase_cost_weights or self.purchase_symmetry_groups:
+            self._ensure_bm_used_vars()
+
+        for group in self.purchase_symmetry_groups:
+            for k in range(len(group) - 1):
+                self.model.add(self.bm_used[group[k]] >= self.bm_used[group[k + 1]])
+
+        if self.purchase_cost_weights and self.config.w_purchase_cost > 0:
+            terms.append(
+                self.config.w_purchase_cost
+                * sum(
+                    weight * self.bm_used[bm_id]
+                    for bm_id, weight in self.purchase_cost_weights.items()
+                )
+            )
 
         if terms:
             self.model.minimize(sum(terms))

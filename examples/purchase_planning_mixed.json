@@ -1,0 +1,47 @@
+{
+  "_description": "Purchase planning — mixed mode. PM already owns 2 existing BMs (partially used) and is evaluating how many more to buy to cover a 192 CPU requirement. Solver prefers existing BMs and only recommends purchasing the gap.",
+  "requirements": [
+    {
+      "total_resources": {"cpu_cores": 192, "memory_mib": 768000, "storage_gb": 2400, "gpu_count": 0},
+      "node_role": "worker",
+      "cluster_id": "cluster-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0}
+      ]
+    }
+  ],
+  "existing_baremetals": [
+    {
+      "id": "bm-existing-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 16, "memory_mib": 64000,  "storage_gb": 400,  "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-a"}
+    },
+    {
+      "id": "bm-existing-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-b"}
+    }
+  ],
+  "purchase_candidates": [
+    {
+      "spec": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "topology_template": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-3", "ag": "ag-c"},
+      "max_quantity": 5,
+      "cost": 1.0,
+      "label": "extra"
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false,
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "w_resource_waste": 5,
+    "w_purchase_cost": 1000
+  }
+}

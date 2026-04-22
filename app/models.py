@@ -168,6 +168,11 @@ class SolverConfig(BaseModel):
     vm_specs: list[Resources] = Field(default_factory=list)
     # Requirement splitter: penalize over-allocation waste
     w_resource_waste: int = 5
+    # Purchase planner: penalize each hypothetical BM that the solver decides to "buy"
+    # (weight is multiplied by the per-candidate `cost`). Large default so "buy one
+    # fewer BM" dominates softer objectives like consolidation/headroom without
+    # forcing the solver to accept infeasibility.
+    w_purchase_cost: int = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +256,72 @@ class SplitPlacementResult(BaseModel):
     solver_status: str = ""
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+    def to_assignment_map(self) -> dict[str, str]:
+        return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Purchase planner I/O
+# ---------------------------------------------------------------------------
+
+class PurchaseCandidate(BaseModel):
+    """
+    A kind of Baremetal the PM is considering purchasing.
+
+    The solver treats each candidate as a pool of up to `max_quantity`
+    identical hypothetical machines and decides how many to actually
+    "buy" (i.e. place VMs on). Set `cost` to express a relative price
+    ratio across candidates; leave at 1.0 to minimize total count.
+
+    `topology_template` controls AG / rack placement for spreading.
+    All hypothetical BMs from the same candidate share this topology;
+    to model a multi-AG purchase, declare one candidate per AG.
+    """
+    spec: Resources
+    topology_template: Topology = Field(default_factory=Topology)
+    max_quantity: int | None = None
+    cost: float = 1.0
+    label: str = ""
+
+
+class PurchasePlanningRequest(BaseModel):
+    """Input for the purchase planning endpoint."""
+    requirements: list[ResourceRequirement]
+    purchase_candidates: list[PurchaseCandidate]
+    existing_baremetals: list[Baremetal] = Field(default_factory=list)
+    vms: list[VM] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class CandidatePurchaseDecision(BaseModel):
+    """
+    Solver's recommendation for one PurchaseCandidate.
+
+    `recommended_quantity` is how many of this BM kind to buy.
+    `used_count` equals `recommended_quantity` when symmetry breaking is
+    working correctly (buy only machines you actually use).
+    `avg_utilization` is keyed by resource field (cpu_cores/memory_mib/...)
+    and ranges 0.0..1.0, computed across the purchased machines.
+    """
+    label: str
+    spec: Resources
+    recommended_quantity: int
+    used_count: int
+    avg_utilization: dict[str, float] = Field(default_factory=dict)
+
+
+class PurchasePlanningResult(BaseModel):
+    """Output for the purchase planning endpoint."""
+    feasible: bool
+    purchase_decisions: list[CandidatePurchaseDecision] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
+    unplaced_vms: list[str] = Field(default_factory=list)
+    solver_status: str = ""
+    solve_time_seconds: float = 0.0
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:

@@ -93,6 +93,12 @@ class DiagnosticsBuilder:
     def _check_anti_affinity_feasibility(self) -> list[dict]:
         infeasible = []
         for rule in self.effective_rules:
+            # max_per_ag == 0 is a placeholder used by the solver for auto
+            # anti-affinity rules that carry synthetic VMs (actual bound is
+            # built dynamically). There's no static number of AGs we can
+            # check against here, so skip the static-check path.
+            if rule.max_per_ag <= 0:
+                continue
             reachable_ags: set[str] = set()
             for vm_id in rule.vm_ids:
                 if vm_id in self.vm_map:
