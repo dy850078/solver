@@ -4,6 +4,7 @@ Run: pytest tests/test_purchase_planning.py -v
 """
 
 from app.models import (
+    Baremetal,
     NodeRole,
     PurchaseCandidate,
     PurchasePlanningRequest,
@@ -40,7 +41,7 @@ def make_req(
 def make_candidate(
     cpu=64, mem=256_000, disk=2000, gpu=0,
     ag="ag-1", dc="dc-1", rack="rack-1",
-    max_quantity=10, cost=1.0, label="",
+    max_quantity=10, cost=1.0, label="", allowed_node_roles=None,
 ) -> PurchaseCandidate:
     return PurchaseCandidate(
         spec=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
@@ -48,6 +49,7 @@ def make_candidate(
         max_quantity=max_quantity,
         cost=cost,
         label=label,
+        allowed_node_roles=allowed_node_roles or [],
     )
 
 
@@ -278,7 +280,108 @@ class TestUtilizationReport:
 
 
 # ===========================================================================
-# 8. HTTP endpoint smoke test
+# 8. Role-based restrictions (allowed_node_roles)
+# ===========================================================================
+
+class TestRoleRestriction:
+
+    def test_master_only_goes_on_control_plane_candidate(self):
+        """
+        Two candidates: 'cp' allows master/infra/l4lb, 'wk' allows worker.
+        Master requirement should land only on cp; worker on wk.
+        """
+        master_req = make_req(
+            cpu=12, mem=48_000, disk=100,
+            role=NodeRole.MASTER, ip_type="routable",
+            vm_specs=[Resources(cpu_cores=4, memory_mib=16_000, storage_gb=50)],
+            min_vms=3, max_vms=3,
+        )
+        worker_req = make_req(
+            cpu=64, mem=256_000, disk=800,
+            role=NodeRole.WORKER, ip_type="routable",
+            vm_specs=[Resources(cpu_cores=8, memory_mib=32_000, storage_gb=100)],
+        )
+        cp = make_candidate(
+            cpu=32, mem=128_000, disk=1000, ag="ag-cp",
+            max_quantity=3, cost=1.0, label="cp",
+            allowed_node_roles=[NodeRole.MASTER, NodeRole.INFRA, NodeRole.L4LB],
+        )
+        wk = make_candidate(
+            cpu=64, mem=256_000, disk=2000, ag="ag-wk",
+            max_quantity=5, cost=1.0, label="wk",
+            allowed_node_roles=[NodeRole.WORKER],
+        )
+
+        result = plan([master_req, worker_req], [cp, wk])
+
+        assert result.feasible
+        # Master VMs must all land on planned-cp-*
+        master_vm_ids = {a.vm_id for a in result.assignments if "r0" in a.vm_id}
+        master_bm_ids = {a.baremetal_id for a in result.assignments if a.vm_id in master_vm_ids}
+        assert all(bm.startswith("planned-cp-") for bm in master_bm_ids), (
+            f"master VMs landed on non-cp BMs: {master_bm_ids}"
+        )
+        # Worker VMs must all land on planned-wk-*
+        worker_vm_ids = {a.vm_id for a in result.assignments if "r1" in a.vm_id}
+        worker_bm_ids = {a.baremetal_id for a in result.assignments if a.vm_id in worker_vm_ids}
+        assert all(bm.startswith("planned-wk-") for bm in worker_bm_ids), (
+            f"worker VMs landed on non-wk BMs: {worker_bm_ids}"
+        )
+
+    def test_existing_role_tagged_bm_used(self):
+        """
+        Existing BM tagged as worker-only should receive worker VMs and
+        be preferred over purchasing.
+        """
+        existing = [
+            Baremetal(
+                id="bm-wk-existing",
+                total_capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000),
+                topology=Topology(site="site-a", phase="p1", datacenter="dc-1", rack="rack-1", ag="ag-wk"),
+                allowed_node_roles=[NodeRole.WORKER],
+            ),
+        ]
+        worker_req = make_req(
+            cpu=32, mem=128_000, disk=400,
+            role=NodeRole.WORKER, ip_type="routable",
+            vm_specs=[Resources(cpu_cores=8, memory_mib=32_000, storage_gb=100)],
+        )
+        wk = make_candidate(
+            ag="ag-wk-2", max_quantity=5, cost=1.0, label="extra-wk",
+            allowed_node_roles=[NodeRole.WORKER],
+        )
+
+        result = plan(worker_req, wk, existing=existing)
+
+        assert result.feasible
+        # Should be fully placed on existing (no purchase needed)
+        assert result.purchase_decisions[0].recommended_quantity == 0
+        for a in result.assignments:
+            assert a.baremetal_id == "bm-wk-existing"
+
+    def test_mismatched_role_causes_infeasible(self):
+        """
+        Only a worker candidate is offered, but master VMs are required.
+        No matching BM exists → infeasible.
+        """
+        master_req = make_req(
+            cpu=12, mem=48_000, disk=100,
+            role=NodeRole.MASTER, ip_type="routable",
+            vm_specs=[Resources(cpu_cores=4, memory_mib=16_000, storage_gb=50)],
+            min_vms=3, max_vms=3,
+        )
+        wk_only = make_candidate(
+            cpu=64, mem=256_000, disk=2000, max_quantity=5, label="wk",
+            allowed_node_roles=[NodeRole.WORKER],
+        )
+
+        result = plan(master_req, wk_only)
+
+        assert not result.feasible
+
+
+# ===========================================================================
+# 9. HTTP endpoint smoke test
 # ===========================================================================
 
 class TestEndpoint:

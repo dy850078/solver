@@ -162,6 +162,7 @@ def _synthesize_hypothetical_baremetals(
                     hostname=bm_id,
                     total_capacity=candidate.spec,
                     topology=candidate.topology_template,
+                    allowed_node_roles=list(candidate.allowed_node_roles),
                 )
             )
             group_ids.append(bm_id)
