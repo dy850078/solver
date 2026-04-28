@@ -689,6 +689,113 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 
 ## Part 3: 總結
 
+### 已實作 Diagnostic 輸出總覽
+
+前面各段分別說明了 advisory（§2.0）、成功路徑設計（§2.1）、capacity_gap 設計（§2.4），但**目前已實作的失敗路徑與 INPUT_ERROR 路徑**散落在架構圖、Helper 段與「已實作」表中，沒有單一可掃描的 JSON 範例。本節補上四條路徑的實際輸出範例與欄位速查表，讓 Go scheduler 開發者一眼掌握 `r.diagnostics` 的長相。
+
+> 各欄位的設計理由請回查 §2.0（advisory schema）、§Helper A（為何 layered constraint_check）、§Helper B（為何 anti-affinity 必要不充分）、§Schema 契約與整合（哪些欄位是強/半/弱契約）、§Splitter 整合 Checklist（synthetic VM 對 `max_per_ag` 顯示為 `"dynamic"` 的影響）。本節僅作入口，深度說明仍在原段。
+
+#### 四條路徑的實際輸出
+
+範例採同一情境便於對照：3 個 VM、2 台 BM 在同一 AG、anti-affinity rule `max_per_ag=1`，再加上一個 `vm-big` 的 demand 大於所有 BM。
+
+**1. INPUT_ERROR 路徑**（fail-fast，model 未建）
+
+```json
+{
+  "success": false,
+  "solver_status": "INPUT_ERROR: Duplicate baremetal: bm-01",
+  "diagnostics": {
+    "input_errors": ["Duplicate baremetal: bm-01"]
+  },
+  "unplaced_vms": ["vm-1", "vm-2", "vm-3"]
+}
+```
+
+`advisories` 在此路徑通常為空（`__init__` 階段就已 fail，advisory 多在 model build 階段才會被收集）。`unplaced_vms` 為全部 VM。
+
+**2. 失敗路徑（INFEASIBLE）— 主要範例**
+
+```json
+{
+  "success": false,
+  "solver_status": "INFEASIBLE",
+  "diagnostics": {
+    "vms_with_no_eligible_bm": ["vm-big"],
+    "infeasible_anti_affinity_rules": [
+      {
+        "group_id": "masters-ha",
+        "vm_count": 3,
+        "max_per_ag": 1,
+        "min_ags_needed": 3,
+        "reachable_ags": 2
+      }
+    ],
+    "constraint_check": {
+      "one_bm_per_vm": "OK",
+      "capacity": "OK",
+      "anti_affinity": "INFEASIBLE",
+      "failed_at": "anti_affinity"
+    },
+    "counts": {
+      "vms": 3, "bms": 2, "ags": 1, "variables": 6, "rules": 1
+    }
+  },
+  "unplaced_vms": ["vm-1", "vm-2", "vm-3"]
+}
+```
+
+注意：`vms_with_no_eligible_bm` 與 `infeasible_anti_affinity_rules` **只在非空時才出現**（`diagnostics.py:71, 76` 的 if 守門）；`constraint_check` 與 `counts` 在失敗路徑**必定出現**。
+
+**3. 成功路徑（無 advisory）**
+
+```json
+{
+  "success": true,
+  "solver_status": "OPTIMAL",
+  "assignments": [{"vm_id": "vm-1", "bm_id": "bm-01"}, "..."],
+  "diagnostics": {}
+}
+```
+
+`diagnostics` 為空 dict（對應 `tests/test_diagnostics.py:36-40` 斷言）。若 advisory 觸發則為 `{"advisories": [...]}`，schema 見 §2.0。§2.1 設計的 `objective` / `per_bm` 為待實作，目前不會出現。
+
+**4. Exception 路徑**（刻意極簡）
+
+```json
+{
+  "success": false,
+  "solver_status": "ERROR: <exception message>",
+  "diagnostics": {}
+}
+```
+
+刻意不塞細節（理由見 §四條回傳路徑與決定點 第 3 點）。Advisory 若已收集則仍會注入。
+
+#### 欄位速查表
+
+「出現條件」用三個值：**一定**（路徑命中即出現）、**非空時**（有資料才出現）、**觸發時**（advisory 等需要被偵測到）。
+
+| 欄位 | 出現路徑 | 條件 | 型別 | 意義 | 程式位置 |
+|------|---------|------|------|------|---------|
+| `input_errors` | INPUT_ERROR | 一定 | `list[str]` | 靜態驗證錯誤訊息 | `solver.py:99-116` |
+| `advisories` | 全部 | 觸發時 | `list[dict]` | 成功但有 policy 落差，schema 見 §2.0 | `_with_advisories` |
+| `vms_with_no_eligible_bm` | 失敗 | 非空時 | `list[str]` | 通過 candidate + capacity 後仍無 BM 的 VM | `diagnostics.py:70-72` |
+| `infeasible_anti_affinity_rules` | 失敗 | 非空時 | `list[dict]` | 違反 pigeonhole 必要條件的規則 | `diagnostics.py:75-77` |
+| `infeasible_anti_affinity_rules[].group_id` | 失敗 | 跟隨上欄 | `str` | 規則 id（含 `auto/...` 前綴若為自動產生） | `diagnostics.py:104-110` |
+| `infeasible_anti_affinity_rules[].vm_count` | 失敗 | 跟隨上欄 | `int` | 規則涵蓋的 VM 數量 | 同上 |
+| `infeasible_anti_affinity_rules[].max_per_ag` | 失敗 | 跟隨上欄 | `int` | 規則限制的單 AG 上限 | 同上 |
+| `infeasible_anti_affinity_rules[].min_ags_needed` | 失敗 | 跟隨上欄 | `int` | pigeonhole 下限 `ceil(vm_count / max_per_ag)` | 同上 |
+| `infeasible_anti_affinity_rules[].reachable_ags` | 失敗 | 跟隨上欄 | `int` | 該 group VM 可放上的 BM 所在的 AG 集合大小 | 同上 |
+| `constraint_check` | 失敗 | 一定 | `dict` | 三層 layered check 結果 | `diagnostics.py:113-189` |
+| `constraint_check.one_bm_per_vm` | 失敗 | 一定 | `"OK" \| "INFEASIBLE" \| "UNKNOWN"` | 第 1 層獨立 5 秒小模型結果 | 同上 |
+| `constraint_check.capacity` | 失敗 | 一定 | `"OK" \| "INFEASIBLE" \| "UNKNOWN"` | 第 2 層 | 同上 |
+| `constraint_check.anti_affinity` | 失敗 | 一定 | `"OK" \| "INFEASIBLE" \| "UNKNOWN"` | 第 3 層 | 同上 |
+| `constraint_check.failed_at` | 失敗 | 一定 | `str \| null` | 第一個非 OK 的層名（根因層） | `diagnostics.py:185-188` |
+| `counts.vms` / `bms` / `ags` / `variables` / `rules` | 失敗 | 一定 | `int` | 問題規模摘要 | `diagnostics.py:83-89` |
+
+對照「§Schema 契約與整合」：`input_errors`、`constraint_check.failed_at`、`advisories[].type`、`advisories[].details.<已穩定欄位>` 屬**半契約**，scheduler 可依賴；其他 `diagnostics.*` 區段屬弱契約，可演進。
+
 ### 已實作
 
 | 功能 | 路徑 | 程式位置 |
