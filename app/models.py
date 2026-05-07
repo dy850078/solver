@@ -109,9 +109,10 @@ class VM(BaseModel):
     """
     A VM to be placed on a baremetal.
 
-    candidate_baremetals: from Go scheduler step 3 (filtering).
-      If set, the solver ONLY considers these BMs.
-      If empty, the solver considers all BMs with enough capacity.
+    candidate_baremetals: from Go scheduler step 3 (filtering). Required —
+      must be populated with the BMs that survived scheduler filtering.
+      An empty list is treated as a contract violation and rejected by
+      the solver with an INPUT_ERROR.
 
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
@@ -216,6 +217,9 @@ class ResourceRequirement(BaseModel):
 
     vm_specs overrides config.vm_specs for this requirement only.
     min/max_total_vms constrain how many VMs the splitter may create.
+    candidate_baremetals is required (scheduler step 3 filtering result).
+    Empty candidate_baremetals → no synthetic VMs are produced and any
+    explicit VMs with empty candidates are rejected with INPUT_ERROR.
     """
     total_resources: Resources
     node_role: NodeRole = NodeRole.WORKER
