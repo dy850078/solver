@@ -38,11 +38,31 @@ def make_req(
 
 
 def split_solve(requirements, bms, vms=None, rules=None, **cfg_overrides):
+    """Run split-and-solve.
+
+    Auto-fills candidate_baremetals with all BM ids for any requirement or
+    explicit VM that has an empty list — most tests aren't about candidate
+    filtering, and the solver now treats empty candidate_baremetals as
+    INPUT_ERROR. Tests that specifically exercise empty/invalid candidates
+    must build the SplitPlacementRequest directly.
+    """
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg_overrides)
+    reqs = requirements if isinstance(requirements, list) else [requirements]
+    all_bm_ids = [bm.id for bm in bms]
+    backfilled_reqs = [
+        r.model_copy(update={"candidate_baremetals": all_bm_ids})
+        if not r.candidate_baremetals else r
+        for r in reqs
+    ]
+    backfilled_vms = [
+        vm.model_copy(update={"candidate_baremetals": all_bm_ids})
+        if not vm.candidate_baremetals else vm
+        for vm in (vms or [])
+    ]
     req = SplitPlacementRequest(
-        requirements=requirements if isinstance(requirements, list) else [requirements],
-        vms=vms or [],
+        requirements=backfilled_reqs,
+        vms=backfilled_vms,
         baremetals=bms,
         anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
@@ -390,16 +410,26 @@ class TestCandidateBaremetals:
                 f"VM {a.vm_id} placed on {a.baremetal_id}, expected only cp BMs"
             )
 
-    def test_empty_candidates_allows_all_bms(self):
-        """Default (empty list) means all BMs are eligible — backward compat."""
+    def test_empty_candidates_yields_no_synthetic_vms(self):
+        """Empty candidate_baremetals on a requirement is a contract violation:
+        no synthetic VMs are produced and the request resolves to NO_VMS
+        (since there are no other explicit VMs either)."""
         bms = [make_bm(f"bm-{i}", cpu=32, mem=128_000, disk=1000) for i in range(3)]
         spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
         req = make_req(cpu=8, mem=32_000, disk=200, vm_specs=[spec])
 
-        r = split_solve(req, bms)
+        # Bypass split_solve's auto-backfill — exercise the contract violation.
+        request = SplitPlacementRequest(
+            requirements=[req],
+            vms=[],
+            baremetals=bms,
+            anti_affinity_rules=[],
+            config=SolverConfig(max_solve_time_seconds=10, auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(request)
 
-        assert r.success
-        assert len(r.assignments) >= 2
+        assert not r.success
+        assert "NO_VMS" in r.solver_status
 
     def test_spec_filtered_against_candidate_bms_only(self):
         """A large spec that fits non-candidate BMs but not candidates is filtered."""
@@ -476,6 +506,7 @@ class TestSplitEndpoint:
                 "vm_specs": [
                     {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0},
                 ],
+                "candidate_baremetals": ["bm-1"],
             }],
             "baremetals": [{
                 "id": "bm-1",

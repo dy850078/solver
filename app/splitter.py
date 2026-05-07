@@ -87,20 +87,27 @@ class ResourceSplitter:
     def _resolve_specs(self, req: ResourceRequirement) -> list[Resources]:
         """
         Spec pool: requirement-level vm_specs takes precedence; falls back to
-        config.vm_specs. Specs that don't fit any BM's available capacity are
-        filtered out immediately (they can never be placed).
+        config.vm_specs. Specs that don't fit any candidate BM's available
+        capacity are filtered out immediately (they can never be placed).
 
-        When *candidate_baremetals* is set on the requirement, only those BMs
-        are checked — a spec that fits some other BM but none of the
-        candidates would never be placed anyway.
+        Requirements must have candidate_baremetals populated by the scheduler
+        (step 3 filtering result). Empty candidate_baremetals is treated as a
+        contract violation: no specs are usable, and the synthetic VMs that
+        would have been generated will be rejected by VMPlacementSolver input
+        validation downstream.
         """
         candidates = req.vm_specs if req.vm_specs is not None else self.config.vm_specs
         if not candidates:
             return []
-        eligible_bms = self.baremetals
-        if req.candidate_baremetals:
-            candidate_set = set(req.candidate_baremetals)
-            eligible_bms = [bm for bm in self.baremetals if bm.id in candidate_set]
+        if not req.candidate_baremetals:
+            logger.error(
+                "Requirement (role=%s) has empty candidate_baremetals — "
+                "scheduler must provide step 3 filtering result",
+                req.node_role.value,
+            )
+            return []
+        candidate_set = set(req.candidate_baremetals)
+        eligible_bms = [bm for bm in self.baremetals if bm.id in candidate_set]
         usable = [
             spec for spec in candidates
             if any(spec.fits_in(bm.available_capacity) for bm in eligible_bms)

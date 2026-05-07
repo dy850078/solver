@@ -11,6 +11,7 @@ from app.models import (
     Resources, NodeRole,
     AntiAffinityRule,
     PlacementRequest, PlacementResult,
+    SolverConfig,
 )
 from app.solver import VMPlacementSolver
 
@@ -114,6 +115,27 @@ class TestCandidateList:
         vms = [make_vm("vm-1", cpu=4, candidates=["bm-1"])]
         r = solve(vms, bms)
         assert not r.success  # bm-1 too small, bm-2 not a candidate
+
+    def test_empty_candidates_returns_input_error(self):
+        """Empty candidate_baremetals is a contract violation → INPUT_ERROR.
+
+        Bypasses solve() helper to avoid its auto-backfill — exercises the
+        raw VMPlacementSolver behavior the Go scheduler will see.
+        """
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        vms = [make_vm("vm-1", candidates=[])]  # explicit empty
+        request = PlacementRequest(
+            vms=vms, baremetals=bms,
+            anti_affinity_rules=[],
+            config=SolverConfig(max_solve_time_seconds=10, auto_generate_anti_affinity=False),
+        )
+        r = VMPlacementSolver(request).solve()
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "empty candidate_baremetals" in r.solver_status
+        assert "vm-1" in r.solver_status
+        assert r.unplaced_vms == ["vm-1"]
+        assert "input_errors" in r.diagnostics
 
 
 # ===========================================================================
@@ -397,7 +419,11 @@ class TestSerialization:
 
     def test_round_trip(self):
         req = json.dumps({
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "vms": [{
+                "id": "vm-1",
+                "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
+                "candidate_baremetals": ["bm-1"],
+            }],
             "baremetals": [{
                 "id": "bm-1",
                 "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
@@ -420,7 +446,11 @@ class TestSerialization:
     def test_http_solve_endpoint(self, client):
         """POST /v1/placement/solve returns correct result."""
         resp = client.post("/v1/placement/solve", json={
-            "vms": [{"id": "vm-1", "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "vms": [{
+                "id": "vm-1",
+                "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
+                "candidate_baremetals": ["bm-1"],
+            }],
             "baremetals": [{
                 "id": "bm-1",
                 "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
@@ -433,17 +463,20 @@ class TestSerialization:
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
 
-    def test_http_healthz(self, client):
-        """GET /healthz returns healthy."""
-        resp = client.get("/healthz")
+    def test_http_health(self, client):
+        """GET /health returns "ok"."""
+        resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "healthy"
+        assert resp.json() == "ok"
 
     def test_hostname_pass_through(self, client):
         """Hostname passes through from request to response assignments."""
         resp = client.post("/v1/placement/solve", json={
-            "vms": [{"id": "vm-1", "hostname": "k8s-master-01.prod",
-                     "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}}],
+            "vms": [{
+                "id": "vm-1", "hostname": "k8s-master-01.prod",
+                "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
+                "candidate_baremetals": ["bm-1"],
+            }],
             "baremetals": [{
                 "id": "bm-1", "hostname": "bare-001.rack1",
                 "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},

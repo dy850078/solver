@@ -46,8 +46,8 @@ python -m app.server --port 50051
 ### 2. Health check
 
 ```bash
-curl http://localhost:50051/healthz
-# {"status":"healthy"}
+curl http://localhost:50051/health
+# "ok"
 ```
 
 ### 3. Minimal solve request (inline JSON)

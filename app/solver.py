@@ -59,21 +59,20 @@ def get_eligible_baremetals(
     """
     Which baremetals can this VM possibly go on?
 
-    If the Go scheduler provided a candidate list (from step 3 filtering),
-    we only consider those. Otherwise, we consider any BM with enough
-    available capacity.
+    The Go scheduler must populate vm.candidate_baremetals with the result
+    of step 3 filtering. An empty candidate list is a contract violation
+    that is rejected upstream by VMPlacementSolver input validation
+    (see __init__) — by the time we get here, vm.candidate_baremetals is
+    guaranteed non-empty for any VM that reaches the solver.
 
     This is a module-level function so both the solver and diagnostics
     can share the same eligibility logic.
     """
-    if vm.candidate_baremetals:
-        return [
-            bm_id
-            for bm_id in vm.candidate_baremetals
-            if bm_id in bm_map and vm.demand.fits_in(bm_map[bm_id].available_capacity)
-        ]
-    else:
-        return [bm.id for bm in baremetals if vm.demand.fits_in(bm.available_capacity)]
+    return [
+        bm_id
+        for bm_id in vm.candidate_baremetals
+        if bm_id in bm_map and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+    ]
 
 
 class VMPlacementSolver:
@@ -105,15 +104,20 @@ class VMPlacementSolver:
                 seen_bm_ids.add(bm.id)
 
         for vm in request.vms:
-            if vm.candidate_baremetals:
-                seen_candidates: set[str] = set()
-                for cand in vm.candidate_baremetals:
-                    if cand in seen_candidates:
-                        self._input_errors.append(
-                            f"duplicate candidate BM '{cand}' in VM '{vm.id}'"
-                        )
-                    else:
-                        seen_candidates.add(cand)
+            if not vm.candidate_baremetals:
+                self._input_errors.append(
+                    f"VM '{vm.id}' has empty candidate_baremetals — "
+                    f"scheduler must provide step 3 filtering result"
+                )
+                continue
+            seen_candidates: set[str] = set()
+            for cand in vm.candidate_baremetals:
+                if cand in seen_candidates:
+                    self._input_errors.append(
+                        f"duplicate candidate BM '{cand}' in VM '{vm.id}'"
+                    )
+                else:
+                    seen_candidates.add(cand)
 
         # Group baremetals by AG (needed for anti-affinity constraints)
         self.ag_to_bms: dict[str, list[str]] = defaultdict(list)
@@ -706,14 +710,13 @@ class VMPlacementSolver:
         """
         start = time.time()
 
-        # Reject requests with duplicate BMs — scheduler must fix upstream.
+        # Reject requests with input errors — scheduler must fix upstream.
         if self._input_errors:
             for err in self._input_errors:
                 logger.error("Input validation failed: %s", err)
             return PlacementResult(
                 success=False,
-                solver_status="INPUT_ERROR: duplicate baremetals detected — "
-                "scheduler must deduplicate before calling solver",
+                solver_status=f"INPUT_ERROR: {self._input_errors[0]}",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
                 diagnostics=self._with_advisories({"input_errors": self._input_errors}),

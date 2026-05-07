@@ -41,11 +41,24 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
 
 
 def solve(vms, bms, rules=None, **config_overrides):
-    """Solve with default config, overridable."""
+    """Solve with default config, overridable.
+
+    Auto-fills candidate_baremetals with all BM ids for any VM that has
+    an empty list — most tests aren't about candidate filtering, and the
+    solver now treats empty candidate_baremetals as INPUT_ERROR. Tests
+    that specifically exercise empty/invalid candidates must build the
+    PlacementRequest directly.
+    """
     cfg = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     cfg.update(config_overrides)
+    all_bm_ids = [bm.id for bm in bms]
+    backfilled_vms = [
+        vm.model_copy(update={"candidate_baremetals": all_bm_ids})
+        if not vm.candidate_baremetals else vm
+        for vm in vms
+    ]
     request = PlacementRequest(
-        vms=vms, baremetals=bms,
+        vms=backfilled_vms, baremetals=bms,
         anti_affinity_rules=rules or [],
         config=SolverConfig(**cfg),
     )
