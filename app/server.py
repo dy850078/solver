@@ -65,9 +65,9 @@ def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
     return solve_split_placement(request)
 
 
-@api.get("/healthz")
-def healthz() -> dict:
-    return {"status": "healthy"}
+@api.get("/health")
+def health() -> str:
+    return "ok"
 
 
 def main() -> None:

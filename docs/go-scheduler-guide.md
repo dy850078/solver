@@ -101,7 +101,7 @@ Scheduler                                  Solver
 | 欄位 | 型別 | 必填 | 說明 |
 |------|------|:----:|------|
 | `total_resources` | Resources | ✅ | 這個 role 的**總**資源預算（非單台 VM） |
-| `node_role` | string | ✅ | `master` / `worker` / `infra` / `l4lb` |
+| `node_role` | string | ✅ | `master` / `worker` / `infra` / `l4lb-storage` |
 | `cluster_id` | string | — | 同原本 `VM.cluster_id` |
 | `ip_type` | string | — | 同原本 `VM.ip_type`（`auto_generate_anti_affinity` 用） |
 | `vm_specs` | list[Resources] \| null | — | 候選 spec；`null` 時 fallback 到 `config.vm_specs` |

@@ -463,11 +463,11 @@ class TestSerialization:
         assert out["success"] is True
         assert out["assignments"][0]["vm_id"] == "vm-1"
 
-    def test_http_healthz(self, client):
-        """GET /healthz returns healthy."""
-        resp = client.get("/healthz")
+    def test_http_health(self, client):
+        """GET /health returns "ok"."""
+        resp = client.get("/health")
         assert resp.status_code == 200
-        assert resp.json()["status"] == "healthy"
+        assert resp.json() == "ok"
 
     def test_hostname_pass_through(self, client):
         """Hostname passes through from request to response assignments."""
