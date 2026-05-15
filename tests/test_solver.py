@@ -10,6 +10,8 @@ import json
 from app.models import (
     Resources, NodeRole,
     AntiAffinityRule,
+    GroupSelector,
+    MaxPerBaremetalRule,
     PlacementRequest, PlacementResult,
     SolverConfig,
 )
@@ -630,3 +632,347 @@ class TestSlotScore:
 
         assert r.success
         assert len(r.assignments) == 3
+
+
+# ===========================================================================
+# 9. C4 — Max per Baremetal (per-BM cap)
+# ===========================================================================
+
+def _solve_with_bm_rules(vms, bms, bm_rules=None, aa_rules=None, **cfg_overrides):
+    """Helper: build a request with C4 rules. Backfills candidates like solve()."""
+    cfg = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
+    cfg.update(cfg_overrides)
+    all_bm_ids = [bm.id for bm in bms]
+    backfilled = [
+        vm.model_copy(update={"candidate_baremetals": all_bm_ids})
+        if not vm.candidate_baremetals else vm
+        for vm in vms
+    ]
+    request = PlacementRequest(
+        vms=backfilled,
+        baremetals=bms,
+        anti_affinity_rules=aa_rules or [],
+        max_per_bm_rules=bm_rules or [],
+        config=SolverConfig(**cfg),
+    )
+    return VMPlacementSolver(request).solve()
+
+
+class TestMaxPerBaremetalExplicit:
+    """Explicit MaxPerBaremetalRule via vm_ids."""
+
+    def test_cap_satisfied(self):
+        """4 VMs, 2 BMs, max_per_bm=2 → feasible (2 per BM)."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(2)]
+        vms = [make_vm(f"vm-{i}") for i in range(4)]
+        rule = MaxPerBaremetalRule(
+            group_id="cap2", vm_ids=[v.id for v in vms], max_per_bm=2,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert r.success
+        per_bm = {}
+        for a in r.assignments:
+            per_bm[a.baremetal_id] = per_bm.get(a.baremetal_id, 0) + 1
+        assert all(c <= 2 for c in per_bm.values())
+
+    def test_cap_too_tight_infeasible(self):
+        """3 VMs, 1 BM, max_per_bm=1 → infeasible."""
+        bms = [make_bm("bm-1")]
+        vms = [make_vm(f"vm-{i}") for i in range(3)]
+        rule = MaxPerBaremetalRule(
+            group_id="strict", vm_ids=[v.id for v in vms], max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert not r.success
+        # diagnostics should flag the rule as structurally infeasible
+        assert "infeasible_max_per_bm_rules" in r.diagnostics
+        flagged = r.diagnostics["infeasible_max_per_bm_rules"]
+        assert any(d["group_id"] == "strict" for d in flagged)
+
+    def test_cap_forces_spread_across_bms(self):
+        """3 masters, 3 BMs (1 AG), max_per_bm=1 → each on a different BM."""
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(3)]
+        vms = [make_vm(f"m-{i}", role=NodeRole.MASTER) for i in range(3)]
+        rule = MaxPerBaremetalRule(
+            group_id="m-spread", vm_ids=[v.id for v in vms], max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert r.success
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids) == 3  # all different BMs
+
+
+class TestMaxPerBaremetalSelector:
+    """Selector-based MaxPerBaremetalRule."""
+
+    def test_selector_full_match(self):
+        """selector cluster+ip_type+role caps only matching VMs; others unbound."""
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(2)]
+        vms = [
+            make_vm("m-A-1", role=NodeRole.MASTER, cluster="A", ip_type="non-routable"),
+            make_vm("m-A-2", role=NodeRole.MASTER, cluster="A", ip_type="non-routable"),
+            make_vm("w-A-1", role=NodeRole.WORKER, cluster="A"),
+        ]
+        rule = MaxPerBaremetalRule(
+            group_id="A-nonrt-master",
+            selector=GroupSelector(
+                cluster_id="A", ip_type="non-routable", node_role=NodeRole.MASTER,
+            ),
+            max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert r.success
+        # Two non-routable masters in cluster A must be on different BMs.
+        assigned = {a.vm_id: a.baremetal_id for a in r.assignments}
+        assert assigned["m-A-1"] != assigned["m-A-2"]
+
+    def test_selector_wildcard_node_role(self):
+        """selector with only cluster_id+ip_type matches all roles."""
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(2)]
+        vms = [
+            make_vm("m-A", role=NodeRole.MASTER, cluster="A", ip_type="routable"),
+            make_vm("w-A", role=NodeRole.WORKER, cluster="A", ip_type="routable"),
+        ]
+        # Cap any routable VM in cluster A to 1 per BM. With 2 VMs and 2 BMs,
+        # the cap forces them apart.
+        rule = MaxPerBaremetalRule(
+            group_id="A-routable-any",
+            selector=GroupSelector(cluster_id="A", ip_type="routable"),
+            max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert r.success
+        assigned = {a.vm_id: a.baremetal_id for a in r.assignments}
+        assert assigned["m-A"] != assigned["w-A"]
+
+    def test_selector_does_not_affect_other_clusters(self):
+        """cluster=A selector ignores cluster=B VMs."""
+        bms = [make_bm("bm-1", cpu=128, mem=512_000, disk=4000, ag="ag-1")]
+        vms = [
+            make_vm("m-A-1", role=NodeRole.MASTER, cluster="A", ip_type="routable"),
+            make_vm("m-B-1", role=NodeRole.MASTER, cluster="B", ip_type="routable"),
+            make_vm("m-B-2", role=NodeRole.MASTER, cluster="B", ip_type="routable"),
+        ]
+        # Restrict only cluster A masters to 1/BM. Cluster B unconstrained →
+        # both B masters can pile on bm-1 with the A master.
+        rule = MaxPerBaremetalRule(
+            group_id="A-master",
+            selector=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert r.success  # would be infeasible if rule mistakenly included cluster B
+
+
+class TestMaxPerBaremetalAutoGen:
+    """Auto-generation grouped by (cluster_id, ip_type, node_role)."""
+
+    def test_auto_gen_off_by_default(self):
+        """3 same-group VMs on 1 BM still feasible when auto-gen is off."""
+        bms = [make_bm("bm-1", cpu=128, mem=512_000, disk=4000, ag="ag-1")]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="non-routable")
+            for i in range(3)
+        ]
+        r = _solve_with_bm_rules(vms, bms)  # auto_generate_max_per_bm defaults to False
+        assert r.success
+
+    def test_auto_gen_caps_same_cluster_role_iptype(self):
+        """auto-gen with default=1 → 3 masters of same cluster spread to 3 BMs."""
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(3)]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="non-routable")
+            for i in range(3)
+        ]
+        r = _solve_with_bm_rules(
+            vms, bms,
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=1,
+        )
+        assert r.success
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids) == 3  # one master per BM
+
+    def test_auto_gen_isolates_clusters(self):
+        """Two clusters' same-(role, ip_type) groups are independent."""
+        # 1 BM with room for 2 VMs. Cluster A has 1 master, cluster B has 1
+        # master. They share (role, ip_type) but DIFFERENT cluster_id —
+        # auto-gen should NOT merge them, so both can land on the same BM.
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000, ag="ag-1")]
+        vms = [
+            make_vm("m-A", role=NodeRole.MASTER, cluster="A", ip_type="routable"),
+            make_vm("m-B", role=NodeRole.MASTER, cluster="B", ip_type="routable"),
+        ]
+        r = _solve_with_bm_rules(
+            vms, bms,
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=1,
+        )
+        assert r.success
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert bm_ids == {"bm-1"}  # both on the single BM
+
+    def test_auto_gen_skips_when_covered_by_explicit(self):
+        """Explicit selector rule prevents auto-gen from re-covering its VMs."""
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(2)]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="non-routable")
+            for i in range(2)
+        ]
+        # Explicit rule caps at 2 (loose). Auto-gen would cap at 1 (tight).
+        # With explicit covering the VMs, auto-gen skips them → both can
+        # share one BM (because explicit cap=2 allows it).
+        explicit = MaxPerBaremetalRule(
+            group_id="custom",
+            selector=GroupSelector(
+                cluster_id="A", ip_type="non-routable", node_role=NodeRole.MASTER,
+            ),
+            max_per_bm=2,
+        )
+        r = _solve_with_bm_rules(
+            vms, [make_bm("bm-only", cpu=128, mem=512_000, disk=4000, ag="ag-1")],
+            bm_rules=[explicit],
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=1,
+        )
+        assert r.success  # both VMs on the single BM, explicit overrides auto-gen
+
+
+class TestMaxPerBaremetalValidation:
+
+    def test_both_vm_ids_and_selector_rejected(self):
+        bms = [make_bm("bm-1")]
+        vms = [make_vm("vm-1")]
+        rule = MaxPerBaremetalRule(
+            group_id="bad", vm_ids=["vm-1"],
+            selector=GroupSelector(cluster_id="A"), max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_neither_vm_ids_nor_selector_rejected(self):
+        bms = [make_bm("bm-1")]
+        vms = [make_vm("vm-1")]
+        rule = MaxPerBaremetalRule(group_id="empty", max_per_bm=1)
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_empty_selector_rejected(self):
+        bms = [make_bm("bm-1")]
+        vms = [make_vm("vm-1")]
+        rule = MaxPerBaremetalRule(
+            group_id="empty-sel", selector=GroupSelector(), max_per_bm=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_auto_gen_requires_default_cap(self):
+        bms = [make_bm("bm-1", ag="ag-1")]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="routable")
+            for i in range(2)
+        ]
+        # auto_generate_max_per_bm=True but no default_max_per_bm set
+        r = _solve_with_bm_rules(
+            vms, bms,
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=None,
+        )
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "default_max_per_bm" in r.solver_status
+
+    def test_max_per_bm_below_one_rejected(self):
+        bms = [make_bm("bm-1")]
+        vms = [make_vm("vm-1")]
+        rule = MaxPerBaremetalRule(
+            group_id="zero", vm_ids=["vm-1"], max_per_bm=0,
+        )
+        r = _solve_with_bm_rules(vms, bms, bm_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+
+# ===========================================================================
+# 10. C3 grouping update — cluster-aware AG anti-affinity
+# ===========================================================================
+
+class TestC3MultiClusterGrouping:
+    """C3 auto-gen now keys on (cluster_id, ip_type, node_role)."""
+
+    def test_two_clusters_spread_independently(self):
+        """
+        2 clusters × 3 masters each, 3 AGs. Each cluster's masters should
+        each occupy a distinct AG (3 different AGs per cluster). With the
+        old (ip_type, role) grouping, ceil(6/3)=2 per AG could leave one
+        cluster's masters stacked.
+        """
+        bms = []
+        for ag_i in range(3):
+            for bm_i in range(3):  # 3 BMs per AG, enough capacity
+                bms.append(make_bm(f"bm-ag{ag_i}-{bm_i}", ag=f"ag-{ag_i}"))
+
+        vms = []
+        for cluster in ("A", "B"):
+            for i in range(3):
+                vms.append(make_vm(
+                    f"m-{cluster}-{i}", role=NodeRole.MASTER,
+                    cluster=cluster, ip_type="routable",
+                ))
+
+        r = _solve_with_bm_rules(
+            vms, bms,
+            auto_generate_anti_affinity=True,
+        )
+        assert r.success
+
+        # Each cluster's masters span all 3 AGs.
+        for cluster in ("A", "B"):
+            ags = {a.ag for a in r.assignments if a.vm_id.startswith(f"m-{cluster}-")}
+            assert len(ags) == 3, f"cluster {cluster} masters AG spread: {ags}"
+
+    def test_advisory_group_id_includes_cluster(self):
+        """Advisory's group_id reflects the new (cluster, ip_type, role) key."""
+        bms = [make_bm("bm-only", cpu=128, mem=512_000, disk=4000, ag="ag-only")]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="prod",
+                    ip_type="routable")
+            for i in range(3)
+        ]
+        r = _solve_with_bm_rules(
+            vms, bms,
+            auto_generate_anti_affinity=True,
+        )
+        assert r.success
+        assert "advisories" in r.diagnostics
+        a = r.diagnostics["advisories"][0]
+        assert a["group_id"] == "auto/prod/routable/master"
+
+
+# ===========================================================================
+# 11. C3 selector form
+# ===========================================================================
+
+class TestAntiAffinitySelector:
+
+    def test_anti_affinity_via_selector(self):
+        """AntiAffinityRule with selector form spreads matching VMs across AGs."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="routable")
+            for i in range(3)
+        ]
+        rule = AntiAffinityRule(
+            group_id="A-masters",
+            selector=GroupSelector(
+                cluster_id="A", ip_type="routable", node_role=NodeRole.MASTER,
+            ),
+            max_per_ag=1,
+        )
+        r = _solve_with_bm_rules(vms, bms, aa_rules=[rule])
+        assert r.success
+        ags = {a.ag for a in r.assignments}
+        assert len(ags) == 3

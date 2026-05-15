@@ -215,6 +215,9 @@ class VMPlacementSolver:
           are wildcards. Unknown vm_ids are silently dropped (caller may
           submit synthetic IDs that aren't yet in the VM list — that's a
           contract error caught elsewhere, not here).
+        - Malformed rules (both/neither vm_ids and selector) return [];
+          they've already been recorded in self._input_errors which causes
+          solve() to abort with INPUT_ERROR before any constraint is added.
         """
         if rule.vm_ids:
             seen: set[str] = set()
@@ -224,6 +227,8 @@ class VMPlacementSolver:
                     seen.add(vid)
                     out.append(vid)
             return out
+        if rule.selector is None:
+            return []
         sel: GroupSelector = rule.selector
         return [vm.id for vm in self.request.vms if sel.matches(vm)]
 
@@ -250,7 +255,16 @@ class VMPlacementSolver:
         VMs already covered by explicit rules are not auto-generated.
         VMs with empty cluster_id or ip_type are skipped (can't group meaningfully).
         """
-        rules = list(self.request.anti_affinity_rules)
+        # Canonicalize explicit rules: expand selectors into vm_ids form so
+        # downstream constraint building doesn't need to know about selectors.
+        rules: list[AntiAffinityRule] = []
+        for r in self.request.anti_affinity_rules:
+            resolved_ids = self._expand_vm_ids(r)
+            rules.append(AntiAffinityRule(
+                group_id=r.group_id,
+                vm_ids=resolved_ids,
+                max_per_ag=r.max_per_ag,
+            ))
 
         if not self.config.auto_generate_anti_affinity:
             return rules
@@ -258,10 +272,10 @@ class VMPlacementSolver:
         # How many AGs do we have?
         num_ags = len(self.ag_to_bms)
 
-        # Which VMs are already in explicit rules? Expand selectors too.
+        # Which VMs are already in explicit rules?
         covered: set[str] = set()
         for rule in rules:
-            covered.update(self._expand_vm_ids(rule))
+            covered.update(rule.vm_ids)
 
         # Group remaining VMs by (cluster_id, ip_type, role). Cluster is part of
         # the key so two clusters with the same role/ip_type spread independently.
