@@ -1,0 +1,62 @@
+{
+  "_description": "C4 (max-per-BM) via explicit vm_ids form. Use this when the scheduler has already filtered the VM list and wants to pass IDs directly. Same outcome as max_per_bm_selector.json but with vm_ids instead of selector.",
+  "_curl": "curl -sX POST -H 'Content-Type: application/json' -d @examples/max_per_bm_vm_ids.json http://localhost:50051/v1/placement/solve | jq",
+  "vms": [
+    {
+      "id": "m-1",
+      "hostname": "k8s-master-01",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-prod",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    },
+    {
+      "id": "m-2",
+      "hostname": "k8s-master-02",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-prod",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    },
+    {
+      "id": "m-3",
+      "hostname": "k8s-master-03",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-prod",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-03",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    }
+  ],
+  "anti_affinity_rules": [],
+  "max_per_bm_rules": [
+    {
+      "group_id": "prod-masters-spread",
+      "vm_ids": ["m-1", "m-2", "m-3"],
+      "max_per_bm": 1
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false
+  }
+}

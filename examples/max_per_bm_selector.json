@@ -1,0 +1,72 @@
+{
+  "_description": "C4 (max-per-BM) via selector form. Cluster-A non-routable masters are capped at 1 VM per baremetal — the canonical 'spread masters across hosts within an AG' pattern. 3 masters + 3 BMs in one AG → each master lands on a different BM.",
+  "_curl": "curl -sX POST -H 'Content-Type: application/json' -d @examples/max_per_bm_selector.json http://localhost:50051/v1/placement/solve | jq",
+  "vms": [
+    {
+      "id": "m-A-1",
+      "hostname": "k8s-master-01.cluster-A",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-A",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    },
+    {
+      "id": "m-A-2",
+      "hostname": "k8s-master-02.cluster-A",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-A",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    },
+    {
+      "id": "m-A-3",
+      "hostname": "k8s-master-03.cluster-A",
+      "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "cluster-A",
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-03",
+      "hostname": "bare-003.rack3",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-3", "ag": "ag-1"}
+    }
+  ],
+  "anti_affinity_rules": [],
+  "max_per_bm_rules": [
+    {
+      "group_id": "cluster-A-nonrt-masters",
+      "selector": {
+        "cluster_id": "cluster-A",
+        "ip_type": "non-routable",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false
+  }
+}

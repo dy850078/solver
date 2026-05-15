@@ -1,0 +1,49 @@
+{
+  "_description": "C4 with the split-and-solve endpoint. The splitter creates synthetic master VMs from total_resources, and the C4 rule (selector form) caps cluster-prod non-routable masters at 1 per BM. POST to /v1/placement/split-and-solve.",
+  "_curl": "curl -sX POST -H 'Content-Type: application/json' -d @examples/split_max_per_bm.json http://localhost:50051/v1/placement/split-and-solve | jq",
+  "requirements": [
+    {
+      "total_resources": {"cpu_cores": 24, "memory_mib": 96000, "storage_gb": 600},
+      "node_role": "master",
+      "cluster_id": "cluster-prod",
+      "ip_type": "non-routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
+      ],
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-03",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "site-a", "ag": "ag-1"}
+    }
+  ],
+  "anti_affinity_rules": [],
+  "max_per_bm_rules": [
+    {
+      "group_id": "prod-nonrt-masters",
+      "selector": {
+        "cluster_id": "cluster-prod",
+        "ip_type": "non-routable",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false
+  }
+}
