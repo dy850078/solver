@@ -39,6 +39,8 @@ from .models import (
     VM,
     AntiAffinityRule,
     Baremetal,
+    GroupSelector,
+    MaxPerBaremetalRule,
     PlacementAssignment,
     PlacementRequest,
     PlacementResult,
@@ -128,8 +130,23 @@ class VMPlacementSolver:
         # target not met). Surfaced via PlacementResult.diagnostics["advisories"].
         self.advisories: list[dict] = []
 
+        # Validate selector/vm_ids exclusivity on incoming rules (fatal).
+        self._validate_rule_inputs()
+
+        # Validate per-BM config (fatal): auto-gen requires a positive default.
+        if self.config.auto_generate_max_per_bm:
+            d = self.config.default_max_per_bm
+            if d is None or d < 1:
+                self._input_errors.append(
+                    "auto_generate_max_per_bm=True requires "
+                    "default_max_per_bm to be a positive integer"
+                )
+
         # Resolve anti-affinity rules (explicit + auto-generated)
         self.effective_rules = self._resolve_anti_affinity_rules()
+
+        # Resolve per-baremetal rules (explicit + auto-generated)
+        self.max_per_bm_rules: list[MaxPerBaremetalRule] = self._resolve_max_per_bm_rules()
 
         # Waste penalty terms injected by split_solver (splitter integration)
         self.splitter_waste_terms: list[cp_model.LinearExprT] = []
@@ -154,24 +171,84 @@ class VMPlacementSolver:
         return get_eligible_baremetals(vm, self.bm_map, self.request.baremetals)
 
     # ------------------------------------------------------------------
-    # Step B: Auto-generate anti-affinity rules
+    # Step B: Rule input validation + selector expansion (shared C3/C4)
+    # ------------------------------------------------------------------
+
+    def _validate_rule_inputs(self) -> None:
+        """
+        Each AntiAffinity / MaxPerBaremetal rule must specify exactly one of
+        `vm_ids` or `selector`. Empty selectors (all fields None) are rejected
+        — they would silently match every VM and almost always indicate a bug.
+        """
+        def check(rule, kind: str) -> None:
+            has_vm_ids = bool(rule.vm_ids)
+            has_selector = rule.selector is not None
+            if has_vm_ids and has_selector:
+                self._input_errors.append(
+                    f"{kind} rule '{rule.group_id}': specify either vm_ids "
+                    f"or selector, not both"
+                )
+            elif not has_vm_ids and not has_selector:
+                self._input_errors.append(
+                    f"{kind} rule '{rule.group_id}': must specify vm_ids or selector"
+                )
+            elif has_selector and rule.selector.is_empty():
+                self._input_errors.append(
+                    f"{kind} rule '{rule.group_id}': selector has no fields set"
+                )
+
+        for r in self.request.anti_affinity_rules:
+            check(r, "anti_affinity")
+        for r in self.request.max_per_bm_rules:
+            check(r, "max_per_bm")
+            if r.max_per_bm < 1:
+                self._input_errors.append(
+                    f"max_per_bm rule '{r.group_id}': max_per_bm must be >= 1"
+                )
+
+    def _expand_vm_ids(self, rule) -> list[str]:
+        """
+        Resolve a rule's group membership.
+
+        - vm_ids form: returned as-is (deduplicated, preserving order)
+        - selector form: matched against self.request.vms; missing fields
+          are wildcards. Unknown vm_ids are silently dropped (caller may
+          submit synthetic IDs that aren't yet in the VM list — that's a
+          contract error caught elsewhere, not here).
+        """
+        if rule.vm_ids:
+            seen: set[str] = set()
+            out: list[str] = []
+            for vid in rule.vm_ids:
+                if vid not in seen:
+                    seen.add(vid)
+                    out.append(vid)
+            return out
+        sel: GroupSelector = rule.selector
+        return [vm.id for vm in self.request.vms if sel.matches(vm)]
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Auto-generate anti-affinity rules
     # ------------------------------------------------------------------
 
     def _resolve_anti_affinity_rules(self) -> list[AntiAffinityRule]:
         """
         Combine explicit rules with auto-generated ones.
 
-        Auto-generation: group VMs by (ip_type, node_role), and for each
-        group with 2+ VMs, create a rule that spreads them across AGs.
+        Auto-generation: group VMs by (cluster_id, ip_type, node_role) and
+        for each group with 2+ VMs, create a rule that spreads them across
+        AGs. Including cluster_id is what makes multi-cluster HA correct —
+        each cluster's masters/workers spread independently rather than
+        being pooled into a single AG-spread budget.
 
         max_per_ag is computed dynamically:
           max_per_ag = ceil(num_vms_in_group / num_ags)
 
-        Example: 5 routable masters, 3 AGs → ceil(5/3) = 2 → allows 2/2/1
-        Example: 3 non-routable workers, 3 AGs → ceil(3/3) = 1 → each in different AG
+        Example: 5 routable masters in cluster-A, 3 AGs → ceil(5/3) = 2 → allows 2/2/1
+        Example: 3 non-routable workers in cluster-B, 3 AGs → ceil(3/3) = 1 → each in different AG
 
         VMs already covered by explicit rules are not auto-generated.
-        VMs with empty ip_type are skipped (can't group them meaningfully).
+        VMs with empty cluster_id or ip_type are skipped (can't group meaningfully).
         """
         rules = list(self.request.anti_affinity_rules)
 
@@ -181,26 +258,29 @@ class VMPlacementSolver:
         # How many AGs do we have?
         num_ags = len(self.ag_to_bms)
 
-        # Which VMs are already in explicit rules?
+        # Which VMs are already in explicit rules? Expand selectors too.
         covered: set[str] = set()
         for rule in rules:
-            covered.update(rule.vm_ids)
+            covered.update(self._expand_vm_ids(rule))
 
-        # Group remaining VMs by (ip_type, role) — this is the anti-affinity grouping key.
-        # VMs with the same ip_type and node_role should spread across AGs.
-        groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+        # Group remaining VMs by (cluster_id, ip_type, role). Cluster is part of
+        # the key so two clusters with the same role/ip_type spread independently.
+        groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
         for vm in self.request.vms:
-            if vm.id not in covered and vm.ip_type:
-                groups[(vm.ip_type, vm.node_role.value)].append(vm.id)
+            if vm.id in covered:
+                continue
+            if not vm.ip_type or not vm.cluster_id:
+                continue
+            groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
 
         target_spread = self.config.target_ag_spread
 
-        for (ip_type, role), vm_ids in groups.items():
+        for (cluster_id, ip_type, role), vm_ids in groups.items():
             if len(vm_ids) >= 2 and num_ags > 0:
                 import math
 
                 has_synthetic = any(vid in self.active_vars for vid in vm_ids)
-                group_id = f"auto/{ip_type}/{role}"
+                group_id = f"auto/{cluster_id}/{ip_type}/{role}"
 
                 if has_synthetic:
                     # max_per_ag is unused — the actual constraint is
@@ -217,8 +297,9 @@ class VMPlacementSolver:
                         1 for vid in vm_ids if vid in self.active_vars
                     )
                     logger.info(
-                        "Auto anti-affinity: %s/%s (%d slots, %d synthetic"
+                        "Auto anti-affinity: %s/%s/%s (%d slots, %d synthetic"
                         " / %d AGs → dynamic max_per_ag=ceil(active/%d))",
+                        cluster_id,
                         ip_type,
                         role,
                         len(vm_ids),
@@ -236,7 +317,8 @@ class VMPlacementSolver:
                         )
                     )
                     logger.info(
-                        "Auto anti-affinity: %s/%s (%d VMs / %d AGs → max_per_ag=%d)",
+                        "Auto anti-affinity: %s/%s/%s (%d VMs / %d AGs → max_per_ag=%d)",
+                        cluster_id,
                         ip_type,
                         role,
                         len(vm_ids),
@@ -255,8 +337,9 @@ class VMPlacementSolver:
                         "dynamic" if has_synthetic else math.ceil(len(vm_ids) / num_ags)
                     )
                     msg = (
-                        f"Anti-affinity for {ip_type}/{role} below policy target: "
-                        f"actual spread={effective_spread}, target={target_spread} "
+                        f"Anti-affinity for {cluster_id}/{ip_type}/{role} below "
+                        f"policy target: actual spread={effective_spread}, "
+                        f"target={target_spread} "
                         f"({num_ags} AG(s), {len(vm_ids)} VMs)."
                     )
                     self.advisories.append(
@@ -278,6 +361,91 @@ class VMPlacementSolver:
                     logger.warning("Spread advisory: %s", msg)
 
         return rules
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Per-baremetal rules — C4 resolve
+    # ------------------------------------------------------------------
+
+    def _resolve_max_per_bm_rules(self) -> list[MaxPerBaremetalRule]:
+        """
+        Combine explicit per-BM rules with auto-generated ones.
+
+        Auto-generation grouping key matches C3: (cluster_id, ip_type, node_role).
+        Each group with 2+ VMs gets a rule capped at config.default_max_per_bm.
+        VMs already covered by explicit rules (by vm_ids or selector match) are
+        not auto-generated.
+        """
+        explicit = list(self.request.max_per_bm_rules)
+
+        # Materialize explicit rules to canonical vm_ids form so downstream
+        # constraint building doesn't need to know about selectors.
+        rules: list[MaxPerBaremetalRule] = []
+        for r in explicit:
+            resolved_ids = self._expand_vm_ids(r)
+            rules.append(MaxPerBaremetalRule(
+                group_id=r.group_id or self._auto_group_id_for_selector(r.selector),
+                vm_ids=resolved_ids,
+                max_per_bm=r.max_per_bm,
+            ))
+            if not resolved_ids:
+                self.advisories.append({
+                    "type": "max_per_bm_rule_empty",
+                    "severity": "warning",
+                    "group_id": r.group_id,
+                    "message": (
+                        f"max_per_bm rule '{r.group_id}' resolved to 0 VMs — "
+                        f"the rule has no effect."
+                    ),
+                })
+
+        if not self.config.auto_generate_max_per_bm:
+            return rules
+
+        default_cap = self.config.default_max_per_bm
+        # If default_cap is invalid we've already recorded an _input_error;
+        # bail out of auto-gen to avoid building unusable rules.
+        if default_cap is None or default_cap < 1:
+            return rules
+
+        covered: set[str] = set()
+        for r in rules:
+            covered.update(r.vm_ids)
+
+        groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        for vm in self.request.vms:
+            if vm.id in covered:
+                continue
+            if not vm.cluster_id or not vm.ip_type:
+                continue
+            groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
+
+        for (cluster_id, ip_type, role), vm_ids in groups.items():
+            if len(vm_ids) < 2:
+                continue
+            group_id = f"auto-bm/{cluster_id}/{ip_type}/{role}"
+            rules.append(MaxPerBaremetalRule(
+                group_id=group_id,
+                vm_ids=vm_ids,
+                max_per_bm=default_cap,
+            ))
+            logger.info(
+                "Auto max-per-bm: %s/%s/%s (%d VMs, cap=%d)",
+                cluster_id, ip_type, role, len(vm_ids), default_cap,
+            )
+
+        return rules
+
+    @staticmethod
+    def _auto_group_id_for_selector(sel: GroupSelector | None) -> str:
+        """Fallback group_id when caller didn't provide one for a selector rule."""
+        if sel is None:
+            return "anonymous"
+        parts = [
+            sel.cluster_id or "*",
+            sel.ip_type or "*",
+            sel.node_role.value if sel.node_role else "*",
+        ]
+        return "selector/" + "/".join(parts)
 
     # ------------------------------------------------------------------
     # Step C: Build the CP-SAT model
@@ -440,6 +608,28 @@ class VMPlacementSolver:
                         )
                     else:
                         self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
+
+    def _add_max_per_bm_constraints(self):
+        """
+        CONSTRAINT (C4): For each per-BM rule, no single baremetal hosts more
+        than `max_per_bm` VMs from the group.
+
+        For each rule, for each BM:
+          sum(assign[vm, bm] for vm in rule.vm_ids if (vm, bm) eligible) <= max_per_bm
+
+        Synthetic VMs (splitter slots) need no special handling — the C1
+        constraint sum(assign[vm, *]) == active_var forces inactive synthetic
+        VMs' assign vars to 0, so they naturally drop out of this sum.
+        """
+        for rule in self.max_per_bm_rules:
+            for bm_id in self.bm_map:
+                vars_on_bm = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in rule.vm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                if vars_on_bm:
+                    self.model.add(sum(vars_on_bm) <= rule.max_per_bm)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -728,6 +918,7 @@ class VMPlacementSolver:
             self._add_one_bm_per_vm_constraint()
             self._add_capacity_constraints()
             self._add_anti_affinity_constraints()
+            self._add_max_per_bm_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
             self._add_objective()
@@ -738,11 +929,13 @@ class VMPlacementSolver:
             solver.parameters.num_workers = self.config.num_workers
 
             logger.info(
-                "Solving: %d VMs, %d BMs, %d variables, %d rules, %d AGs",
+                "Solving: %d VMs, %d BMs, %d variables, %d AA rules, "
+                "%d per-BM rules, %d AGs",
                 len(self.request.vms),
                 len(self.request.baremetals),
                 len(self.assign),
                 len(self.effective_rules),
+                len(self.max_per_bm_rules),
                 len(self.ag_to_bms),
             )
 
@@ -794,6 +987,7 @@ class VMPlacementSolver:
             bm_map=self.bm_map,
             ag_to_bms=self.ag_to_bms,
             effective_rules=self.effective_rules,
+            max_per_bm_rules=self.max_per_bm_rules,
             config=self.config,
             num_variables=len(self.assign),
         ).build()

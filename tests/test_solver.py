@@ -262,7 +262,7 @@ class TestAGSpreadAdvisory:
         a = advisories[0]
         assert a["type"] == "ag_spread_below_target"
         assert a["severity"] == "warning"
-        assert a["group_id"] == "auto/routable/worker"
+        assert a["group_id"] == "auto/cluster-1/routable/worker"
         assert a["details"]["num_ags"] == 1
         assert a["details"]["effective_spread"] == 1
         assert a["details"]["target_ag_spread"] == 3
