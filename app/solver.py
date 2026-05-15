@@ -180,7 +180,7 @@ class VMPlacementSolver:
         `vm_ids` or `selector`. Empty selectors (all fields None) are rejected
         — they would silently match every VM and almost always indicate a bug.
         """
-        def check(rule, kind: str) -> None:
+        def check(rule: AntiAffinityRule | MaxPerBaremetalRule, kind: str) -> None:
             has_vm_ids = bool(rule.vm_ids)
             has_selector = rule.selector is not None
             if has_vm_ids and has_selector:
@@ -192,18 +192,18 @@ class VMPlacementSolver:
                 self._input_errors.append(
                     f"{kind} rule '{rule.group_id}': must specify vm_ids or selector"
                 )
-            elif has_selector and rule.selector.is_empty():
+            elif rule.selector is not None and rule.selector.is_empty():
                 self._input_errors.append(
                     f"{kind} rule '{rule.group_id}': selector has no fields set"
                 )
 
-        for r in self.request.anti_affinity_rules:
-            check(r, "anti_affinity")
-        for r in self.request.max_per_bm_rules:
-            check(r, "max_per_bm")
-            if r.max_per_bm < 1:
+        for aa_rule in self.request.anti_affinity_rules:
+            check(aa_rule, "anti_affinity")
+        for bm_rule in self.request.max_per_bm_rules:
+            check(bm_rule, "max_per_bm")
+            if bm_rule.max_per_bm < 1:
                 self._input_errors.append(
-                    f"max_per_bm rule '{r.group_id}': max_per_bm must be >= 1"
+                    f"max_per_bm rule '{bm_rule.group_id}': max_per_bm must be >= 1"
                 )
 
     def _expand_vm_ids(self, rule) -> list[str]:
