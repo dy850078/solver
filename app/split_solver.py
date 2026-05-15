@@ -58,6 +58,7 @@ def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResul
         vms=list(request.vms) + synthetic_vms,
         baremetals=request.baremetals,
         anti_affinity_rules=request.anti_affinity_rules,
+        max_per_bm_rules=request.max_per_bm_rules,
         config=request.config,
     )
 
