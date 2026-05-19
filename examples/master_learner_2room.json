@@ -1,12 +1,12 @@
 {
   "_description": "Master/Learner N-1 failover across 2 rooms with multi-dim spread. 3 masters + 3 learners, both groups spread by AG and Room; failover rule guarantees that if either room fails entirely, the surviving learners outside it can cover the masters inside it.",
   "vms": [
-    {"id": "m-1", "hostname": "k8s-master-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A"},
-    {"id": "m-2", "hostname": "k8s-master-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A"},
-    {"id": "m-3", "hostname": "k8s-master-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A"},
-    {"id": "l-1", "hostname": "k8s-learner-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A"},
-    {"id": "l-2", "hostname": "k8s-learner-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A"},
-    {"id": "l-3", "hostname": "k8s-learner-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A"}
+    {"id": "m-1", "hostname": "k8s-master-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "m-2", "hostname": "k8s-master-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "m-3", "hostname": "k8s-master-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-1", "hostname": "k8s-learner-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-2", "hostname": "k8s-learner-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-3", "hostname": "k8s-learner-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]}
   ],
   "baremetals": [
     {"id": "bm-r0-a", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-0", "rack": "rack-1", "ag": "ag-1"}},
