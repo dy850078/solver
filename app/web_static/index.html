@@ -121,19 +121,27 @@
           </label>
         </div>
       </header>
-      <div class="card__body">
-        <div id="treemap-container" class="treemap">
-          <div class="treemap__empty" id="treemap-empty">
+      <div class="card__body card__body--scroll">
+        <div id="rack-container" class="rack-area">
+          <div class="viz-empty">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="8" height="8" rx="1.5"/>
-              <rect x="13" y="3" width="8" height="8" rx="1.5"/>
-              <rect x="3" y="13" width="8" height="8" rx="1.5"/>
-              <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+              <rect x="4" y="3" width="16" height="18" rx="1.5"/>
+              <path d="M4 8h16M4 13h16M4 18h16"/>
             </svg>
-            <span>Run the solver to visualize the topology.</span>
+            <span>Run the solver to see the rack diagram.</span>
           </div>
         </div>
         <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="matrix-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">AG × Rack distribution</h2>
+        <span class="card__hint">Each cell = VMs assigned to that AG inside that rack</span>
+      </header>
+      <div class="card__body">
+        <div id="matrix-container"></div>
       </div>
     </section>
 

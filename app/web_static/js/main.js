@@ -1,7 +1,7 @@
 import { listExamples, getExample, solve, splitAndSolve } from "./api.js";
-import { buildPhysicalTree, buildAgTree, collectAgSet } from "./hierarchy.js";
+import { buildPhysicalPanels, buildAgPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
+import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
 import { rebuildColorScale, legendEntries } from "./colors.js";
-import { renderTreemap, showTreemapEmpty, attachResize } from "./treemap.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -42,18 +42,34 @@ function parseRequestText() {
 }
 
 function rerenderViz() {
-  const container = $("#treemap-container");
+  const rackEl = $("#rack-container");
+  const matrixCard = $("#matrix-card");
+  const matrixEl = $("#matrix-container");
+  const legendEl = $("#ag-legend");
+
   if (!state.request || !state.result) {
-    showTreemapEmpty(container);
-    renderLegend($("#ag-legend"), []);
+    showRackEmpty(rackEl);
+    matrixCard.classList.add("hidden");
+    renderLegend(legendEl, []);
     return;
   }
+
   rebuildColorScale(collectAgSet(state.request, state.result));
-  const tree = state.viewMode === "ag"
-    ? buildAgTree(state.request, state.result)
-    : buildPhysicalTree(state.request, state.result);
-  renderTreemap(container, tree);
-  renderLegend($("#ag-legend"), legendEntries());
+
+  const panels = state.viewMode === "ag"
+    ? buildAgPanels(state.request, state.result)
+    : buildPhysicalPanels(state.request, state.result);
+  renderRackDiagram(rackEl, panels);
+  renderLegend(legendEl, legendEntries());
+
+  // AG × Rack matrix — only meaningful when there are assignments
+  const matrix = buildAgRackMatrix(state.request, state.result);
+  if (matrix.isEmpty() || (state.result.assignments ?? []).length === 0) {
+    matrixCard.classList.add("hidden");
+  } else {
+    matrixCard.classList.remove("hidden");
+    renderMatrix(matrixEl, matrix);
+  }
 }
 
 async function populateExamples() {
@@ -106,25 +122,33 @@ function setRunningState(running) {
   const label = btn.querySelector(".btn__label");
   btn.disabled = running;
   if (running) {
-    btn.dataset.label = label.textContent;
+    btn.dataset.origLabel = label.textContent;
     label.textContent = "Solving…";
-    btn.querySelector("svg")?.replaceWith(spinnerEl());
+    const icon = btn.querySelector("svg");
+    if (icon) icon.replaceWith(spinnerEl());
   } else {
-    label.textContent = btn.dataset.label || "Run solver";
+    label.textContent = btn.dataset.origLabel || "Run solver";
     const spin = btn.querySelector(".btn__spinner");
     if (spin) spin.replaceWith(playIcon());
   }
 }
+
 function playIcon() {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
   svg.setAttribute("viewBox", "0 0 16 16");
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
   svg.setAttribute("stroke-width", "1.5");
   svg.setAttribute("stroke-linejoin", "round");
-  svg.innerHTML = `<polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>`;
+  const poly = document.createElementNS(NS, "polygon");
+  poly.setAttribute("points", "4 3 13 8 4 13 4 3");
+  poly.setAttribute("fill", "currentColor");
+  poly.setAttribute("stroke", "none");
+  svg.appendChild(poly);
   return svg;
 }
+
 function spinnerEl() {
   const d = document.createElement("span");
   d.className = "btn__spinner";
@@ -151,7 +175,8 @@ async function runSolver() {
     state.result = null;
     renderStats($("#stats"), null);
     renderError($("#summary-content"), err.message);
-    showTreemapEmpty($("#treemap-container"), "Request failed. See result panel for details.");
+    showRackEmpty($("#rack-container"), "Request failed. See result panel for details.");
+    $("#matrix-card").classList.add("hidden");
     renderLegend($("#ag-legend"), []);
   } finally {
     setRunningState(false);
@@ -173,8 +198,6 @@ function init() {
       rerenderViz();
     });
   });
-
-  attachResize($("#treemap-container"), rerenderViz);
 }
 
 document.addEventListener("DOMContentLoaded", init);
