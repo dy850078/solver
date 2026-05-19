@@ -99,7 +99,8 @@
     {
       "group_id": "masters-ha",
       "vm_ids": ["vm-master-1", "vm-master-2", "vm-master-3"],
-      "max_per_ag": 1
+      "spread_on": ["ag"],
+      "cap_per_bucket": {"ag": 1}
     }
   ],
   "config": {

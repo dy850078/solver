@@ -47,7 +47,7 @@ class DiagnosticsBuilder:
         request: PlacementRequest,
         vm_map: dict[str, VM],
         bm_map: dict[str, Baremetal],
-        ag_to_bms: dict[str, list[str]],
+        dim_to_bms: dict[str, dict[str, list[str]]],
         effective_rules: list[AntiAffinityRule],
         max_per_bm_rules: list[MaxPerBaremetalRule],
         config: SolverConfig,
@@ -56,7 +56,7 @@ class DiagnosticsBuilder:
         self.request = request
         self.vm_map = vm_map
         self.bm_map = bm_map
-        self.ag_to_bms = ag_to_bms
+        self.dim_to_bms = dim_to_bms
         self.effective_rules = effective_rules
         self.max_per_bm_rules = max_per_bm_rules
         self.config = config
@@ -91,7 +91,7 @@ class DiagnosticsBuilder:
         diag["counts"] = {
             "vms": len(self.request.vms),
             "bms": len(self.request.baremetals),
-            "ags": len(self.ag_to_bms),
+            "ags": len(self.dim_to_bms.get("ag", {})),
             "variables": self.num_variables,
             "rules": len(self.effective_rules),
             "max_per_bm_rules": len(self.max_per_bm_rules),
@@ -100,22 +100,58 @@ class DiagnosticsBuilder:
         return diag
 
     def _check_anti_affinity_feasibility(self) -> list[dict]:
+        """
+        For each rule and each dimension in spread_on, check whether the
+        reachable buckets in that dimension can accommodate the group's VMs
+        under cap_d. If any (rule, dimension) pair is structurally
+        infeasible, record it.
+        """
+        import math
+
         infeasible = []
         for rule in self.effective_rules:
-            reachable_ags: set[str] = set()
-            for vm_id in rule.vm_ids:
-                if vm_id in self.vm_map:
-                    for bm_id in self._eligible(self.vm_map[vm_id]):
-                        if bm_id in self.bm_map:
-                            reachable_ags.add(self.bm_map[bm_id].topology.ag)
-            min_ags_needed = -(-len(rule.vm_ids) // rule.max_per_ag)  # ceil division
-            if len(reachable_ags) < min_ags_needed:
+            N = len(rule.vm_ids)
+            if N == 0:
+                continue
+
+            # Reachable BMs per dim's bucket (only counts BMs that some VM
+            # in the rule can actually reach via candidate_baremetals).
+            per_dim_caps: dict[str, int] = {}
+            failed_dims: list[dict] = []
+            cap_overrides = rule.cap_per_bucket or {}
+
+            for dim in rule.spread_on:
+                reachable_buckets: set[str] = set()
+                for vm_id in rule.vm_ids:
+                    if vm_id in self.vm_map:
+                        for bm_id in self._eligible(self.vm_map[vm_id]):
+                            if bm_id in self.bm_map:
+                                reachable_buckets.add(
+                                    getattr(self.bm_map[bm_id].topology, dim)
+                                )
+                num_buckets_global = len(self.dim_to_bms.get(dim, {}))
+                cap = cap_overrides.get(
+                    dim,
+                    math.ceil(N / max(num_buckets_global, 1)),
+                )
+                per_dim_caps[dim] = cap
+                if cap < 1:
+                    continue
+                min_buckets_needed = -(-N // cap)  # ceil division
+                if len(reachable_buckets) < min_buckets_needed:
+                    failed_dims.append({
+                        "dimension": dim,
+                        "cap_per_bucket": cap,
+                        "min_buckets_needed": min_buckets_needed,
+                        "reachable_buckets": len(reachable_buckets),
+                    })
+
+            if failed_dims:
                 infeasible.append({
                     "group_id": rule.group_id,
-                    "vm_count": len(rule.vm_ids),
-                    "max_per_ag": rule.max_per_ag,
-                    "min_ags_needed": min_ags_needed,
-                    "reachable_ags": len(reachable_ags),
+                    "vm_count": N,
+                    "per_dimension_caps": per_dim_caps,
+                    "failed_dimensions": failed_dims,
                 })
         return infeasible
 
@@ -189,12 +225,24 @@ class DiagnosticsBuilder:
                     model.add(usage <= getattr(avail, field))
 
         def add_anti_affinity(model, assign):
+            import math
             for rule in self.effective_rules:
-                for ag, ag_bm_ids in self.ag_to_bms.items():
-                    vag = [assign[(vid, bid)] for vid in rule.vm_ids
-                           for bid in ag_bm_ids if (vid, bid) in assign]
-                    if vag:
-                        model.add(sum(vag) <= rule.max_per_ag)
+                N = len(rule.vm_ids)
+                if N == 0:
+                    continue
+                cap_overrides = rule.cap_per_bucket or {}
+                for dim in rule.spread_on:
+                    buckets = self.dim_to_bms.get(dim, {})
+                    if not buckets:
+                        continue
+                    cap = cap_overrides.get(dim, math.ceil(N / len(buckets)))
+                    if cap >= N:
+                        continue
+                    for bm_ids in buckets.values():
+                        vbucket = [assign[(vid, bid)] for vid in rule.vm_ids
+                                   for bid in bm_ids if (vid, bid) in assign]
+                        if vbucket:
+                            model.add(sum(vbucket) <= cap)
 
         def add_max_per_bm(model, assign):
             for rule in self.max_per_bm_rules:
