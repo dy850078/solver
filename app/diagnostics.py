@@ -18,6 +18,7 @@ from .models import (
     PlacementRequest,
     AntiAffinityRule,
     Baremetal,
+    MaxPerBaremetalRule,
     VM,
     SolverConfig,
 )
@@ -48,6 +49,7 @@ class DiagnosticsBuilder:
         bm_map: dict[str, Baremetal],
         ag_to_bms: dict[str, list[str]],
         effective_rules: list[AntiAffinityRule],
+        max_per_bm_rules: list[MaxPerBaremetalRule],
         config: SolverConfig,
         num_variables: int,
     ):
@@ -56,6 +58,7 @@ class DiagnosticsBuilder:
         self.bm_map = bm_map
         self.ag_to_bms = ag_to_bms
         self.effective_rules = effective_rules
+        self.max_per_bm_rules = max_per_bm_rules
         self.config = config
         self.num_variables = num_variables
 
@@ -76,6 +79,11 @@ class DiagnosticsBuilder:
         if infeasible_rules:
             diag["infeasible_anti_affinity_rules"] = infeasible_rules
 
+        # 2b. Per-baremetal rules — flag rules where cap × eligible BMs < vm count
+        infeasible_bm_rules = self._check_max_per_bm_feasibility()
+        if infeasible_bm_rules:
+            diag["infeasible_max_per_bm_rules"] = infeasible_bm_rules
+
         # 3. Constraint layer check — which layer first causes INFEASIBLE
         diag["constraint_check"] = self._constraint_layer_check()
 
@@ -86,6 +94,7 @@ class DiagnosticsBuilder:
             "ags": len(self.ag_to_bms),
             "variables": self.num_variables,
             "rules": len(self.effective_rules),
+            "max_per_bm_rules": len(self.max_per_bm_rules),
         }
 
         return diag
@@ -107,6 +116,31 @@ class DiagnosticsBuilder:
                     "max_per_ag": rule.max_per_ag,
                     "min_ags_needed": min_ags_needed,
                     "reachable_ags": len(reachable_ags),
+                })
+        return infeasible
+
+    def _check_max_per_bm_feasibility(self) -> list[dict]:
+        """
+        A per-BM rule is structurally infeasible when:
+          cap × (# distinct BMs reachable by group's VMs) < group size
+
+        Catches the common "1 BM but 3 masters with max_per_bm=1" case
+        without running the full solver.
+        """
+        infeasible = []
+        for rule in self.max_per_bm_rules:
+            reachable_bms: set[str] = set()
+            for vm_id in rule.vm_ids:
+                if vm_id in self.vm_map:
+                    reachable_bms.update(self._eligible(self.vm_map[vm_id]))
+            capacity = rule.max_per_bm * len(reachable_bms)
+            if capacity < len(rule.vm_ids):
+                infeasible.append({
+                    "group_id": rule.group_id,
+                    "vm_count": len(rule.vm_ids),
+                    "max_per_bm": rule.max_per_bm,
+                    "reachable_bms": len(reachable_bms),
+                    "slots_available": capacity,
                 })
         return infeasible
 
@@ -162,6 +196,14 @@ class DiagnosticsBuilder:
                     if vag:
                         model.add(sum(vag) <= rule.max_per_ag)
 
+        def add_max_per_bm(model, assign):
+            for rule in self.max_per_bm_rules:
+                for bm_id in self.bm_map:
+                    vbm = [assign[(vid, bm_id)] for vid in rule.vm_ids
+                           if (vid, bm_id) in assign]
+                    if vbm:
+                        model.add(sum(vbm) <= rule.max_per_bm)
+
         def quick_solve(model) -> str:
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
@@ -172,6 +214,7 @@ class DiagnosticsBuilder:
             ("one_bm_per_vm", [add_one_bm_per_vm]),
             ("capacity", [add_one_bm_per_vm, add_capacity]),
             ("anti_affinity", [add_one_bm_per_vm, add_capacity, add_anti_affinity]),
+            ("max_per_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_max_per_bm]),
         ]
 
         results: dict[str, object] = {}

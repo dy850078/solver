@@ -21,7 +21,8 @@ assign[(vm_id, bm_id)] ∈ {0, 1}
 | — | Eligible Pairs | 前置篩選 | 決定哪些 (VM, BM) 對建立變數 |
 | C1 | One-BM-per-VM | 指派約束 | 每個 VM 恰好放在一台 BM |
 | C2 | Capacity | 容量約束 | 每台 BM 各維度不超量 |
-| C3 | Anti-Affinity | 分散約束 | 同群組 VM 跨 AG 分散 |
+| C3 | Anti-Affinity | 分散約束 | 同 `(cluster_id, ip_type, role)` 群組 VM 跨 AG 分散 |
+| C4 | Max per Baremetal | 上限約束 | 同 `(cluster_id, ip_type, role)` 群組 VM 單台 BM 上限 |
 
 ---
 
@@ -207,15 +208,21 @@ Go scheduler 在 request 中傳入的 `anti_affinity_rules`：
 
 #### (b) 自動生成規則
 
-當 `config.auto_generate_anti_affinity = true`（預設）時，solver 自動為具有相同 `(ip_type, node_role)` 的 VM 群組產生規則。
+當 `config.auto_generate_anti_affinity = true`（預設）時，solver 自動為具有相同 `(cluster_id, ip_type, node_role)` 的 VM 群組產生規則。
 
-**Grouping key**：`(ip_type, node_role)`
+**Grouping key**：`(cluster_id, ip_type, node_role)`
 
 ```
-routable/master   → 一組
-routable/worker   → 一組
-non-routable/infra → 一組
+cluster-A / routable / master    → 一組
+cluster-A / routable / worker    → 一組
+cluster-B / non-routable / infra → 一組
 ```
+
+> **為什麼包含 `cluster_id`?**
+> 同一台 BM 環境若同時部署多個 cluster，舊版只用 `(ip_type, node_role)` 會把
+> 不同 cluster 的相同角色併進同一個 spread 預算。結果可能讓某個 cluster 的
+> masters 集中在少數 AG，違反該 cluster 的 HA 要求。把 `cluster_id` 納入分組
+> 鍵，每個 cluster 的 HA 就能獨立計算。
 
 **max_per_ag 計算**：
 
@@ -229,7 +236,35 @@ max_per_ag = ceil(vm_count / ag_count)
 |------|------|
 | VM 已被顯式規則覆蓋 | 不重複產生 |
 | VM 的 `ip_type` 為空 | 跳過（無法分組） |
+| VM 的 `cluster_id` 為空 | 跳過（無法分組） |
 | 群組只有 1 個 VM | 不產生（無需分散） |
+
+#### (c) Selector 形式（簡化寫法）
+
+不論顯式或 (透過 API 傳入的) 規則，都可改用 `selector` 替代逐一列舉 `vm_ids`。
+`selector` 與 `vm_ids` 必須恰好提供一個。
+
+```json
+{
+  "group_id": "A-masters",
+  "selector": {
+    "cluster_id": "cluster-A",
+    "ip_type": "routable",
+    "node_role": "master"
+  },
+  "max_per_ag": 1
+}
+```
+
+`selector` 任何欄位設為 `null` 代表 wildcard：
+
+| Selector | 命中範圍 |
+|---|---|
+| `{cluster_id="A", ip_type="non-routable", node_role=MASTER}` | cluster A 的 non-routable masters |
+| `{cluster_id="A", node_role=MASTER}` | cluster A 的所有 masters |
+| `{node_role=MASTER}` | 所有 cluster 的所有 masters |
+| `{cluster_id="A"}` | cluster A 的全部 VMs |
+| 全欄位為 `null` | **拒絕**（會 INPUT_ERROR） |
 
 ### 計算範例
 
@@ -276,6 +311,129 @@ max_per_ag = ceil(5 / 3) = 2
 
 ---
 
+## C4: Max per Baremetal（單台 BM 上限）
+
+> 來源：`solver.py` — `_add_max_per_bm_constraints()`、`_resolve_max_per_bm_rules()`
+
+### 公式
+
+```
+∀ rule_r, ∀ bm_j:
+    Σ assign[vm_i, bm_j] ≤ max_per_bm[r]
+    (i ∈ rule_r.vm_ids,  where (vm_i, bm_j) is eligible)
+```
+
+對每條 max-per-bm rule 的每台 BM，限制該 rule 中的 VM 在此 BM 內的數量不超過 `max_per_bm`。
+
+### 與 C3 的差別
+
+| | C3（Anti-Affinity） | C4（Max per BM） |
+|---|---|---|
+| 分散單位 | AG（多台 BM 組成的虛擬群組） | 單台 BM |
+| 用途 | 跨 AG HA：避免整個 AG 故障時 cluster 全掛 | 跨主機 HA：避免單台 BM 故障時影響過多 node |
+| 預設行為 | 自動生成（`auto_generate_anti_affinity = true`） | **opt-in**（`auto_generate_max_per_bm = false`） |
+| 預設 cap | 動態計算 `ceil(n / num_ags)` | 由 `default_max_per_bm` 指定，無內建預設 |
+
+兩者可同時生效，**互不取代**。
+
+### 規則來源
+
+#### (a) 顯式規則
+
+```json
+{
+  "group_id": "A-nonrt-master",
+  "selector": {
+    "cluster_id": "cluster-A",
+    "ip_type": "non-routable",
+    "node_role": "master"
+  },
+  "max_per_bm": 1
+}
+```
+
+或用 `vm_ids` 形式：
+
+```json
+{
+  "group_id": "custom",
+  "vm_ids": ["vm-1", "vm-2", "vm-3"],
+  "max_per_bm": 2
+}
+```
+
+#### (b) 自動生成規則
+
+開啟 `config.auto_generate_max_per_bm = true` 時，solver 對具有相同
+`(cluster_id, ip_type, node_role)` 的 VM 群組（大小 ≥ 2）產生規則，每條規則
+套用 `config.default_max_per_bm`。
+
+**必要條件**：`auto_generate_max_per_bm=true` 時 `default_max_per_bm` 必須為正整數，
+否則 solver 回傳 `INPUT_ERROR`。
+
+**排除條件**：與 C3 相同——已被顯式規則涵蓋的 VM、`cluster_id` / `ip_type` 為空的 VM、
+單一 VM 群組均不參與 auto-gen。
+
+### 計算範例
+
+#### 範例 1：3 masters / 1 AG / 3 BMs / max_per_bm=1
+
+```
+所有 3 BM 在 ag-1
+顯式規則: vm_ids=[m1,m2,m3], max_per_bm=1
+
+約束（bm-1）: assign[m1,bm-1] + assign[m2,bm-1] + assign[m3,bm-1] ≤ 1
+約束（bm-2）: 同上 ≤ 1
+約束（bm-3）: 同上 ≤ 1
+```
+
+→ 每台 BM 最多 1 個 master，加上 C1（每 VM 必須放）→ 3 master 必在 3 台不同 BM。
+
+#### 範例 2：跨 cluster 不互相影響
+
+```
+cluster-A：1 個 non-routable master
+cluster-B：1 個 non-routable master
+1 台 BM、auto_generate_max_per_bm=true、default_max_per_bm=1
+```
+
+→ Auto-gen 分組：
+- `auto-bm/A/non-routable/master`：只有 1 個 VM → **不產生規則**
+- `auto-bm/B/non-routable/master`：只有 1 個 VM → **不產生規則**
+
+→ 兩個 master 都可放在同一台 BM ✓
+
+#### 範例 3：與 C3 共存
+
+```
+cluster-A：3 個 routable masters
+3 AG，每 AG 2 台 BM
+auto_generate_anti_affinity=true、auto_generate_max_per_bm=true、default_max_per_bm=1
+
+C3 自動生成：max_per_ag = ceil(3/3) = 1 → 3 master 各占一個 AG
+C4 自動生成：max_per_bm = 1            → 同 AG 內不會擠同一台 BM
+```
+
+→ 兩個約束同時滿足：每個 AG 一個 master、每台 BM 至多一個 master。
+
+### 失敗診斷
+
+當 INFEASIBLE 時，`diagnostics.infeasible_max_per_bm_rules` 會列出結構性無解的規則：
+
+```json
+{
+  "group_id": "strict-masters",
+  "vm_count": 3,
+  "max_per_bm": 1,
+  "reachable_bms": 2,
+  "slots_available": 2
+}
+```
+
+`slots_available = max_per_bm × reachable_bms < vm_count` 表示即使最佳放置，BM 數量也容不下這個群組。
+
+---
+
 ## 約束間的交互作用
 
 ### Candidate List × Anti-Affinity
@@ -305,6 +463,19 @@ AG-3: BM-3 (available 64 CPU)    → 放得下 ✓
 → 但 3 master / max_per_ag=1 需要 3 個 AG → INFEASIBLE
 ```
 
+### C3 × C4
+
+C3 限制 AG 層級的分佈；C4 限制單 BM 層級的分佈。兩者**獨立**且**可疊加**：
+
+```
+3 routable masters / 3 AGs (每 AG 2 BM) / max_per_ag=1 / max_per_bm=1
+→ C3 強制 3 master 各在不同 AG
+→ C4 在每個 AG 內部也禁止疊放在同一台 BM（本例每 AG 只放 1 個，本就成立）
+```
+
+若兩者同時 auto-gen，分組鍵都是 `(cluster_id, ip_type, node_role)`，所以同一群 VM
+會被兩條規則同時涵蓋——這是預期行為，不會衝突。
+
 ### Partial Placement × C1
 
 `allow_partial_placement` 將 C1 從 `== 1` 放寬為 `<= 1`，讓 solver 在容量不足時仍能回傳部分解（而非 INFEASIBLE）。但放寬約束後需要 objective P0 的 -1,000,000 權重確保 solver 不會為了優化其他目標而主動放棄 VM。
@@ -321,6 +492,9 @@ Partial 模式: 盡量放，放不下的進 unplaced_vms
 | 參數 | 影響的約束 | 說明 |
 |------|-----------|------|
 | `allow_partial_placement` | C1 | `true`: `≤ 1`（允許不放），`false`: `== 1`（必須放） |
-| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(ip_type, node_role)` 產生分散規則 |
+| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生 AG 分散規則 |
+| `auto_generate_max_per_bm` | C4 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生單 BM 上限規則（需設 `default_max_per_bm`） |
+| `default_max_per_bm` | C4 | C4 auto-gen 時的預設上限；必為正整數 |
 | `candidate_baremetals`（per VM） | Eligible Pairs | 限定此 VM 只考慮指定的 BM |
-| `anti_affinity_rules`（per request） | C3 | 顯式指定的分散規則 |
+| `anti_affinity_rules`（per request） | C3 | 顯式指定的 AG 分散規則 |
+| `max_per_bm_rules`（per request） | C4 | 顯式指定的單 BM 上限規則 |

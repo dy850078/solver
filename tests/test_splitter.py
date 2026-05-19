@@ -5,6 +5,8 @@ Run: pytest tests/test_splitter.py -v
 
 from app.models import (
     AntiAffinityRule,
+    GroupSelector,
+    MaxPerBaremetalRule,
     NodeRole,
     ResourceRequirement,
     Resources,
@@ -37,7 +39,7 @@ def make_req(
     )
 
 
-def split_solve(requirements, bms, vms=None, rules=None, **cfg_overrides):
+def split_solve(requirements, bms, vms=None, rules=None, bm_rules=None, **cfg_overrides):
     """Run split-and-solve.
 
     Auto-fills candidate_baremetals with all BM ids for any requirement or
@@ -65,6 +67,7 @@ def split_solve(requirements, bms, vms=None, rules=None, **cfg_overrides):
         vms=backfilled_vms,
         baremetals=bms,
         anti_affinity_rules=rules or [],
+        max_per_bm_rules=bm_rules or [],
         config=SolverConfig(**defaults),
     )
     return solve_split_placement(req)
@@ -521,3 +524,85 @@ class TestSplitEndpoint:
         assert out["success"] is True
         assert len(out["split_decisions"]) >= 1
         assert len(out["assignments"]) >= 4  # 16 CPU / 4 CPU per VM
+
+
+# ===========================================================================
+# Split + C4 (max-per-baremetal) — synthetic VMs respect per-BM caps
+# ===========================================================================
+
+class TestSplitWithMaxPerBaremetal:
+    """C4 rules apply to synthetic VMs produced by the splitter."""
+
+    def test_explicit_selector_caps_synthetic_vms(self):
+        """
+        Total 32 CPU of masters split into 4 × 8-CPU VMs across 4 BMs.
+        Selector-form rule caps cluster-A masters at 1/BM → 4 VMs on 4 BMs.
+        """
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i % 2}") for i in range(4)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(
+            cpu=32, mem=128_000, disk=800,
+            role=NodeRole.MASTER, cluster="A", ip_type="non-routable",
+            vm_specs=[spec],
+        )
+        bm_rule = MaxPerBaremetalRule(
+            group_id="A-nonrt-master",
+            selector=GroupSelector(
+                cluster_id="A", ip_type="non-routable", node_role=NodeRole.MASTER,
+            ),
+            max_per_bm=1,
+        )
+        r = split_solve([req], bms, bm_rules=[bm_rule])
+        assert r.success, f"Status: {r.solver_status}"
+        # 4 masters on 4 distinct BMs
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids) == 4
+
+    def test_auto_gen_caps_synthetic_vms(self):
+        """
+        Auto-gen with default_max_per_bm=1 should group synthetic masters by
+        (cluster_id, ip_type, role) and force them to distinct BMs.
+        """
+        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(3)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(
+            cpu=24, mem=96_000, disk=600,
+            role=NodeRole.MASTER, cluster="A", ip_type="routable",
+            vm_specs=[spec],
+        )
+        r = split_solve(
+            [req], bms,
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=1,
+        )
+        assert r.success, f"Status: {r.solver_status}"
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert len(bm_ids) == 3  # 3 masters spread to 3 BMs
+
+    def test_auto_gen_isolates_clusters_in_split(self):
+        """
+        Two cluster requirements with same (role, ip_type). Auto-gen should
+        NOT merge them, so both clusters' masters can pile onto the same BM
+        (each cluster's group has only 1 VM → no auto rule generated).
+        """
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000, ag="ag-1")]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        reqs = [
+            make_req(cpu=8, mem=32_000, disk=200,
+                     role=NodeRole.MASTER, cluster="A", ip_type="routable",
+                     vm_specs=[spec]),
+            make_req(cpu=8, mem=32_000, disk=200,
+                     role=NodeRole.MASTER, cluster="B", ip_type="routable",
+                     vm_specs=[spec]),
+        ]
+        r = split_solve(
+            reqs, bms,
+            auto_generate_max_per_bm=True,
+            default_max_per_bm=1,
+        )
+        assert r.success, f"Status: {r.solver_status}"
+        # Both VMs land on the one BM — they're in different cluster groups
+        # so auto-gen's per-cluster grouping creates two singleton groups
+        # which fall below the len>=2 threshold and produce no rule.
+        bm_ids = {a.baremetal_id for a in r.assignments}
+        assert bm_ids == {"bm-1"}

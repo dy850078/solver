@@ -128,8 +128,37 @@ class VM(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Anti-affinity: spread VMs across AGs
+# Anti-affinity & per-baremetal: spread VMs across AGs / cap per BM
 # ---------------------------------------------------------------------------
+
+class GroupSelector(BaseModel):
+    """
+    Declarative VM matcher. None on a field means "wildcard".
+
+    Used by AntiAffinityRule and MaxPerBaremetalRule so the scheduler can
+    describe a group by attributes instead of enumerating VM IDs.
+
+    Example:
+      GroupSelector(cluster_id="A", ip_type="non-routable", node_role=MASTER)
+      → matches every VM in cluster A whose ip_type is non-routable and
+        whose role is master.
+    """
+    cluster_id: str | None = None
+    ip_type: str | None = None
+    node_role: NodeRole | None = None
+
+    def is_empty(self) -> bool:
+        return self.cluster_id is None and self.ip_type is None and self.node_role is None
+
+    def matches(self, vm: VM) -> bool:
+        if self.cluster_id is not None and vm.cluster_id != self.cluster_id:
+            return False
+        if self.ip_type is not None and vm.ip_type != self.ip_type:
+            return False
+        if self.node_role is not None and vm.node_role != self.node_role:
+            return False
+        return True
+
 
 class AntiAffinityRule(BaseModel):
     """
@@ -137,10 +166,29 @@ class AntiAffinityRule(BaseModel):
 
     Example: 3 master VMs with max_per_ag=1 means each master
     must be in a different AG (for HA).
+
+    Group membership: provide exactly one of `vm_ids` or `selector`.
+    `selector` is resolved against the request's VM list at solve time.
     """
     group_id: str
-    vm_ids: list[str]
+    vm_ids: list[str] = Field(default_factory=list)
+    selector: GroupSelector | None = None
     max_per_ag: int = 1
+
+
+class MaxPerBaremetalRule(BaseModel):
+    """
+    "At most N VMs from this group on any single baremetal."
+
+    Example: 3 routable masters from cluster-A with max_per_bm=1
+    means no BM hosts more than 1 of them.
+
+    Group membership: provide exactly one of `vm_ids` or `selector`.
+    """
+    group_id: str = ""
+    vm_ids: list[str] = Field(default_factory=list)
+    selector: GroupSelector | None = None
+    max_per_bm: int
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +217,12 @@ class SolverConfig(BaseModel):
     vm_specs: list[Resources] = Field(default_factory=list)
     # Requirement splitter: penalize over-allocation waste
     w_resource_waste: int = 5
+    # Per-baremetal cap (C4): limit how many VMs sharing the same
+    # (cluster_id, ip_type, node_role) can land on a single BM.
+    # When auto_generate_max_per_bm=True, default_max_per_bm MUST be set
+    # to a positive integer or the request is rejected with INPUT_ERROR.
+    auto_generate_max_per_bm: bool = False
+    default_max_per_bm: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +234,7 @@ class PlacementRequest(BaseModel):
     vms: list[VM]
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
@@ -237,6 +292,7 @@ class SplitPlacementRequest(BaseModel):
     vms: list[VM] = Field(default_factory=list)
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
