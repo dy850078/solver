@@ -18,13 +18,65 @@ subject to                  # 容量限制
 ```
 
 實驗發現,**Excel LP 的解所使用的 BM 數量比目前 solver (`app/solver.py`) 還少**。
-這份報告先說明此現象背後的數學原因,再提供一組標準測試場景,
-用以量化在不同 (objective weight, headroom threshold) 設定下,
-solver 與 Excel LP 在多個維度上的差距。
+這份報告先用一個小場景 (§2) 直觀展示差距,再說明背後的數學原因 (§3),
+最後提供一組標準測試場景 (§6~§8) 用以量化在不同 (objective weight,
+headroom threshold) 設定下,solver 與 Excel LP 在多個維度上的差距。
 
 ---
 
-## 2. 為什麼 solver 用較多 BM (假設)
+## 2. 快速對照 (4-cluster / 20-BM 簡易場景)
+
+這個小場景作為後面深度測試的前導:用一個能在白板上講完的規模,
+快速展示 Excel LP 與 solver 在不同配置下的 BM 用量 / 利用率差距,
+讓讀者先抓到「現象有多大」,再進入更細的測試矩陣 (§6 起)。
+
+### 2.1 場景設定
+
+| 項目 | 設定 |
+|---|---|
+| Cluster 數 | 4 |
+| 每 cluster VM 數 | 3 master + 5 worker = 8 (共 **32 VMs**) |
+| Baremetal 數 | **20** |
+| AG 數 | 3 (BM 約略平均分布:7 / 7 / 6) |
+| t-shirt 規格 | master = small,worker = medium (固定 `vm_specs`) |
+| Anti-affinity | 每 cluster 內 master/worker 各自 auto-spread across AG |
+| 容量寬鬆度 | 中等 (整體目標利用率 ~50-60%) |
+
+> 實際輸入 JSON 建議放 `examples/quickcheck-4cluster-20bm.json` 以便重現。
+> 4 個 cluster 共 8 個 auto-anti-affinity group (master/worker × 4 cluster),
+> 每個 group 內成員會被推到不同 AG,因此這個場景對「anti-affinity 是否是主因」很有指標性。
+
+### 2.2 結果對照表 (待填)
+
+挑三個最直觀的指標,讓讀者一眼看到 trade-off:
+
+| 配置 | `bm_used` (/20) | `max_util%` | `worst_ag_load` | 一句話總結 |
+|---|---|---|---|---|
+| **REF (Excel)** |  |  | n/a | 理論下界 (純 min BM,無 anti-affinity) |
+| **DEFAULT** (10/8/90/1) |  |  |  | 目前線上設定 |
+| **C1** (10/8/**95**/1) |  |  |  | 只放寬 headroom |
+| **B1** (**20**/**2**/**85**/1) |  |  |  | 中度 packing,crossover ≈ 95% |
+| **A1** (**100**/**1**/**95**/1) |  |  |  | 積極 packing,接近 Excel |
+| **NO-HR** (10/**0**/—/1) |  |  |  | 關掉 headroom |
+| **NO-SLOT** (10/8/90/**0**) |  |  |  | 關掉 slot_score |
+| **SLOT-HIGH** (10/8/90/**5**) |  |  |  | slot_score 拉到 5 |
+| **NO-HR-NO-SLOT** (10/**0**/—/**0**) |  |  |  | 純 consolidation,最接近 Excel 邏輯 |
+
+> 配置欄括弧內為 `(w_consolidation / w_headroom / headroom_upper_bound_pct / w_slot_score)`,完整對應見 §7。
+
+### 2.3 觀察重點 (填完後回答)
+
+1. **DEFAULT 與 REF 差幾台 BM?** — 給出 gap 規模 (e.g. 「多用 3 台 = +25%」)。
+2. **A1 / NO-HR / NO-HR-NO-SLOT 能否逼近 REF?** — 若仍有 gap,主因即為 anti-affinity 硬約束。
+3. **省下的 BM 帶來多大代價?** — 對比 `worst_ag_load` 與 `max_util%`,確認沒過熱、AG 失效衝擊可接受。
+4. **slot_score 拉高/關掉的差異** — `NO-SLOT` 與 `SLOT-HIGH` 跟 `DEFAULT` 差幾台 BM,判斷 slot=1 在實務上是 tiebreaker 還是真的有重量。
+
+如果這個小場景的結論已經夠清楚,深度測試 (§6~§8) 可以視時間調整跑哪幾個 scenario;
+若這裡看不出差距,再用大規模場景放大訊號。
+
+---
+
+## 3. 為什麼 solver 用較多 BM (假設)
 
 目前 solver 的目標函數 (`app/solver.py:662-699`) 是多目標加權:
 
@@ -45,7 +97,7 @@ minimize  w_consolidation × Σ bm_used
 | `w_slot_score` | 0 | **1** (已啟用) |
 | `w_resource_waste` | 5 | 5 |
 
-### 2.1 Crossover 推導
+### 3.1 Crossover 推導
 
 在「再塞一個 VM 到既有 BM」與「開一台新 BM」之間,solver 是用「成本」比較的:
 
@@ -61,16 +113,16 @@ minimize  w_consolidation × Σ bm_used
 w_headroom × (100 - threshold) ≈ w_consolidation
 ```
 
-### 2.2 其他可能的原因
+### 3.2 其他可能的原因
 
 1. **Anti-affinity 是硬約束** (`app/solver.py:382-442`):
    同 group 的 VM 強制散布到不同 AG,等於下限就需要多台 BM。Excel LP 沒有這條。
-2. **`w_slot_score` 已啟用 (= 1)**: 詳見 §2.3,效應與 headroom 同方向 (傾向使用更多/更大 BM 以保留 slot)。
+2. **`w_slot_score` 已啟用 (= 1)**: 詳見 §3.3,效應與 headroom 同方向 (傾向使用更多/更大 BM 以保留 slot)。
 3. **Solver time limit**: 大規模案例若提早停在 `FEASIBLE`,
    可能還沒收斂到最少 BM 的解。
 4. **Splitter 注入的 waste 項**: 對 BM 用量間接影響。
 
-### 2.3 Slot Score 的行為與影響
+### 3.3 Slot Score 的行為與影響
 
 對應實作: `app/solver.py:542-655` (`_compute_slot_score_bonus`)。
 
@@ -106,7 +158,7 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 3. 測試目標
+## 4. 測試目標
 
 1. 量化「現況 default」vs「Excel LP」的 BM 用量差距,作為基準上界 (理論下界由 Excel LP 提供)。
 2. 找出在不同調校下,**最接近 Excel BM 數**且**不顯著惡化容錯/headroom** 的配置。
@@ -114,7 +166,7 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 4. 評估指標 (KPI)
+## 5. 評估指標 (KPI)
 
 | 指標 | 定義 | 目的 |
 |---|---|---|
@@ -129,13 +181,14 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 5. 測試輸入場景
+## 6. 測試輸入場景
 
-每個輸入場景至少跑一次 Excel LP (理論下界) + 下面 §6 所有配置。
+每個輸入場景至少跑一次 Excel LP (理論下界) + 下面 §7 所有配置。
 建議輸入 JSON 放在 `examples/` 下,以便重現。
 
 | 編號 | 場景名稱 | VM 數 | BM 數 | AG 數 | Anti-affinity | 容量寬鬆度 | 目的 |
 |---|---|---|---|---|---|---|---|
+| S0 | quickcheck-4cluster-20bm | 32 | 20 | 3 | 8 auto-groups (見 §2) | 中等 (~50-60%) | **§2 快速對照,用同一份結果即可** |
 | S1 | small-loose | ~10 | ~8 | 3 | 1 group, 3 VMs | 寬鬆 (利用率 < 30%) | 基本可行性 |
 | S2 | small-tight | ~10 | ~4 | 2 | 1 group, 3 VMs | 緊湊 (利用率 > 80%) | 觀察 headroom 衝突 |
 | S3 | medium-mixed | ~50 | ~20 | 3 | 多組,包含 master/worker | 中等 (~60%) | 接近真實 |
@@ -146,7 +199,7 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 6. 測試配置 (Objective Weight Matrix)
+## 7. 測試配置 (Objective Weight Matrix)
 
 | 配置 ID | `w_consolidation` | `w_headroom` | `headroom_upper_bound_pct` | `w_slot_score` | 預期行為 |
 |---|---|---|---|---|---|
@@ -171,10 +224,11 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 7. 結果回填表
+## 8. 結果回填表
 
 > 每個輸入場景複製一份下表,把對應數字填入。
 > Excel LP (REF) 那一列可只填 `bm_used_count` 與 `max_utilization_pct`,其他可留白。
+> **S0 quickcheck 的結果直接沿用 §2.2 那張簡表**,本節從 S1 開始。
 
 ### 場景 S1 — small-loose
 
@@ -276,7 +330,7 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 8. 解讀指引
+## 9. 解讀指引
 
 填完後,依下列順序判讀:
 
@@ -299,18 +353,18 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 
 ---
 
-## 9. 結論與建議 (待填)
+## 10. 結論與建議 (待填)
 
 > 完成測試後,於此處填入:
 >
 > - 哪一組配置在「BM 數逼近 Excel」與「容錯/headroom 不顯著惡化」之間最平衡
 > - 是否需要依場景動態調整 (e.g. 緊湊容量用 A1,寬鬆用 DEFAULT)
-> - Anti-affinity 是否需要改為軟約束 (若 §8 第 2 點顯示它是主因)
+> - Anti-affinity 是否需要改為軟約束 (若 §9 第 4-5 點顯示它是主因)
 > - 是否建議改用字典序 (lexicographic) 求解取代加權,讓「先 min BM、再 min headroom」的優先順序更可解釋
 
 ---
 
-## 10. Open Questions
+## 11. Open Questions
 
 - 是否需要把 Excel LP 完整移植成 Python (e.g. PuLP) 以便 CI 自動跑 REF?
 - 是否需要新增 KPI:`vms_displaced_on_single_bm_failure` (單一 BM 損失衝擊)?
