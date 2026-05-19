@@ -35,15 +35,15 @@ minimize  w_consolidation × Σ bm_used
         + w_resource_waste× Σ splitter_waste
 ```
 
-`SolverConfig` (`app/models.py:163-171`) 預設值:
+`SolverConfig` (`app/models.py:163-171`) 預設值與目前線上設定:
 
-| 參數 | 預設值 |
-|---|---|
-| `w_consolidation` | 10 |
-| `w_headroom` | 8 |
-| `headroom_upper_bound_pct` | 90 |
-| `w_slot_score` | 0 |
-| `w_resource_waste` | 5 |
+| 參數 | 程式碼預設 | **目前線上實際值** |
+|---|---|---|
+| `w_consolidation` | 10 | 10 |
+| `w_headroom` | 8 | 8 |
+| `headroom_upper_bound_pct` | 90 | 90 |
+| `w_slot_score` | 0 | **1** (已啟用) |
+| `w_resource_waste` | 5 | 5 |
 
 ### 2.1 Crossover 推導
 
@@ -65,9 +65,44 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 
 1. **Anti-affinity 是硬約束** (`app/solver.py:382-442`):
    同 group 的 VM 強制散布到不同 AG,等於下限就需要多台 BM。Excel LP 沒有這條。
-2. **Solver time limit**: 大規模案例若提早停在 `FEASIBLE`,
+2. **`w_slot_score` 已啟用 (= 1)**: 詳見 §2.3,效應與 headroom 同方向 (傾向使用更多/更大 BM 以保留 slot)。
+3. **Solver time limit**: 大規模案例若提早停在 `FEASIBLE`,
    可能還沒收斂到最少 BM 的解。
-3. **Splitter 注入的 waste 項**: 對 BM 用量間接影響。
+4. **Splitter 注入的 waste 項**: 對 BM 用量間接影響。
+
+### 2.3 Slot Score 的行為與影響
+
+對應實作: `app/solver.py:542-655` (`_compute_slot_score_bonus`)。
+
+```
+slot_score(BM) = bm_used × Σ over_tshirt_sizes  min_dim( remaining / tshirt_demand )
+
+objective 中: ... − w_slot_score × Σ slot_score(BM)
+```
+
+語意:對**每一台已使用**的 BM,計算剩下還能塞幾個標準 t-shirt VM,加總後當作獎勵 (負號)。
+未使用的 BM 不計分 (`bm_used × bm_score`),避免 solver 為了「保留大 BM 的潛在 slot」而把 VM 故意擺到小 BM。
+
+**對結果的影響**
+
+1. **同 BM 數時**:偏好挑「大 BM」,讓剩餘 slot 多 → 對 BM 用量為中性 (tiebreaker)。
+2. **與 consolidation 拉扯**:
+   - 方案 X: 2 台 BM × 90% 滿 → BM 數少 (省 `2 × w_c = 20`) 但 slot 少
+   - 方案 Y: 3 台 BM × 60% 滿 → BM 數多 (多花 `1 × w_c = 10`) 但每台 slot 多
+   - 當 `w_slot_score × ΔΣslot ≥ w_c` 時,solver 會選 Y → **BM 用量上升**。
+3. **與 headroom 同方向**:兩者都討厭「BM 太滿」,合計效果是 packing 更鬆。
+4. **與 t-shirt 規格耦合**:slot 是用 `vm_specs` 算的,若 t-shirt 大小調整,評分基準會改變。
+   報告測試請固定 `vm_specs` 內容。
+
+**Crossover 直覺 (純 slot vs consolidation)**
+
+```
+w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
+```
+
+當 `w_slot_score = 1`、`w_consolidation = 10` 時,要讓 slot 蓋過 consolidation,
+單台 BM 必須能多容 ~10 個 t-shirt VM。所以**單獨開啟 `w_slot_score = 1`
+對 BM 用量影響通常很小**,但會放大 headroom 已造成的「不想塞滿」傾向。
 
 ---
 
@@ -113,17 +148,26 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 
 ## 6. 測試配置 (Objective Weight Matrix)
 
-| 配置 ID | `w_consolidation` | `w_headroom` | `headroom_upper_bound_pct` | 預期行為 |
-|---|---|---|---|---|
-| **REF** | — | — | — | Excel LP 純 min(BM) 結果,作為理論下界 |
-| **DEFAULT** | 10 | 8 | 90 | 目前線上設定 (baseline) |
-| **C1** | 10 | 8 | **95** | 最小改動:只放寬 threshold |
-| **B1** | **20** | **2** | **85** | 中度 packing (crossover ≈ 95%) |
-| **A1** | **100** | **1** | **95** | 接近 Excel (crossover ≈ 95%,packing 優先) |
-| **NO-HR** | 10 | **0** | — | 完全關掉 headroom,純 consolidation |
+| 配置 ID | `w_consolidation` | `w_headroom` | `headroom_upper_bound_pct` | `w_slot_score` | 預期行為 |
+|---|---|---|---|---|---|
+| **REF** | — | — | — | — | Excel LP 純 min(BM) 結果,作為理論下界 |
+| **DEFAULT** | 10 | 8 | 90 | **1** | 目前線上設定 (baseline) |
+| **C1** | 10 | 8 | **95** | 1 | 最小改動:只放寬 threshold |
+| **B1** | **20** | **2** | **85** | 1 | 中度 packing (crossover ≈ 95%) |
+| **A1** | **100** | **1** | **95** | 1 | 接近 Excel (crossover ≈ 95%,packing 優先) |
+| **NO-HR** | 10 | **0** | — | 1 | 完全關掉 headroom,只剩 consolidation + slot |
+| **NO-SLOT** | 10 | 8 | 90 | **0** | 與 DEFAULT 對照,隔離 slot_score 的影響 |
+| **SLOT-HIGH** | 10 | 8 | 90 | **5** | 拉高 slot_score,觀察是否進一步推高 BM 用量 |
+| **NO-HR-NO-SLOT** | 10 | **0** | — | **0** | 純 consolidation,理論上最接近 Excel |
 
-> 註: 每組配置其他參數維持預設 (`w_slot_score=0`, `w_resource_waste=5`,
-> `max_solve_time_seconds=30`)。
+> 註: 其他參數維持預設 (`w_resource_waste=5`, `max_solve_time_seconds=30`,
+> `vm_specs` 固定不變,以免 slot_score 評分基準漂移)。
+>
+> **建議解讀對照組** (用來釐清各 term 各自的貢獻):
+> - `DEFAULT` vs `NO-SLOT`        → slot_score=1 的實際影響
+> - `DEFAULT` vs `SLOT-HIGH`      → slot_score 拉高的邊際影響
+> - `NO-HR` vs `NO-HR-NO-SLOT`    → 只剩 anti-affinity 時 slot 的影響
+> - `NO-HR-NO-SLOT` vs `REF`      → 剩餘 gap 幾乎只能歸因於 anti-affinity 或 solver time
 
 ---
 
@@ -142,6 +186,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S2 — small-tight
 
@@ -153,6 +200,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S3 — medium-mixed
 
@@ -164,6 +214,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S4 — large-prod-like
 
@@ -175,6 +228,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S5 — anti-affinity-heavy
 
@@ -186,6 +242,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S6 — single-ag (排除 anti-affinity)
 
@@ -197,6 +256,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ### 場景 S7 — mixed-tshirt
 
@@ -208,6 +270,9 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 | B1 |  |  |  |  |  |  |  |  |
 | A1 |  |  |  |  |  |  |  |  |
 | NO-HR |  |  |  |  |  |  |  |  |
+| NO-SLOT |  |  |  |  |  |  |  |  |
+| SLOT-HIGH |  |  |  |  |  |  |  |  |
+| NO-HR-NO-SLOT |  |  |  |  |  |  |  |  |
 
 ---
 
@@ -216,11 +281,21 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 填完後,依下列順序判讀:
 
 1. **`DEFAULT` vs `REF` 的 BM gap** — 確認問題大小;若 gap 很小,代表 Excel 贏的幅度被高估。
-2. **`NO-HR` vs `REF` 的 BM gap** — 若仍有差距,代表 anti-affinity 是主因 (非 headroom)。
-3. **`S6` 結果** — 在無 anti-affinity 場景中,`A1` 或 `NO-HR` 應該逼近 `REF`。
+2. **`DEFAULT` vs `NO-SLOT`** — 隔離 `w_slot_score = 1` 的影響:
+   - 若 BM 數相同 → slot_score 只當 tiebreaker,沒推高 BM 用量
+   - 若 `NO-SLOT` 用較少 BM → slot_score 在當前比例下已經有實質影響
+3. **`DEFAULT` vs `SLOT-HIGH`** — slot_score 拉到 5 的邊際影響:
+   - 若 BM 數顯著上升 → slot_score 確實會跟 consolidation 競爭
+   - 若 BM 數幾乎不變 → 在這個輸入下 slot 並非主要驅動
+4. **`NO-HR` vs `REF` 的 BM gap** — 若仍有差距,代表 anti-affinity (或 slot_score) 是主因。
+5. **`NO-HR-NO-SLOT` vs `REF`** — 把 headroom 與 slot 都關掉後仍有 gap,
+   幾乎可以歸因於 anti-affinity 硬約束 (或 solver time)。
+6. **`S6` 結果 (single-ag)** — 在無 anti-affinity 場景中,`A1` 或 `NO-HR-NO-SLOT` 應該逼近 `REF`。
    若仍有 gap → solver time 或其他項作怪。
-4. **`worst_ag_load` 變化** — packing 越積極,單一 AG 上 VM 越多,失效衝擊越大,這是換來省 BM 的代價。
-5. **`max_util%` 與 `headroom_violation`** — 觀察省下來的 BM 是不是用過熱換來的。
+7. **`worst_ag_load` 變化** — packing 越積極,單一 AG 上 VM 越多,失效衝擊越大,這是換來省 BM 的代價。
+8. **`max_util%` 與 `headroom_violation`** — 觀察省下來的 BM 是不是用過熱換來的。
+9. **`remaining_slots` 變化** — 跨 `NO-SLOT` / `DEFAULT` / `SLOT-HIGH` 三組對比,
+   驗證 slot_score 確實有把「保留 slot」的偏好帶進解。
 
 ---
 
