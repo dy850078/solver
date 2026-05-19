@@ -440,7 +440,11 @@ def _add_failover_constraints(self):
 1. 在 `models.py` 加 `Topology.room`、`NodeRole.LEARNER`、`FailoverRule`
 2. 重寫 `AntiAffinityRule`：移除 `max_per_ag`、新增必填 `spread_on` 與選填 `cap_per_bucket`
 3. 重寫 `SolverConfig`：移除 `target_ag_spread`、新增 `target_spread: dict[str, int]`
-4. Pydantic validator：`spread_on` 不可為空、`cap_per_bucket` 鍵集合必須是 `spread_on` 子集
+4. Pydantic validator：
+   - `AntiAffinityRule.spread_on` 不可為空
+   - `AntiAffinityRule.cap_per_bucket` 鍵集合必須是 `spread_on` 子集；value 需 ≥ 1（0 視為 INPUT_ERROR）
+   - `FailoverRule.fault_domain` 為單一字串、必須屬於合法維度名集合
+   - `FailoverRule.policy` 目前僅接受 `"n_minus_1"`
 5. 此 Phase 結束預期既有測試**全部紅燈** — 屬於預期，於 Phase 2 同步更新
 
 ### Phase 2：Solver 核心泛化 + 既有測試遷移
@@ -479,11 +483,7 @@ def _add_failover_constraints(self):
 
 ## Open Question
 
-1. **FailoverRule 是否該允許多個 fault_domain**？例如 `fault_domain: ["room", "ag"]` 表達「任一 Room 或任一 AG 失效都要能補位」。會大幅增加約束數量。
-2. **Auto-generation 是否自動產生 FailoverRule**？目前提案僅自動產生 anti-affinity，failover 必須顯式給出。若觀察到 cluster 同時有 `(cluster, ip, master)` 與 `(cluster, ip, learner)` 群組，是否預設配對？
-3. **`target_spread` 含多個維度時 advisory 是否各維度獨立發出**？目前提案每維度一條，可能讓 diagnostics 變吵雜。
-4. **Learner 是否預設繼承 Master 的 candidate_baremetals 池**，還是 Go scheduler 必須分別提供？影響 splitter 預設行為。
-5. **`cap_per_bucket` 是否允許值為 `0`**？語意上等於「禁止此維度任何 bucket 持有此群組 VM」，等價於停用此維度的 spread；目前提案接受任意正整數但 0 視為 INPUT_ERROR。
+_All resolved during 2026-05-19 review — see Decision Log below._
 
 ---
 
@@ -497,3 +497,8 @@ def _add_failover_constraints(self):
 | 新增 `cap_per_bucket: dict[str, int]` 而非把上限併入 `spread_on` 結構 | `spread_on` 維持 `list[str]` 易讀；多數使用情境只需 ceil 自動算，`cap_per_bucket` 為進階覆寫選項 | — |
 | 保留類名 `AntiAffinityRule`（不改為 `SpreadRule`） | 改名無語意收益；省去 docs/examples 大幅 churn | — |
 | `target_ag_spread` 移除而非改名 alias | 若保留 alias 會在 config 解析期長出優先順序分支 | 升版 note 列為 breaking |
+| `FailoverRule.fault_domain: str`（單一字串、不支援多維度） | 約束生成邏輯單純；多 fault_domain 需求由使用者寫多條 rule 表達，意圖更明確 | 若日後實證需要多維互補語意，再考慮升版加 list 支援 |
+| Auto-generation **不**自動產生 `FailoverRule`，必須顯式給出 | Failover 是強約束；避免同名 cluster 內不想互補的 master/learner 被誤綁。意圖透過顯式 rule 表達較安全 | — |
+| Learner VM 的 `candidate_baremetals` 由 Go scheduler 分別提供，solver **不**繼承、**不**推斷 | 介面語意明確、solver 邏輯單純；避免 splitter 預設行為與 scheduler 端期待不一致 | Go scheduler 端需處理 learner candidate 計算 |
+| `cap_per_bucket` 值 `0` 視為 **INPUT_ERROR** | 「禁止此維度」的語意應該直接從 `spread_on` 移除該維度表達，避免 schema 出現兩種等價寫法 | Pydantic validator: cap_per_bucket 的 value 需 ≥ 1 |
+| `spread_below_target` advisory **每維度一條**獨立發出（含 `details.dimension`） | 診斷資訊最完整；消費端可分維度排查；多 cluster × 多維度可能產生較多 advisory 但仍可管理 | — |
