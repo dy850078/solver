@@ -15,7 +15,7 @@
 2. **多維度反親和**：同一群組可同時要求 by AG 分散 **AND** by Room 分散（兩者皆成立）
 3. **跨群組 N-1 互補規則 `FailoverRule`**：表達「任一 fault domain（如 Room）失效時，倖存 fault domain 的 Learner 數量 ≥ 失效 fault domain 的 Master 數量」
 
-設計原則：**API 表面向後相容**，內部資料結構與約束生成邏輯泛化。
+設計原則：**JSON 契約尚未 GA，採一次性 breaking change 換取程式碼單一路徑**。`AntiAffinityRule.max_per_ag` 移除、`spread_on` 必填、新增 `cap_per_bucket` 取代原本由 `max_per_ag` 表達的「顯式上限覆寫」能力。
 
 ---
 
@@ -25,10 +25,10 @@
 
 - 在 `NodeRole` 加入 `LEARNER`，且使既有 anti-affinity auto-generation（以 `(cluster_id, ip_type, node_role)` 為 group key）天然分開處理 master / learner 兩群
 - 在 `Topology` 加入 `room` 維度
-- 擴充 `AntiAffinityRule` 支援 `spread_on: list[str]`，能同時對多個 topology 維度做平均分散
+- 重新設計 `AntiAffinityRule`：`spread_on: list[str]` 為必填、新增 `cap_per_bucket: dict[str, int] | None` 表達各維度顯式上限、**移除** `max_per_ag` 欄位
 - 新增 `FailoverRule(primary, backup, fault_domain, policy="n_minus_1")` 表達跨群組互補
-- `SolverConfig.target_ag_spread` 泛化為 `target_spread: dict[str, int]`
-- **保留 JSON 契約相容**：Go scheduler 既有送出的 payload 不需立即修改即可正確運作
+- `SolverConfig.target_ag_spread` 移除，改為 `target_spread: dict[str, int]`
+- **一次性 breaking change**：solver 與 Go scheduler 同步升版；不保留 legacy 欄位、不留 fallback 分支
 
 ### Non-Goals
 
@@ -131,9 +131,9 @@ class NodeRole(str, Enum):
 
 既有 auto-generated anti-affinity 的 group key `(cluster_id, ip_type, node_role)` 不變 — 自然會把 master 與 learner 切成兩個獨立群組做 spread。
 
-#### 1.3 `AntiAffinityRule` 原地擴充 `spread_on`
+#### 1.3 `AntiAffinityRule` 重新設計
 
-**保留類名與既有欄位**，新增 `spread_on`：
+**移除 `max_per_ag`、新增 `spread_on`（必填）與 `cap_per_bucket`（選填）**：
 
 ```python
 class AntiAffinityRule(BaseModel):
@@ -141,22 +141,29 @@ class AntiAffinityRule(BaseModel):
     vm_ids: list[str] = Field(default_factory=list)
     selector: GroupSelector | None = None
 
-    # NEW: 同時對這些 topology 維度做平均分散
-    # 預設 ["ag"] 等同既有行為
-    spread_on: list[str] = Field(default_factory=lambda: ["ag"])
+    # 必填：對這些 topology 維度做平均分散
+    # 合法值: "site" | "phase" | "datacenter" | "room" | "rack" | "ag"
+    # 至少給一個維度；給空陣列視為 INPUT_ERROR
+    spread_on: list[str]
 
-    # 既有欄位，保留為 "spread_on == [ag]" 時的舊行為
-    # 若 spread_on 含多維或非 ag，max_per_ag 被忽略（並寫 warning 到 diagnostics）
-    max_per_ag: int = 1
+    # 選填：對指定維度覆寫自動 ceil 上限。未列出的維度走 ceil(N/|buckets|)
+    # 例: {"ag": 2}  -> ag 維度每桶最多 2 台，room 維度走 ceil
+    cap_per_bucket: dict[str, int] | None = None
 ```
 
-**多維度語意**：對 `spread_on` 中每個維度 `d`，獨立加一條約束：
+**語意**：對 `spread_on` 中每個維度 `d`，獨立加一條約束：
 
-> 對每個 bucket b ∈ buckets(d)：`sum(assign[vm,bm] for bm in bucket b) ≤ ⌈N / |buckets(d)|⌉`
+```
+N = |VMs(rule)|
+B_d = buckets of dimension d
+cap_d = cap_per_bucket[d] if d in cap_per_bucket else ⌈N / |B_d|⌉
 
-其中 N 為群組 VM 數，`|buckets(d)|` 為該維度下的桶數。多維度約束**獨立疊加**（AND），不是聯合分布。
+∀ b ∈ B_d:  sum(assign[vm, bm] for vm in VMs(rule) for bm in b) ≤ cap_d
+```
 
-**JSON 範例**（多維度）：
+多維度約束**獨立疊加**（AND），不是聯合分布。
+
+**JSON 範例**（多維度，自動 ceil）：
 
 ```json
 {
@@ -166,13 +173,14 @@ class AntiAffinityRule(BaseModel):
 }
 ```
 
-**JSON 範例**（向後相容，未寫 `spread_on` 等於 `["ag"]`）：
+**JSON 範例**（顯式 cap 覆寫）：
 
 ```json
 {
-  "group_id": "legacy-rule",
-  "vm_ids": ["m1", "m2", "m3"],
-  "max_per_ag": 1
+  "group_id": "masters-A-routable",
+  "selector": {"cluster_id": "A", "ip_type": "routable", "node_role": "master"},
+  "spread_on": ["ag", "room"],
+  "cap_per_bucket": {"ag": 2}
 }
 ```
 
@@ -202,13 +210,12 @@ class FailoverRule(BaseModel):
 ```python
 class SolverConfig(BaseModel):
     ...
-    # 既有：target_ag_spread: int = 3
-    # 新：dict 鍵為 topology 維度名
-    # 預設 {"ag": 3} 等同舊行為
+    # 移除：target_ag_spread: int = 3
+    # 新：dict 鍵為 topology 維度名；預設僅 ag 維度有期望桶數
     target_spread: dict[str, int] = Field(default_factory=lambda: {"ag": 3})
 ```
 
-`target_ag_spread` 欄位保留為 deprecated alias，若同時設定則 dict 中的 `ag` 鍵優先。
+`target_ag_spread` 欄位**移除**，不留 alias。
 
 ### 2. 約束數學
 
@@ -219,13 +226,13 @@ class SolverConfig(BaseModel):
 ```
 N_r = |VMs(r)|
 B_d = buckets of dimension d (e.g. distinct ag values, or distinct room values)
-cap = ⌈N_r / |B_d|⌉
+cap = r.cap_per_bucket[d] if d in r.cap_per_bucket else ⌈N_r / |B_d|⌉
 
 ∀ b ∈ B_d:  Σ assign[vm, bm]  ≤  cap
             vm ∈ VMs(r), bm ∈ b
 ```
 
-舊規則的 `max_per_ag` 行為視為 `spread_on=["ag"]` 且 `cap = max_per_ag`（顯式覆寫 ceil 計算）。
+無 legacy 分支：solver 程式只有「對每維度查表或 ceil」一條路徑。
 
 #### C5: Failover Redundancy（新增）
 
@@ -277,10 +284,9 @@ for dim in SPREAD_DIMENSIONS:
     for bm in self.request.baremetals:
         buckets[getattr(bm.topology, dim)].append(bm.id)
     self.dim_to_bms[dim] = dict(buckets)
-
-# Backward compat alias
-self.ag_to_bms = self.dim_to_bms["ag"]
 ```
+
+`ag_to_bms` 屬性移除；既有讀 `self.ag_to_bms` 的程式碼一律改為 `self.dim_to_bms["ag"]`。
 
 #### 3.2 Auto-generation 對 multi-dim 的處理
 
@@ -301,13 +307,19 @@ auto_rule = AntiAffinityRule(
 
 ```python
 for rule in self.effective_rules:
+    vms = self._resolve_rule_vms(rule)
+    N = len(vms)
     for dim in rule.spread_on:
         buckets = self.dim_to_bms[dim]
-        N = len(VMs_of(rule))
-        cap = math.ceil(N / max(len(buckets), 1))
+        cap = (
+            rule.cap_per_bucket[dim]
+            if rule.cap_per_bucket and dim in rule.cap_per_bucket
+            else math.ceil(N / max(len(buckets), 1))
+        )
         for bucket_name, bm_ids in buckets.items():
             self.model.add(
-                sum(self.assign[(vm, bm)] for vm in ... for bm in bm_ids) <= cap
+                sum(self.assign[(vm, bm)] for vm in vms for bm in bm_ids
+                    if (vm, bm) in self.assign) <= cap
             )
 ```
 
@@ -335,19 +347,24 @@ def _add_failover_constraints(self):
 
 | 既有欄位 | 變更 |
 |---|---|
-| `infeasible_anti_affinity_rules[].max_per_ag` | 保留；新增 `per_dimension_caps: dict[str, int]` |
-| advisory `type: "ag_spread_below_target"` | 保留；新增 `type: "spread_below_target"` with `details.dimension` |
+| `infeasible_anti_affinity_rules[].max_per_ag` | **移除**；改以 `per_dimension_caps: dict[str, int]` 表達各維度上限 |
+| advisory `type: "ag_spread_below_target"` | **移除**；改為 `type: "spread_below_target"` with `details.dimension` |
 | — | 新增 `infeasible_failover_rules`：`[{rule_id, primary_count, backup_count, fault_domain, details}]` |
 
-### 5. JSON 契約變更摘要
+### 5. JSON 契約變更摘要（**Breaking — 需 Go scheduler 同步升版**）
 
 | 欄位 | 變更 | 影響 |
 |---|---|---|
-| `PlacementRequest.anti_affinity_rules[].spread_on` | NEW 選填 | 向後相容 |
-| `PlacementRequest.failover_rules` | NEW 選填陣列 | 向後相容 |
-| `Baremetal.topology.room` | NEW 選填 | 向後相容 |
-| `VM.node_role` 可為 `"learner"` | NEW enum 值 | Go scheduler 需識別 |
-| `SolverConfig.target_spread` | NEW dict | 與 `target_ag_spread` 並存 |
+| `AntiAffinityRule.max_per_ag` | **移除** | Breaking |
+| `AntiAffinityRule.spread_on` | **新增必填** | Breaking |
+| `AntiAffinityRule.cap_per_bucket` | 新增選填 | — |
+| `PlacementRequest.failover_rules` | 新增選填陣列 | — |
+| `Baremetal.topology.room` | 新增選填 | — |
+| `VM.node_role` 可為 `"learner"` | 新增 enum 值 | Go scheduler 需識別 |
+| `SolverConfig.target_ag_spread` | **移除** | Breaking |
+| `SolverConfig.target_spread` | 新增 dict 取代 | — |
+| Diagnostics `infeasible_anti_affinity_rules[].max_per_ag` | **移除** | Breaking（消費端需改） |
+| Diagnostics advisory `type: "ag_spread_below_target"` | **移除** | Breaking（消費端需改） |
 
 ---
 
@@ -364,14 +381,24 @@ def _add_failover_constraints(self):
 3. Cross-pair 語意（FailoverRule）兩種模型下幾乎一樣寫，但獨立 role 模型語意更乾淨
 4. 既有 auto-gen anti-affinity 的 group key 必須變大（含 master_type），有破壞既有測試行為的風險
 
-### Alternative 2：以 SpreadRule 正式取代 AntiAffinityRule（breaking change）
+### Alternative 2：保留 `max_per_ag` 與預設 `spread_on=["ag"]` 維持向後相容
+
+於 `AntiAffinityRule` 同時保留 `max_per_ag` 欄位（作為 `spread_on=["ag"]` 時的顯式上限 alias）並讓 `spread_on` 有預設值。
 
 **為何不選**：
-1. JSON 契約變動波及 Go scheduler、6 個 markdown 文件、3 個 example 檔
-2. 內部核心邏輯該重寫的都一樣要寫，重命名沒有省工
-3. 「反親和」本就是 spread 的別名，名字保留不影響可讀性
+1. solver core 會多出 if/else 分支處理「`spread_on == [ag]` 時優先用 `max_per_ag` 還是 `cap_per_bucket['ag']`」
+2. Diagnostics 雙寫（既有 `max_per_ag` + 新 `per_dimension_caps`）讓對外格式久了會分裂
+3. 既然 Go scheduler 尚未 GA，斷然清理的成本小於日後每次改動繞 legacy 分支的累積代價
+4. `cap_per_bucket` 已能完全表達 `max_per_ag` 的所有用法，無功能損失
 
-### Alternative 3：用單一 multi-dim joint 桶（cross product bucket）
+### Alternative 3：以新類名 `SpreadRule` 正式取代 AntiAffinityRule
+
+**為何不選**：
+1. 「反親和」本就是 spread 的別名，類名換不換不影響可讀性
+2. 改名波及 6 個 markdown 文件、3 個 example 檔，純打字成本
+3. 既有測試 import 全部要改，無語意收益
+
+### Alternative 4：用單一 multi-dim joint 桶（cross product bucket）
 
 對每個 (ag, room) 笛卡兒積建立桶並限制每桶上限。
 
@@ -380,7 +407,7 @@ def _add_failover_constraints(self):
 2. 與「每維度獨立平均」的需求語意不符
 3. 約束數量增加但解空間反而被不必要地縮小
 
-### Alternative 4：將 redundancy 表達成 soft objective 而非 hard constraint
+### Alternative 5：將 redundancy 表達成 soft objective 而非 hard constraint
 
 把 N-1 互補做成最大化目標。
 
@@ -395,7 +422,7 @@ def _add_failover_constraints(self):
 | 風險 | 說明 | 緩解 |
 |---|---|---|
 | **過約束 (over-constrained) 變不可解** | 同時要求 by AG + by Room + Failover + 既有 capacity / max_per_bm 可能讓 INFEASIBLE 變多 | 在 diagnostics 中明確標示哪條 spread 維度或哪條 failover rule 不可解；提供 `infeasibility_check` 工具逐維度估算 |
-| **JSON 相容性破壞** | Go scheduler 若拿到不認識的 enum `"learner"` 或新欄位 `room` / `failover_rules` 可能 panic | 採 c 策略 — 既有欄位不變，新欄位皆選填；發版前與 Go scheduler 對齊 enum 列表 |
+| **JSON 契約 Breaking** | `max_per_ag` / `target_ag_spread` 移除、`spread_on` 變必填，Go scheduler 端必須同步升版才能對接 | 雙方共議單一切版點；solver 端做嚴格 schema 驗證並回 INPUT_ERROR 提示具體欄位名；發版 note 列出所有 breaking 欄位 |
 | **Auto-gen 規則維度膨脹** | `target_spread` 含多維時 auto-gen 規則對每條都套多維 spread，可能在小規模 cluster 過嚴 | 維度數量過多或 buckets 過少時 fallback 為 single-dim 並寫 advisory |
 | **Multi-dim ceil 計算過嚴** | `cap = ⌈N/|buckets|⌉` 對小 N 大 buckets 趨向 1，可能無解 | 提供 `allow_relax_spread` 配置，溢位時降為 floor + 1 並 emit advisory |
 | **FailoverRule 與 spread 互相打架** | 例如 by Room 分散要求平均、Failover 要求互補，兩者數學上可能在 odd-count 群組不可解 | 在 _resolve 階段預檢：若 P_count > L_count，failover 在 N-1 下不可能成立 → 直接拒絕並回報 INPUT_ERROR |
@@ -406,56 +433,67 @@ def _add_failover_constraints(self):
 
 ## Rollout Plan
 
-### Phase 1：資料模型 + Topology 擴充（向後相容，無功能變化）
+本變更為 breaking schema 升版，採**單一切版點**而非漸進相容。所有變更於同一 release tag 一次發布，與 Go scheduler 預先協調好升版時點。
 
-1. 在 `models.py` 加 `Topology.room`、`NodeRole.LEARNER`、`FailoverRule`、`AntiAffinityRule.spread_on`、`SolverConfig.target_spread`
-2. 所有新欄位提供合理預設值，舊測試應**全部繼續綠燈**
-3. Tag: 0.x.0
+### Phase 1：資料模型重塑
 
-### Phase 2：Solver 核心泛化
+1. 在 `models.py` 加 `Topology.room`、`NodeRole.LEARNER`、`FailoverRule`
+2. 重寫 `AntiAffinityRule`：移除 `max_per_ag`、新增必填 `spread_on` 與選填 `cap_per_bucket`
+3. 重寫 `SolverConfig`：移除 `target_ag_spread`、新增 `target_spread: dict[str, int]`
+4. Pydantic validator：`spread_on` 不可為空、`cap_per_bucket` 鍵集合必須是 `spread_on` 子集
+5. 此 Phase 結束預期既有測試**全部紅燈** — 屬於預期，於 Phase 2 同步更新
 
-1. 用 `dim_to_bms` 取代 `ag_to_bms`（保留 alias 供既有程式碼）
-2. `_resolve_anti_affinity_rules()` 與 `_add_anti_affinity_constraints()` 改為多維度
-3. 既有測試（只用 `max_per_ag` / `spread_on=[ag]`）行為不變
+### Phase 2：Solver 核心泛化 + 既有測試遷移
+
+1. 用 `dim_to_bms` 取代 `ag_to_bms`（不留 alias）
+2. 重寫 `_resolve_anti_affinity_rules()` 與 `_add_anti_affinity_constraints()` 走多維度單一路徑
+3. 更新既有測試 fixture：`max_per_ag=k` → `spread_on=["ag"], cap_per_bucket={"ag": k}`
+4. 確認所有單測綠燈
 
 ### Phase 3：FailoverRule 實作
 
 1. `_add_failover_constraints()` 與 `_resolve_failover_rules()`
-2. 預檢 P/L 數量關係，失敗 → INPUT_ERROR
+2. 預檢 P/L 數量關係（`|P| > |L|` 在 N-1 下不可能成立 → INPUT_ERROR）
 3. 新增測試：2 Room/3 Room、各維度 fault domain、不可解 case
 
 ### Phase 4：Diagnostics 與文件
 
-1. 新增 `infeasible_failover_rules`、`spread_below_target` advisory
-2. 更新 `docs/constraints.md` 新增 C3 泛化說明與 C5 章節
-3. 更新 `docs/go-scheduler-guide.md` 標註新欄位與 deprecation
+1. 移除 `infeasible_anti_affinity_rules[].max_per_ag` 與 `ag_spread_below_target` advisory
+2. 新增 `per_dimension_caps`、`infeasible_failover_rules`、`spread_below_target` advisory
+3. 更新 `docs/constraints.md` 新增 C3 泛化說明與 C5 章節
+4. 更新 `docs/go-scheduler-guide.md` 將舊欄位標為 removed、列出新欄位
 
 ### Phase 5：Examples 與整合測試
 
-1. 新增 `examples/master_learner_2room.json`
-2. 整合測試覆蓋多維 spread + failover 同時生效情境
+1. 全面更新 `examples/*.json`：把所有 `max_per_ag` 改寫為 `spread_on` + 視需要的 `cap_per_bucket`
+2. 新增 `examples/master_learner_2room.json` 涵蓋 LEARNER + FailoverRule + 多維 spread
+3. 整合測試覆蓋多維 spread + failover 同時生效情境
 
 ### 回滾策略
 
-- 各 Phase 為獨立 commit；任一 Phase 出包可單獨 revert 而不影響其他
-- 新欄位皆選填，回滾不影響線上既有 request payload
-- `target_spread` 同時保留 `target_ag_spread` 作 fallback；config 任一可運作
+- 各 Phase 為獨立 commit，於同一 release tag 一次發布
+- Go scheduler 升版前 solver 不發布；若發現相容性問題，整個 release tag 一起回退
+- **不**設計部分回滾（拆 Phase 回滾會留下半套 schema）
 
 ---
 
 ## Open Question
 
-1. **`spread_on` 中各維度的 cap 是否該允許獨立指定**（而非一律 ceil）？例如 `spread_on={"ag": 2, "room": 3}` 直接指定每維度上限。目前 proposal 採全自動 ceil，簡潔但彈性低。
-2. **FailoverRule 是否該允許多個 fault_domain**？例如 `fault_domain: ["room", "ag"]` 表達「任一 Room 或任一 AG 失效都要能補位」。會大幅增加約束數量。
-3. **Auto-generation 是否自動產生 FailoverRule**？目前提案僅自動產生 anti-affinity，failover 必須顯式給出。若觀察到 cluster 同時有 `(cluster, ip, master)` 與 `(cluster, ip, learner)` 群組，是否預設配對？
-4. **`target_spread` 含多個維度時 advisory 是否各維度獨立發出**？目前提案每維度一條，可能讓 diagnostics 變吵雜。
-5. **Learner 是否預設繼承 Master 的 candidate_baremetals 池**，還是 Go scheduler 必須分別提供？影響 splitter 預設行為。
-6. **既有 `max_per_ag` 顯式設值與 `spread_on=["ag"]` 自動 ceil 衝突時的優先順序**：目前提案 `max_per_ag` 優先（顯式覆寫），是否合理？
+1. **FailoverRule 是否該允許多個 fault_domain**？例如 `fault_domain: ["room", "ag"]` 表達「任一 Room 或任一 AG 失效都要能補位」。會大幅增加約束數量。
+2. **Auto-generation 是否自動產生 FailoverRule**？目前提案僅自動產生 anti-affinity，failover 必須顯式給出。若觀察到 cluster 同時有 `(cluster, ip, master)` 與 `(cluster, ip, learner)` 群組，是否預設配對？
+3. **`target_spread` 含多個維度時 advisory 是否各維度獨立發出**？目前提案每維度一條，可能讓 diagnostics 變吵雜。
+4. **Learner 是否預設繼承 Master 的 candidate_baremetals 池**，還是 Go scheduler 必須分別提供？影響 splitter 預設行為。
+5. **`cap_per_bucket` 是否允許值為 `0`**？語意上等於「禁止此維度任何 bucket 持有此群組 VM」，等價於停用此維度的 spread；目前提案接受任意正整數但 0 視為 INPUT_ERROR。
 
 ---
 
-## Decision Log (Review 後補)
+## Decision Log
 
 | Decision | Reason | Follow-ups |
 |---|---|---|
-| _(待填)_ | | |
+| Learner 採獨立 `NodeRole.LEARNER`，不採 `master_type=primary\|learner` 子欄位 | 避免在 `GroupSelector` 加 role-specific 子欄位；既有 auto-gen group key `(cluster, ip, role)` 天然分群 | 確認 splitter 是否需感知 master/learner 容量配比 |
+| 跨群組 N-1 互補命名為 `FailoverRule` | 直接表達語意；獨立 type 避免污染 `AntiAffinityRule` schema | — |
+| 採一次性 breaking change，**移除** `max_per_ag` 與 `target_ag_spread`、`spread_on` 必填 | Go scheduler 尚未 GA；保留 legacy 欄位會在 solver core 永久留 if/else 分支與雙寫 diagnostics | 與 Go scheduler 同步排定切版時間 |
+| 新增 `cap_per_bucket: dict[str, int]` 而非把上限併入 `spread_on` 結構 | `spread_on` 維持 `list[str]` 易讀；多數使用情境只需 ceil 自動算，`cap_per_bucket` 為進階覆寫選項 | — |
+| 保留類名 `AntiAffinityRule`（不改為 `SpreadRule`） | 改名無語意收益；省去 docs/examples 大幅 churn | — |
+| `target_ag_spread` 移除而非改名 alias | 若保留 alias 會在 config 解析期長出優先順序分支 | 升版 note 列為 breaking |
