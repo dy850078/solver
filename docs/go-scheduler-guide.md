@@ -84,6 +84,81 @@ Scheduler                                  Solver
 
 ---
 
+## 2b. Breaking Change：Anti-Affinity 多維度泛化 & Failover
+
+> 設計詳見 `docs/master-learner-redundancy.md`。對應 Solver 版本 0.x.0。
+
+### Schema 變更
+
+| 欄位 | 變更 | 行動 |
+|---|---|---|
+| `AntiAffinityRule.max_per_ag` | **移除** | 改寫為 `spread_on=["ag"], cap_per_bucket={"ag": k}`（顯式想要每桶上限 k）或省略 `cap_per_bucket` 走自動 ceil |
+| `AntiAffinityRule.spread_on` | **新增、必填** | 至少給一個維度名（`site` / `phase` / `datacenter` / `room` / `rack` / `ag`） |
+| `AntiAffinityRule.cap_per_bucket` | 新增、選填 | `dict[str, int]`，鍵必須是 `spread_on` 子集，value ≥ 1；未列出的維度走 `⌈N / \|buckets\|⌉` 自動均分 |
+| `SolverConfig.target_ag_spread` | **移除** | 改用 `target_spread: dict[str, int]`，預設 `{"ag": 3}` |
+| `Baremetal.topology.room` | 新增、選填 | 預設 `""` |
+| `NodeRole` enum | 新增 `"learner"` | scheduler 端 enum / parser 需要識別此值 |
+| `PlacementRequest.failover_rules` | 新增、選填 | `list[FailoverRule]`（見下文） |
+
+### Diagnostics 變更
+
+| 欄位 | 變更 |
+|---|---|
+| `infeasible_anti_affinity_rules[].max_per_ag` | **移除**。改為 `per_dimension_caps: dict[str, int]` 與 `failed_dimensions: list[{dimension, cap_per_bucket, min_buckets_needed, reachable_buckets}]` |
+| advisory `type: "ag_spread_below_target"` | **移除**。改為 `type: "spread_below_target"`，`details.dimension` 帶維度名（每維度一條 advisory） |
+| `infeasible_failover_rules` | **新增** |
+
+### 改寫範例
+
+```diff
+ {
+   "group_id": "masters-ha",
+   "vm_ids": ["vm-master-1", "vm-master-2", "vm-master-3"],
+-  "max_per_ag": 1
++  "spread_on": ["ag"],
++  "cap_per_bucket": {"ag": 1}
+ }
+```
+
+```diff
+ "config": {
+-  "target_ag_spread": 3
++  "target_spread": {"ag": 3}
+ }
+```
+
+### `FailoverRule` 新欄位
+
+跨群組 N-1 冗餘約束 — 例如 master / learner 配對，要求任一 fault domain 失效後倖存的 backup 數量足以接替失效的 primary。
+
+| 欄位 | 型別 | 必填 | 說明 |
+|---|---|:---:|---|
+| `rule_id` | string | ✅ | 唯一識別 |
+| `primary` | GroupSelector | ✅ | primary 群（例如 master） |
+| `backup` | GroupSelector | ✅ | backup 群（例如 learner） |
+| `fault_domain` | string | ✅ | 任一 topology 維度（單一字串） |
+| `policy` | string | — | 預設 `"n_minus_1"`；目前僅支援此值 |
+
+範例：
+
+```json
+{
+  "rule_id": "masters-learners-by-room",
+  "primary": {"cluster_id": "A", "node_role": "master"},
+  "backup":  {"cluster_id": "A", "node_role": "learner"},
+  "fault_domain": "room",
+  "policy": "n_minus_1"
+}
+```
+
+預檢 INPUT_ERROR：
+- `primary` 或 `backup` 命中 0 VM
+- `primary` 與 `backup` 命中重疊
+- `|primary| > |backup|` 且 `policy="n_minus_1"`
+- `fault_domain` 不在合法維度集合
+
+---
+
 ## 3. 新 endpoint 的 Request 格式
 
 ### 頂層欄位
@@ -93,7 +168,8 @@ Scheduler                                  Solver
 | `requirements` | list[ResourceRequirement] | ✅ | 各 role 的資源預算列表 |
 | `baremetals` | list[Baremetal] | ✅ | 同 `/solve`，需填 `used_capacity` |
 | `vms` | list[VM] | — | 可混入既有 explicit VM（例如已存在不需重排的 VM） |
-| `anti_affinity_rules` | list[AntiAffinityRule] | — | 明確指定的 anti-affinity 規則 |
+| `anti_affinity_rules` | list[AntiAffinityRule] | — | 明確指定的分散規則（`spread_on` 必填、選填 `cap_per_bucket`） |
+| `failover_rules` | list[FailoverRule] | — | 跨群組 N-1 互補規則（master / learner 等） |
 | `config` | SolverConfig | — | solver 調參，見下表 |
 
 ### `ResourceRequirement` 欄位
@@ -101,7 +177,7 @@ Scheduler                                  Solver
 | 欄位 | 型別 | 必填 | 說明 |
 |------|------|:----:|------|
 | `total_resources` | Resources | ✅ | 這個 role 的**總**資源預算（非單台 VM） |
-| `node_role` | string | ✅ | `master` / `worker` / `infra` / `l4lb-storage` |
+| `node_role` | string | ✅ | `master` / `learner` / `worker` / `infra` / `l4lb-storage` |
 | `cluster_id` | string | — | 同原本 `VM.cluster_id` |
 | `ip_type` | string | — | 同原本 `VM.ip_type`（`auto_generate_anti_affinity` 用） |
 | `vm_specs` | list[Resources] \| null | — | 候選 spec；`null` 時 fallback 到 `config.vm_specs` |
@@ -117,6 +193,7 @@ Scheduler                                  Solver
 | `num_workers` | int | 8 | CP-SAT 並行工作數 |
 | `allow_partial_placement` | bool | false | 容許部分放置（不強制全部 VM 必須有位置） |
 | `auto_generate_anti_affinity` | bool | true | 自動為同 role + ip_type 的 VM 生成 anti-affinity 規則 |
+| `target_spread` | dict[str, int] | `{"ag": 3}` | HA 政策：自動規則的 `spread_on` 來自此鍵集合；每維度未達標時發 `spread_below_target` advisory |
 | `w_consolidation` | int | 10 | 集中放置（少用 BM）的權重 |
 | `w_headroom` | int | 8 | 避免 BM 超載的權重 |
 | `headroom_upper_bound_pct` | int | 90 | BM 使用率安全上限（%） |

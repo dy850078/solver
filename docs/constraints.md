@@ -21,8 +21,9 @@ assign[(vm_id, bm_id)] ∈ {0, 1}
 | — | Eligible Pairs | 前置篩選 | 決定哪些 (VM, BM) 對建立變數 |
 | C1 | One-BM-per-VM | 指派約束 | 每個 VM 恰好放在一台 BM |
 | C2 | Capacity | 容量約束 | 每台 BM 各維度不超量 |
-| C3 | Anti-Affinity | 分散約束 | 同 `(cluster_id, ip_type, role)` 群組 VM 跨 AG 分散 |
+| C3 | Anti-Affinity | 分散約束 | 規則中的 VM 在 `spread_on` 列出的每個維度上獨立分散 |
 | C4 | Max per Baremetal | 上限約束 | 同 `(cluster_id, ip_type, role)` 群組 VM 單台 BM 上限 |
+| C5 | Failover Redundancy | 互補約束 | 跨群組（如 master / learner）在 fault domain 失效後仍能補位 |
 
 ---
 
@@ -176,19 +177,29 @@ Memory: 32,000 + 48,000 = 80,000 > 64,000  ✗  → 不可同時放
 
 ---
 
-## C3: Anti-Affinity（AG 分散）
+## C3: Anti-Affinity（多維度分散）
 
 > 來源：`solver.py` — `_add_anti_affinity_constraints()`、`_resolve_anti_affinity_rules()`
 
 ### 公式
 
+對每條規則 `r`，對 `r.spread_on` 中每個維度 `d`，獨立加一條約束：
+
 ```
-∀ rule_r, ∀ ag_k:
-    Σ assign[vm_i, bm_j] ≤ max_per_ag[r]
-    (i ∈ rule_r.vm_ids,  j ∈ BMs in ag_k,  where (vm_i, bm_j) is eligible)
+N_r = |r.vm_ids|
+B_d = dim_to_bms[d]   (該維度下所有桶的集合)
+cap_d = r.cap_per_bucket[d]   if d in r.cap_per_bucket
+      = ⌈N_r / |B_d|⌉         否則（自動均分）
+
+∀ b ∈ B_d:
+    Σ assign[vm_i, bm_j] ≤ cap_d
+    (i ∈ r.vm_ids,  j ∈ b,  where (vm_i, bm_j) is eligible)
 ```
 
-對每條 anti-affinity rule 的每個 AG，限制該 rule 中的 VM 在此 AG 內的數量不超過 `max_per_ag`。
+**多維度語意**：`spread_on` 中每個維度產生一條獨立約束（AND 疊加），不是笛卡兒積桶。
+例如 `spread_on=["ag","room"]` 表示「每個 AG 內 ≤ cap_ag」**且**「每個 Room 內 ≤ cap_room」，兩者皆需成立。
+
+合法維度：`site` / `phase` / `datacenter` / `room` / `rack` / `ag`。
 
 ### 規則來源
 
@@ -202,9 +213,21 @@ Go scheduler 在 request 中傳入的 `anti_affinity_rules`：
 {
   "group_id": "masters-ha",
   "vm_ids": ["vm-master-1", "vm-master-2", "vm-master-3"],
-  "max_per_ag": 1
+  "spread_on": ["ag"],
+  "cap_per_bucket": {"ag": 1}
 }
 ```
+
+多維度範例（同時 by AG 與 by Room）：
+
+```json
+{
+  "group_id": "masters-ag-and-room",
+  "selector": {"cluster_id": "A", "ip_type": "routable", "node_role": "master"},
+  "spread_on": ["ag", "room"]
+}
+```
+不寫 `cap_per_bucket` 表示對所有維度都走自動 ceil。
 
 #### (b) 自動生成規則
 
@@ -214,6 +237,7 @@ Go scheduler 在 request 中傳入的 `anti_affinity_rules`：
 
 ```
 cluster-A / routable / master    → 一組
+cluster-A / routable / learner   → 另一組（master / learner 天然分群）
 cluster-A / routable / worker    → 一組
 cluster-B / non-routable / infra → 一組
 ```
@@ -224,11 +248,10 @@ cluster-B / non-routable / infra → 一組
 > masters 集中在少數 AG，違反該 cluster 的 HA 要求。把 `cluster_id` 納入分組
 > 鍵，每個 cluster 的 HA 就能獨立計算。
 
-**max_per_ag 計算**：
+**自動規則的 `spread_on`**：取自 `config.target_spread` 的鍵集合（排序後）。
+預設 `{"ag": 3}` 對應 `spread_on=["ag"]`；若加入 `room` 則自動規則同時在 AG 與 Room 上分散。
 
-```
-max_per_ag = ceil(vm_count / ag_count)
-```
+**Per-bucket cap 計算**：自動規則不顯式設定 `cap_per_bucket`，每個維度都走 `cap_d = ⌈|vm_ids| / |B_d|⌉` 自動均分。
 
 **排除條件**：
 
@@ -252,7 +275,8 @@ max_per_ag = ceil(vm_count / ag_count)
     "ip_type": "routable",
     "node_role": "master"
   },
-  "max_per_ag": 1
+  "spread_on": ["ag"],
+  "cap_per_bucket": {"ag": 1}
 }
 ```
 
@@ -268,7 +292,7 @@ max_per_ag = ceil(vm_count / ag_count)
 
 ### 計算範例
 
-#### 範例 1：3 master / 3 AG / max_per_ag=1
+#### 範例 1：3 master / 3 AG / `cap_per_bucket={"ag": 1}`
 
 ```
 AG-1 的 BMs: [BM-1, BM-2]
@@ -289,7 +313,8 @@ AG-3 的 BMs: [BM-4]
 #### 範例 2：自動生成 — 5 routable worker / 3 AG
 
 ```
-max_per_ag = ceil(5 / 3) = 2
+spread_on = ["ag"]            (取自 target_spread.keys())
+cap_ag = ⌈5 / 3⌉ = 2          (自動均分)
 ```
 
 | AG | 上限 | 可能放置 |
@@ -300,10 +325,26 @@ max_per_ag = ceil(5 / 3) = 2
 
 → 允許 2/2/1 分佈，保證不會出現 3/2/0 或 5/0/0。
 
-#### 範例 3：候選不足導致 INFEASIBLE
+#### 範例 3：多維度同時生效
 
 ```
-3 master VMs, max_per_ag=1, 3 AGs
+spread_on = ["ag", "room"]
+N = 4 masters
+|B_ag| = 3, |B_room| = 2
+cap_ag = ⌈4/3⌉ = 2
+cap_room = ⌈4/2⌉ = 2
+
+兩條約束家族同時生效：
+  每個 AG 內 ≤ 2 個 master
+  每個 Room 內 ≤ 2 個 master
+```
+
+任何不滿足其中一條的分佈都會被排除。
+
+#### 範例 4：候選不足導致 INFEASIBLE
+
+```
+3 master VMs, spread_on=["ag"], cap_per_bucket={"ag": 1}, 3 AGs
 但 master VMs 的 candidate_baremetals 全都指向 AG-1 的 BMs
 → AG-1 最多放 1 個 master，其他 2 個無處可去
 → INFEASIBLE
@@ -434,6 +475,87 @@ C4 自動生成：max_per_bm = 1            → 同 AG 內不會擠同一台 BM
 
 ---
 
+## C5: Failover Redundancy（N-1 跨群組互補）
+
+> 來源：`solver.py` — `_add_failover_constraints()`、`_resolve_failover_rules()`
+
+### 公式
+
+對每條 `FailoverRule` `f`：
+
+```
+P = VMs matching f.primary
+L = VMs matching f.backup
+d = f.fault_domain
+B_d = dim_to_bms[d]
+
+∀ b ∈ B_d:
+    Σ assign[vm, bm] + Σ assign[vm, bm]  ≤  |L|
+    vm ∈ P, bm ∈ b      vm ∈ L, bm ∈ b
+```
+
+語意：對任一 fault domain bucket `b`，「`b` 內的 primary 數 + `b` 內的 backup 數 ≤ backup 總數」。
+等價於「`b` 外倖存的 backup 數 ≥ `b` 內的 primary 數」 — 當 `b` 整個失效時，倖存的 backup 足以接替失效的 primary。
+
+`policy="n_minus_1"` 為目前唯一支援的策略（保留欄位以利未來擴充至 `n_minus_2` 等）。
+
+### 規則來源
+
+只有顯式 — solver **不**自動產生 FailoverRule。Failover 是強約束，誤配可能導致資源浪費或誤分群，因此堅持由 Go scheduler 顯式聲明。
+
+```json
+{
+  "rule_id": "masters-learners-by-room",
+  "primary": {"cluster_id": "A", "node_role": "master"},
+  "backup":  {"cluster_id": "A", "node_role": "learner"},
+  "fault_domain": "room",
+  "policy": "n_minus_1"
+}
+```
+
+`primary` / `backup` 為 GroupSelector（不接受 `vm_ids` 形式）— 配對關係本質上是「角色互補」，selector 比枚舉 VM 穩定。
+
+### 預檢（INPUT_ERROR）
+
+| 條件 | 行為 |
+|---|---|
+| `primary` selector 命中 0 VM | INPUT_ERROR |
+| `backup` selector 命中 0 VM | INPUT_ERROR |
+| `primary` 與 `backup` 命中重疊 | INPUT_ERROR（避免同 VM 既當 primary 又當 backup） |
+| `\|primary\| > \|backup\|` 且 `policy="n_minus_1"` | INPUT_ERROR（任何分佈都無解） |
+| `fault_domain` 不在合法維度集合 | Pydantic validator 階段就拒絕 |
+
+### 計算範例
+
+#### 範例 1：5M + 5L / 2 Rooms
+
+```
+P = [m-0..m-4]   (|P| = 5)
+L = [l-0..l-4]   (|L| = 5)
+B_room = {room-0, room-1}
+
+對 room-0:  (m_in_r0 + l_in_r0) ≤ 5
+對 room-1:  (m_in_r1 + l_in_r1) ≤ 5
+```
+
+任一 Room 失效後 `(5 - l_in_failed_room) ≥ m_in_failed_room` 必成立。
+
+#### 範例 2：1M + 1L / 2 Rooms — 強制不同 Room
+
+```
+P = [m-0], L = [l-0]
+對 room-0: (m_in_r0 + l_in_r0) ≤ 1
+對 room-1: (m_in_r1 + l_in_r1) ≤ 1
+```
+
+兩個 Room 各最多一個 VM → m 與 l 必落在不同 Room。
+
+#### 範例 3：|P|=4, |L|=2 → INPUT_ERROR
+
+無論如何放置，任一 Room 失效後倖存的 L 至多 2 個，無法補齊 4 個 M 中可能失效的部分。預檢直接拒絕。
+
+---
+
 ## 約束間的交互作用
 
 ### Candidate List × Anti-Affinity
@@ -442,7 +564,7 @@ Candidate list 縮小搜尋空間，可能讓 anti-affinity 無法滿足：
 
 ```
 candidate_baremetals 只包含 AG-1 的 BM
-+ max_per_ag = 1
++ spread_on=["ag"], cap_per_bucket={"ag": 1}
 + 3 個 VM
 → AG-1 只能放 1 個，其他 2 個的 eligible list 為空
 → INFEASIBLE
@@ -455,12 +577,12 @@ candidate_baremetals 只包含 AG-1 的 BM
 容量約束可能讓 anti-affinity 的分佈方案不可行：
 
 ```
-3 master VMs (each 32 CPU), max_per_ag=1, 3 AGs
+3 master VMs (each 32 CPU), spread_on=["ag"], cap_per_bucket={"ag": 1}, 3 AGs
 AG-1: BM-1 (available 64 CPU)    → 放得下 ✓
 AG-2: BM-2 (available 16 CPU)    → 放不下 ✗
 AG-3: BM-3 (available 64 CPU)    → 放得下 ✓
 → AG-2 無法放任何 master → 只有 2 個 AG 可用
-→ 但 3 master / max_per_ag=1 需要 3 個 AG → INFEASIBLE
+→ 但 3 master / cap_ag=1 需要 3 個 AG → INFEASIBLE
 ```
 
 ### C3 × C4
@@ -468,7 +590,7 @@ AG-3: BM-3 (available 64 CPU)    → 放得下 ✓
 C3 限制 AG 層級的分佈；C4 限制單 BM 層級的分佈。兩者**獨立**且**可疊加**：
 
 ```
-3 routable masters / 3 AGs (每 AG 2 BM) / max_per_ag=1 / max_per_bm=1
+3 routable masters / 3 AGs (每 AG 2 BM) / cap_per_bucket={"ag": 1} / max_per_bm=1
 → C3 強制 3 master 各在不同 AG
 → C4 在每個 AG 內部也禁止疊放在同一台 BM（本例每 AG 只放 1 個，本就成立）
 ```
@@ -492,9 +614,11 @@ Partial 模式: 盡量放，放不下的進 unplaced_vms
 | 參數 | 影響的約束 | 說明 |
 |------|-----------|------|
 | `allow_partial_placement` | C1 | `true`: `≤ 1`（允許不放），`false`: `== 1`（必須放） |
-| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生 AG 分散規則 |
+| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生分散規則 |
+| `target_spread` | C3 | `dict[str, int]`，鍵為維度名（如 `ag`/`room`），值為達標桶數；自動規則用其鍵集合作為 `spread_on`，無法達標時發 `spread_below_target` advisory |
 | `auto_generate_max_per_bm` | C4 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生單 BM 上限規則（需設 `default_max_per_bm`） |
 | `default_max_per_bm` | C4 | C4 auto-gen 時的預設上限；必為正整數 |
 | `candidate_baremetals`（per VM） | Eligible Pairs | 限定此 VM 只考慮指定的 BM |
-| `anti_affinity_rules`（per request） | C3 | 顯式指定的 AG 分散規則 |
+| `anti_affinity_rules`（per request） | C3 | 顯式分散規則（`spread_on` 必填、選填 `cap_per_bucket`） |
 | `max_per_bm_rules`（per request） | C4 | 顯式指定的單 BM 上限規則 |
+| `failover_rules`（per request） | C5 | 顯式跨群組 N-1 互補規則（master / learner 等） |

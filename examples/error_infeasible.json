@@ -1,5 +1,5 @@
 {
-  "_description": "Triggers INFEASIBLE: 3 master VMs need 3 different AGs (max_per_ag=1), but only 2 AGs available. Also VM demand exceeds most BM capacity.",
+  "_description": "Triggers INFEASIBLE: 3 master VMs need 3 different AGs (cap_per_bucket={ag: 1}), but only 2 AGs available. Also VM demand exceeds most BM capacity.",
   "vms": [
     {
       "id": "vm-master-1",

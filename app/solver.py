@@ -155,6 +155,12 @@ class VMPlacementSolver:
         # Resolve per-baremetal rules (explicit + auto-generated)
         self.max_per_bm_rules: list[MaxPerBaremetalRule] = self._resolve_max_per_bm_rules()
 
+        # Resolve failover rules (expand selectors into concrete VM-id lists).
+        # Pre-flight check (|P| > |L| under n_minus_1 → INPUT_ERROR) lives here.
+        self.failover_resolved: list[tuple[FailoverRule, list[str], list[str]]] = (
+            self._resolve_failover_rules()
+        )
+
         # Waste penalty terms injected by split_solver (splitter integration)
         self.splitter_waste_terms: list[cp_model.LinearExprT] = []
 
@@ -346,6 +352,71 @@ class VMPlacementSolver:
                     logger.warning("Spread advisory: %s", msg)
 
         return rules
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Failover rules — C5 resolve
+    # ------------------------------------------------------------------
+
+    def _resolve_failover_rules(
+        self,
+    ) -> list[tuple[FailoverRule, list[str], list[str]]]:
+        """
+        Materialize each FailoverRule into (rule, primary_vm_ids, backup_vm_ids).
+
+        Pre-flight check: under policy `n_minus_1`, |primary| > |backup| can
+        never satisfy the redundancy invariant (some primary will lack a
+        backup partner after the worst-case bucket failure). Such cases are
+        recorded as INPUT_ERROR so the scheduler can correct upstream.
+
+        Returns only well-formed rules; ill-formed ones are reported via
+        self._input_errors and excluded from constraint building.
+        """
+        resolved: list[tuple[FailoverRule, list[str], list[str]]] = []
+        for f in self.request.failover_rules:
+            primary_ids = [vm.id for vm in self.request.vms if f.primary.matches(vm)]
+            backup_ids = [vm.id for vm in self.request.vms if f.backup.matches(vm)]
+
+            if not primary_ids:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': primary selector matches no VMs"
+                )
+                continue
+            if not backup_ids:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': backup selector matches no VMs"
+                )
+                continue
+
+            overlap = set(primary_ids) & set(backup_ids)
+            if overlap:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': primary and backup selectors "
+                    f"overlap on VMs {sorted(overlap)}"
+                )
+                continue
+
+            if f.policy == "n_minus_1" and len(primary_ids) > len(backup_ids):
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': |primary|={len(primary_ids)} > "
+                    f"|backup|={len(backup_ids)}; n_minus_1 redundancy is "
+                    f"infeasible by counting"
+                )
+                continue
+
+            if f.fault_domain not in self.dim_to_bms:
+                # Defensive — Pydantic validator should already reject unknown dims.
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': fault_domain "
+                    f"'{f.fault_domain}' is not a known topology dimension"
+                )
+                continue
+
+            resolved.append((f, primary_ids, backup_ids))
+            logger.info(
+                "Failover rule %s: %d primary, %d backup, fault_domain=%s",
+                f.rule_id, len(primary_ids), len(backup_ids), f.fault_domain,
+            )
+        return resolved
 
     # ------------------------------------------------------------------
     # Step B (cont.): Per-baremetal rules — C4 resolve
@@ -631,6 +702,44 @@ class VMPlacementSolver:
                         ]
                         if vars_in_bucket:
                             self.model.add(sum(vars_in_bucket) <= static_cap)
+
+    def _add_failover_constraints(self):
+        """
+        CONSTRAINT C5: For each failover rule and each bucket b of its
+        fault_domain dimension d:
+
+            sum(assign[vm,bm] for vm ∈ primary for bm ∈ b)
+          + sum(assign[vm,bm] for vm ∈ backup  for bm ∈ b)
+                ≤ |backup|
+
+        This is equivalent to:
+            sum(backup VMs outside b) ≥ sum(primary VMs inside b)
+        so that if bucket b fails entirely, the surviving backups can take
+        over the primaries that were inside b (N-1 redundancy).
+
+        Pre-flight check (|P| > |L|) already happened in
+        _resolve_failover_rules — only well-formed rules reach this method.
+        """
+        for f, primary_ids, backup_ids in self.failover_resolved:
+            buckets = self.dim_to_bms[f.fault_domain]
+            backup_total = len(backup_ids)
+            for bm_ids in buckets.values():
+                primary_in_b = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in primary_ids
+                    for bm_id in bm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                backup_in_b = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in backup_ids
+                    for bm_id in bm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                if primary_in_b or backup_in_b:
+                    self.model.add(
+                        sum(primary_in_b) + sum(backup_in_b) <= backup_total
+                    )
 
     def _add_max_per_bm_constraints(self):
         """
@@ -941,6 +1050,7 @@ class VMPlacementSolver:
             self._add_one_bm_per_vm_constraint()
             self._add_capacity_constraints()
             self._add_anti_affinity_constraints()
+            self._add_failover_constraints()
             self._add_max_per_bm_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
@@ -1011,6 +1121,7 @@ class VMPlacementSolver:
             dim_to_bms=self.dim_to_bms,
             effective_rules=self.effective_rules,
             max_per_bm_rules=self.max_per_bm_rules,
+            failover_resolved=self.failover_resolved,
             config=self.config,
             num_variables=len(self.assign),
         ).build()

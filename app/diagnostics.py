@@ -18,6 +18,7 @@ from .models import (
     PlacementRequest,
     AntiAffinityRule,
     Baremetal,
+    FailoverRule,
     MaxPerBaremetalRule,
     VM,
     SolverConfig,
@@ -50,6 +51,7 @@ class DiagnosticsBuilder:
         dim_to_bms: dict[str, dict[str, list[str]]],
         effective_rules: list[AntiAffinityRule],
         max_per_bm_rules: list[MaxPerBaremetalRule],
+        failover_resolved: list[tuple[FailoverRule, list[str], list[str]]],
         config: SolverConfig,
         num_variables: int,
     ):
@@ -59,6 +61,7 @@ class DiagnosticsBuilder:
         self.dim_to_bms = dim_to_bms
         self.effective_rules = effective_rules
         self.max_per_bm_rules = max_per_bm_rules
+        self.failover_resolved = failover_resolved
         self.config = config
         self.num_variables = num_variables
 
@@ -83,6 +86,12 @@ class DiagnosticsBuilder:
         infeasible_bm_rules = self._check_max_per_bm_feasibility()
         if infeasible_bm_rules:
             diag["infeasible_max_per_bm_rules"] = infeasible_bm_rules
+
+        # 2c. Failover rules — flag structurally infeasible cases (e.g.
+        # |primary in worst bucket| > |backup outside that bucket|).
+        infeasible_failover_rules = self._check_failover_feasibility()
+        if infeasible_failover_rules:
+            diag["infeasible_failover_rules"] = infeasible_failover_rules
 
         # 3. Constraint layer check — which layer first causes INFEASIBLE
         diag["constraint_check"] = self._constraint_layer_check()
@@ -152,6 +161,33 @@ class DiagnosticsBuilder:
                     "vm_count": N,
                     "per_dimension_caps": per_dim_caps,
                     "failed_dimensions": failed_dims,
+                })
+        return infeasible
+
+    def _check_failover_feasibility(self) -> list[dict]:
+        """
+        Structural check: for each failover rule, find the bucket of its
+        fault_domain that reaches the most primaries and check whether
+        |backup| - (max backups potentially in that bucket) >= primaries
+        in that bucket. Since assignment isn't known yet, we report any rule
+        where primaries are confined to too few buckets to satisfy the
+        invariant under any placement.
+
+        Specifically, when |primary| > |backup|, the rule is unconditionally
+        infeasible (caught earlier as INPUT_ERROR, but we surface it here too
+        when diagnostics is invoked on a solve failure).
+        """
+        infeasible = []
+        for f, primary_ids, backup_ids in self.failover_resolved:
+            # Already validated in solver._resolve_failover_rules, but stay
+            # defensive — if it slips through, it lands here as a flag.
+            if f.policy == "n_minus_1" and len(primary_ids) > len(backup_ids):
+                infeasible.append({
+                    "rule_id": f.rule_id,
+                    "primary_count": len(primary_ids),
+                    "backup_count": len(backup_ids),
+                    "fault_domain": f.fault_domain,
+                    "details": "|primary| > |backup| under n_minus_1",
                 })
         return infeasible
 
@@ -252,6 +288,17 @@ class DiagnosticsBuilder:
                     if vbm:
                         model.add(sum(vbm) <= rule.max_per_bm)
 
+        def add_failover(model, assign):
+            for f, primary_ids, backup_ids in self.failover_resolved:
+                buckets = self.dim_to_bms.get(f.fault_domain, {})
+                for bm_ids in buckets.values():
+                    pin = [assign[(vid, bid)] for vid in primary_ids
+                           for bid in bm_ids if (vid, bid) in assign]
+                    bin_ = [assign[(vid, bid)] for vid in backup_ids
+                            for bid in bm_ids if (vid, bid) in assign]
+                    if pin or bin_:
+                        model.add(sum(pin) + sum(bin_) <= len(backup_ids))
+
         def quick_solve(model) -> str:
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
@@ -262,7 +309,8 @@ class DiagnosticsBuilder:
             ("one_bm_per_vm", [add_one_bm_per_vm]),
             ("capacity", [add_one_bm_per_vm, add_capacity]),
             ("anti_affinity", [add_one_bm_per_vm, add_capacity, add_anti_affinity]),
-            ("max_per_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_max_per_bm]),
+            ("failover", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover]),
+            ("max_per_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm]),
         ]
 
         results: dict[str, object] = {}
