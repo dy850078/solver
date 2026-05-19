@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<title>VM Placement Solver — Topology Visualizer</title>
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{
+  "imports": {
+    "d3": "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm"
+  }
+}
+</script>
+</head>
+<body>
+  <header>
+    <h1>VM Placement Solver</h1>
+    <span class="subtitle">Topology Visualizer</span>
+    <a class="docs-link" href="/docs" target="_blank">API Docs</a>
+  </header>
+
+  <main>
+    <section class="input-panel">
+      <h2>Input</h2>
+
+      <div class="row">
+        <label for="example-select">Load example:</label>
+        <select id="example-select"><option value="">-- choose --</option></select>
+        <button id="upload-btn" type="button">Upload JSON…</button>
+        <input id="upload-input" type="file" accept=".json" hidden>
+      </div>
+
+      <div class="row endpoint-row">
+        <label>Endpoint:</label>
+        <label><input type="radio" name="endpoint" value="solve" checked> /v1/placement/solve</label>
+        <label><input type="radio" name="endpoint" value="split-and-solve"> /v1/placement/split-and-solve</label>
+      </div>
+
+      <textarea id="json-editor" spellcheck="false" placeholder='Paste PlacementRequest JSON here…'></textarea>
+      <div id="json-error" class="error hidden"></div>
+
+      <div class="row">
+        <button id="run-btn" type="button">Run Solver</button>
+        <span id="status-bar" class="status"></span>
+      </div>
+    </section>
+
+    <section class="visualization">
+      <div class="viz-header">
+        <h2>Topology</h2>
+        <div class="view-toggle">
+          <label><input type="radio" name="view-mode" value="physical" checked> Physical (site &gt; phase &gt; dc &gt; room &gt; rack)</label>
+          <label><input type="radio" name="view-mode" value="ag"> AG (anti-affinity group)</label>
+        </div>
+      </div>
+      <div id="treemap-container"></div>
+      <div id="ag-legend" class="legend"></div>
+    </section>
+
+    <section class="result-summary">
+      <h2>Result</h2>
+      <div id="summary-content">
+        <p class="muted">Run the solver to see assignments.</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
