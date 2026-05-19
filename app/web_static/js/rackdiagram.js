@@ -1,10 +1,10 @@
 /**
  * Rack-diagram view of placement results.
  *
- * Builds a flat list of "panels" (each holding BMs, each holding VMs) and
- * renders them as cards in a CSS grid. Two modes:
- *   - "physical": one panel per (site/phase/dc/room/rack) group
- *   - "ag":       one panel per AG
+ * Groups BMs into panels by a chosen dimension (site / phase / datacenter /
+ * room / rack / ag) and renders them as cards. For shallower physical
+ * groupings (site / phase / dc / room), BMs inside a panel are further
+ * sub-grouped by their leaf rack so the deeper structure stays visible.
  */
 
 import { colorForAg } from "./colors.js";
@@ -12,7 +12,16 @@ import { showTooltip, moveTooltip, hideTooltip, escapeHtml } from "./tooltip.js"
 
 const PHYSICAL_DIMS = ["site", "phase", "datacenter", "room", "rack"];
 
-// ─── Data shaping ────────────────────────────────────────────
+export const GROUP_BY_OPTIONS = [
+  { value: "site",       label: "Site" },
+  { value: "phase",      label: "Phase" },
+  { value: "datacenter", label: "DataCenter" },
+  { value: "room",       label: "Room" },
+  { value: "rack",       label: "Rack" },
+  { value: "ag",         label: "AG" },
+];
+
+// ─── Data shaping ─────────────────────────────────────────────
 function indexVmById(request) {
   const map = new Map();
   for (const vm of request.vms ?? []) map.set(vm.id, vm);
@@ -48,72 +57,83 @@ function bmEntry(bm, assignmentsByBm, vmIndex) {
     id: bm.id,
     hostname: bm.hostname,
     ag: bm.topology?.ag || "",
+    topology: bm.topology ?? {},
     vms: assigns.map((a) => vmEntry(a, vmIndex)),
   };
 }
 
-function usedPhysicalPath(bm) {
-  const t = bm.topology ?? {};
-  const segs = PHYSICAL_DIMS.map((d) => t[d] || "");
-  // Trailing-stripped: drop trailing empties so dimensionless BMs degenerate cleanly
-  while (segs.length && !segs[segs.length - 1]) segs.pop();
-  return segs;
+// Returns the panel key for a baremetal given the chosen group-by dimension.
+function panelKeyFor(bm, groupBy) {
+  if (groupBy === "ag") return bm.topology?.ag || "(no ag)";
+  const idx = PHYSICAL_DIMS.indexOf(groupBy);
+  if (idx < 0) return "(invalid)";
+  const segs = PHYSICAL_DIMS.slice(0, idx + 1).map((d) => bm.topology?.[d] || "");
+  if (segs.every((s) => !s)) return "(no topology)";
+  return segs.join("|");
 }
 
-function panelTitleFromPath(segs) {
+function panelTitleFromKey(key, groupBy) {
+  if (groupBy === "ag") return `AG ${key}`;
+  if (key === "(no topology)") return "(no topology)";
+  const segs = key.split("|").filter(Boolean);
   if (segs.length === 0) return "(no topology)";
-  const head = segs.slice(0, -1);
-  const tail = segs[segs.length - 1];
-  if (head.length === 0) return tail;
-  return `${head.join(" › ")} / ${tail}`;
+  if (segs.length === 1) return segs[0];
+  const head = segs.slice(0, -1).join(" › ");
+  return `${head} / ${segs[segs.length - 1]}`;
 }
 
-export function buildPhysicalPanels(request, result) {
+// For shallower groupings, sub-group BMs within a panel by the path between
+// the panel level and the rack level. Returns "" if no sub-grouping is needed.
+function subGroupKey(bm, groupBy) {
+  if (groupBy === "ag" || groupBy === "rack") return "";
+  const idx = PHYSICAL_DIMS.indexOf(groupBy);
+  if (idx < 0 || idx >= PHYSICAL_DIMS.length - 1) return "";
+  const segs = PHYSICAL_DIMS.slice(idx + 1).map((d) => bm.topology?.[d] || "");
+  while (segs.length && !segs[segs.length - 1]) segs.pop();
+  return segs.join("|");
+}
+
+function subGroupLabel(key) {
+  if (!key) return "";
+  return key.split("|").filter(Boolean).join(" › ");
+}
+
+export function buildPanels(request, result, groupBy) {
   const baremetals = request.baremetals ?? [];
   const vmIndex = indexVmById(request);
   const assignmentsByBm = groupAssignmentsByBm(result);
 
   const panels = new Map();
   for (const bm of baremetals) {
-    const segs = usedPhysicalPath(bm);
-    const key = segs.join("|") || "(no topology)";
-    if (!panels.has(key)) panels.set(key, { segs, bms: [] });
-    panels.get(key).bms.push(bmEntry(bm, assignmentsByBm, vmIndex));
+    const pkey = panelKeyFor(bm, groupBy);
+    if (!panels.has(pkey)) panels.set(pkey, { key: pkey, subgroups: new Map(), totalBms: 0, totalVms: 0 });
+    const panel = panels.get(pkey);
+    const entry = bmEntry(bm, assignmentsByBm, vmIndex);
+
+    const skey = subGroupKey(bm, groupBy);
+    if (!panel.subgroups.has(skey)) panel.subgroups.set(skey, []);
+    panel.subgroups.get(skey).push(entry);
+    panel.totalBms += 1;
+    panel.totalVms += entry.vms.length;
   }
 
   return [...panels.values()]
-    .sort((a, b) => a.segs.join("/").localeCompare(b.segs.join("/")))
-    .map(({ segs, bms }) => {
-      const placed = bms.reduce((n, bm) => n + bm.vms.length, 0);
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((p) => {
+      const groups = [...p.subgroups.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([skey, bms]) => ({
+          label: subGroupLabel(skey),
+          bms: bms.sort((a, b) => a.id.localeCompare(b.id)),
+        }));
+      const accentColor = groupBy === "ag"
+        ? colorForAg(p.key === "(no ag)" ? "" : p.key)
+        : undefined;
       return {
-        title: panelTitleFromPath(segs),
-        meta: `${bms.length} BM · ${placed} VM`,
-        bms: bms.sort((a, b) => a.id.localeCompare(b.id)),
-      };
-    });
-}
-
-export function buildAgPanels(request, result) {
-  const baremetals = request.baremetals ?? [];
-  const vmIndex = indexVmById(request);
-  const assignmentsByBm = groupAssignmentsByBm(result);
-
-  const byAg = new Map();
-  for (const bm of baremetals) {
-    const ag = bm.topology?.ag || "(no ag)";
-    if (!byAg.has(ag)) byAg.set(ag, []);
-    byAg.get(ag).push(bmEntry(bm, assignmentsByBm, vmIndex));
-  }
-
-  return [...byAg.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([ag, bms]) => {
-      const placed = bms.reduce((n, bm) => n + bm.vms.length, 0);
-      return {
-        title: `AG ${ag}`,
-        meta: `${bms.length} BM · ${placed} VM`,
-        accentColor: colorForAg(ag === "(no ag)" ? "" : ag),
-        bms: bms.sort((a, b) => a.id.localeCompare(b.id)),
+        title: panelTitleFromKey(p.key, groupBy),
+        meta: `${p.totalBms} BM · ${p.totalVms} VM`,
+        accentColor,
+        groups,
       };
     });
 }
@@ -150,7 +170,9 @@ function renderVm(vm) {
 
 function renderBm(bm) {
   const empty = bm.vms.length === 0;
-  const ag = bm.ag ? `<span class="bm__ag" style="--ag-color: ${colorForAg(bm.ag)};" data-bm-tooltip="1" data-ag="${escapeHtml(bm.ag)}" data-bm-id="${escapeHtml(bm.id)}" data-bm-hostname="${escapeHtml(bm.hostname || "")}">${escapeHtml(bm.ag)}</span>` : "";
+  const ag = bm.ag
+    ? `<span class="bm__ag" style="--ag-color: ${colorForAg(bm.ag)};" data-bm-tooltip="1" data-ag="${escapeHtml(bm.ag)}" data-bm-id="${escapeHtml(bm.id)}" data-bm-hostname="${escapeHtml(bm.hostname || "")}">${escapeHtml(bm.ag)}</span>`
+    : "";
   return `
     <li class="bm ${empty ? "bm--empty" : ""}">
       <div class="bm__head">
@@ -163,29 +185,33 @@ function renderBm(bm) {
     </li>`;
 }
 
-function renderPanel(panel) {
-  const accent = panel.accentColor
-    ? `style="--panel-accent: ${panel.accentColor};"`
+function renderSubgroup(g, hasMultiple) {
+  const header = hasMultiple && g.label
+    ? `<div class="rack__subgroup">${escapeHtml(g.label)}</div>`
     : "";
+  return `${header}<ul class="rack__bms">${g.bms.map(renderBm).join("")}</ul>`;
+}
+
+function renderPanel(panel) {
+  const accent = panel.accentColor ? `style="--panel-accent: ${panel.accentColor};"` : "";
   const accentClass = panel.accentColor ? "rack--accent" : "";
+  const hasMultiple = panel.groups.length > 1 || (panel.groups.length === 1 && panel.groups[0].label);
   return `
     <article class="rack ${accentClass}" ${accent}>
       <header class="rack__header">
         <h4 class="rack__title">${escapeHtml(panel.title)}</h4>
         <span class="rack__meta">${escapeHtml(panel.meta)}</span>
       </header>
-      <ul class="rack__bms">
-        ${panel.bms.map(renderBm).join("")}
-      </ul>
+      <div class="rack__content">
+        ${panel.groups.map((g) => renderSubgroup(g, hasMultiple)).join("")}
+      </div>
     </article>`;
 }
 
 function vmTooltipHtml(el) {
   const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
   const cpu = el.dataset.cpu, mem = el.dataset.mem, st = el.dataset.storage, gpu = el.dataset.gpu;
-  const dem = cpu !== ""
-    ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu} GPU`
-    : "—";
+  const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu} GPU` : "—";
   return `
     <div class="tooltip__title">${escapeHtml(el.dataset.vmHostname || el.dataset.vmId)}</div>
     ${row("VM", el.dataset.vmId)}

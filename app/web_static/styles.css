@@ -203,6 +203,32 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 0 0 3px var(--brand-ring);
 }
 
+.select--compact {
+  height: 30px;
+  padding: 0 26px 0 10px;
+  font-size: 12px;
+  background-position: right 8px center;
+  width: auto;
+  min-width: 110px;
+}
+
+.select-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.select-inline__label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.card__header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .editor {
   width: 100%;
   min-height: 240px;
@@ -424,6 +450,20 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.rack__content {
+  display: flex;
+  flex-direction: column;
+}
+.rack__subgroup {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: -0.01em;
+  padding: 10px 14px 4px;
+  border-top: 1px solid var(--border-base);
+  background: var(--bg-subtle);
+}
+.rack__content > .rack__subgroup:first-child { border-top: none; }
 .rack__bms {
   list-style: none;
   margin: 0;

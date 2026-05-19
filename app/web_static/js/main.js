@@ -1,5 +1,5 @@
 import { listExamples, getExample, solve, splitAndSolve } from "./api.js";
-import { buildPhysicalPanels, buildAgPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
+import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
 import { rebuildColorScale, legendEntries } from "./colors.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
@@ -9,7 +9,7 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   request: null,
   result: null,
-  viewMode: "physical",
+  groupBy: "rack",
 };
 
 function setEndpoint(value) {
@@ -56,13 +56,10 @@ function rerenderViz() {
 
   rebuildColorScale(collectAgSet(state.request, state.result));
 
-  const panels = state.viewMode === "ag"
-    ? buildAgPanels(state.request, state.result)
-    : buildPhysicalPanels(state.request, state.result);
+  const panels = buildPanels(state.request, state.result, state.groupBy);
   renderRackDiagram(rackEl, panels);
   renderLegend(legendEl, legendEntries());
 
-  // AG × Rack matrix — only meaningful when there are assignments
   const matrix = buildAgRackMatrix(state.request, state.result);
   if (matrix.isEmpty() || (state.result.assignments ?? []).length === 0) {
     matrixCard.classList.add("hidden");
@@ -192,12 +189,14 @@ function init() {
   $("#run-btn").addEventListener("click", runSolver);
   $("#json-editor").addEventListener("blur", parseRequestText);
 
-  document.querySelectorAll('input[name="view-mode"]').forEach((r) => {
-    r.addEventListener("change", (e) => {
-      state.viewMode = e.target.value;
+  const groupBySelect = $("#group-by");
+  if (groupBySelect) {
+    state.groupBy = groupBySelect.value || "rack";
+    groupBySelect.addEventListener("change", (e) => {
+      state.groupBy = e.target.value;
       rerenderViz();
     });
-  });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

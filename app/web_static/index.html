@@ -110,14 +110,17 @@
     <section class="card viz-card">
       <header class="card__header">
         <h2 class="card__title">Topology</h2>
-        <div class="segmented" role="radiogroup" aria-label="View mode">
-          <label>
-            <input type="radio" name="view-mode" value="physical" checked>
-            <span>Physical</span>
-          </label>
-          <label>
-            <input type="radio" name="view-mode" value="ag">
-            <span>AG</span>
+        <div class="card__header-right">
+          <label class="select-inline">
+            <span class="select-inline__label">Group by</span>
+            <select id="group-by" class="select select--compact">
+              <option value="site">Site</option>
+              <option value="phase">Phase</option>
+              <option value="datacenter">DataCenter</option>
+              <option value="room">Room</option>
+              <option value="rack" selected>Rack</option>
+              <option value="ag">AG</option>
+            </select>
           </label>
         </div>
       </header>
