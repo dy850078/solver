@@ -2,7 +2,11 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VM Placement Solver — Topology Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 <script type="importmap">
 {
@@ -13,58 +17,143 @@
 </script>
 </head>
 <body>
-  <header>
-    <h1>VM Placement Solver</h1>
-    <span class="subtitle">Topology Visualizer</span>
-    <a class="docs-link" href="/docs" target="_blank">API Docs</a>
-  </header>
 
-  <main>
-    <section class="input-panel">
-      <h2>Input</h2>
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">Topology Visualizer</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+  </div>
+</header>
 
-      <div class="row">
-        <label for="example-select">Load example:</label>
-        <select id="example-select"><option value="">-- choose --</option></select>
-        <button id="upload-btn" type="button">Upload JSON…</button>
-        <input id="upload-input" type="file" accept=".json" hidden>
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Input</h2>
+      </header>
+      <div class="card__body">
+
+        <div class="field">
+          <label class="field-label" for="example-select">Load example</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose a sample request —</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Or upload</label>
+          <button id="upload-btn" type="button" class="btn btn--ghost btn--block">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 11V3M8 3l-3 3M8 3l3 3"/>
+              <path d="M2.5 11v1.5a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5V11"/>
+            </svg>
+            Upload JSON file…
+          </button>
+          <input id="upload-input" type="file" accept=".json" hidden>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Endpoint</span>
+          <div class="segmented segmented--block" role="radiogroup" aria-label="Endpoint">
+            <label>
+              <input type="radio" name="endpoint" value="solve" checked>
+              <span>solve</span>
+            </label>
+            <label>
+              <input type="radio" name="endpoint" value="split-and-solve">
+              <span>split &amp; solve</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="json-editor">Request JSON</label>
+          <textarea id="json-editor" class="editor" spellcheck="false" placeholder="Paste PlacementRequest JSON here…"></textarea>
+          <div id="json-error" class="alert alert--error hidden"></div>
+        </div>
+
+        <button id="run-btn" type="button" class="btn btn--primary btn--block">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="btn__label">Run solver</span>
+        </button>
+
       </div>
+    </section>
+  </aside>
 
-      <div class="row endpoint-row">
-        <label>Endpoint:</label>
-        <label><input type="radio" name="endpoint" value="solve" checked> /v1/placement/solve</label>
-        <label><input type="radio" name="endpoint" value="split-and-solve"> /v1/placement/split-and-solve</label>
-      </div>
+  <div class="content">
 
-      <textarea id="json-editor" spellcheck="false" placeholder='Paste PlacementRequest JSON here…'></textarea>
-      <div id="json-error" class="error hidden"></div>
+    <div id="stats" class="stats hidden"></div>
 
-      <div class="row">
-        <button id="run-btn" type="button">Run Solver</button>
-        <span id="status-bar" class="status"></span>
+    <section class="card viz-card">
+      <header class="card__header">
+        <h2 class="card__title">Topology</h2>
+        <div class="segmented" role="radiogroup" aria-label="View mode">
+          <label>
+            <input type="radio" name="view-mode" value="physical" checked>
+            <span>Physical</span>
+          </label>
+          <label>
+            <input type="radio" name="view-mode" value="ag">
+            <span>AG</span>
+          </label>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="treemap-container" class="treemap">
+          <div class="treemap__empty" id="treemap-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="8" height="8" rx="1.5"/>
+              <rect x="13" y="3" width="8" height="8" rx="1.5"/>
+              <rect x="3" y="13" width="8" height="8" rx="1.5"/>
+              <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+            </svg>
+            <span>Run the solver to visualize the topology.</span>
+          </div>
+        </div>
+        <div id="ag-legend" class="legend"></div>
       </div>
     </section>
 
-    <section class="visualization">
-      <div class="viz-header">
-        <h2>Topology</h2>
-        <div class="view-toggle">
-          <label><input type="radio" name="view-mode" value="physical" checked> Physical (site &gt; phase &gt; dc &gt; room &gt; rack)</label>
-          <label><input type="radio" name="view-mode" value="ag"> AG (anti-affinity group)</label>
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Result</h2>
+      </header>
+      <div class="card__body">
+        <div id="summary-content">
+          <p class="muted" style="margin:0">No result yet. Submit a request to see assignments.</p>
         </div>
       </div>
-      <div id="treemap-container"></div>
-      <div id="ag-legend" class="legend"></div>
     </section>
 
-    <section class="result-summary">
-      <h2>Result</h2>
-      <div id="summary-content">
-        <p class="muted">Run the solver to see assignments.</p>
-      </div>
-    </section>
-  </main>
+  </div>
 
-  <script type="module" src="js/main.js"></script>
+</main>
+
+<div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
+
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

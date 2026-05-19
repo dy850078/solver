@@ -1,7 +1,7 @@
 import * as d3 from "d3";
 import { colorForAg } from "./colors.js";
 
-const MIN_LABEL_W = 36;
+const MIN_LABEL_W = 40;
 const MIN_LABEL_H = 14;
 
 function nodeClass(d) {
@@ -14,45 +14,106 @@ function nodeClass(d) {
 
 function nodeFill(d) {
   if (d.data.type === "vm") return colorForAg(d.data.ag);
-  if (d.data.type === "empty-bm") return "#e2e8f0";
-  return null; // CSS handles BM and inner
+  return null; // CSS handles BM, inner, empty
 }
 
 function nodeLabel(d) {
   if (d.data.type === "vm") return d.data.vm_hostname || d.data.vm_id;
   if (d.data.type === "empty-bm") return "empty";
   if (d.data.type === "bm") return d.data.bm_hostname || d.data.bm_id;
-  if (d.data.type === "level") {
-    const prefix = d.data.level ? `${d.data.level}: ` : "";
-    return `${prefix}${d.data.name}`;
-  }
+  if (d.data.type === "level") return d.data.name;
   return d.data.name ?? "";
 }
 
-function tooltipText(d) {
+function levelKicker(d) {
+  // Tiny prefix shown above the level name when there's room.
+  return d.data.type === "level" ? d.data.level : null;
+}
+
+function truncate(text, pixelWidth, avgCharPx = 6.2) {
+  const max = Math.max(1, Math.floor(pixelWidth / avgCharPx));
+  return text.length > max ? text.slice(0, max - 1) + "…" : text;
+}
+
+// ─── Tooltip ────────────────────────────────────────────────
+let tooltipEl = null;
+function getTooltip() {
+  if (!tooltipEl) tooltipEl = document.getElementById("treemap-tooltip");
+  return tooltipEl;
+}
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function tooltipHtml(d) {
+  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
   if (d.data.type === "vm") {
-    const dem = d.data.demand
-      ? `CPU=${d.data.demand.cpu_cores}, Mem=${d.data.demand.memory_mib}MiB, Storage=${d.data.demand.storage_gb}GB, GPU=${d.data.demand.gpu_count}`
-      : "no demand info";
-    return [
-      `VM ${d.data.vm_id} (${d.data.vm_hostname || "-"})`,
-      `On BM: ${d.data.bm_id} (${d.data.bm_hostname || "-"})`,
-      `AG: ${d.data.ag || "-"}`,
-      `Role: ${d.data.node_role || "-"}  IP: ${d.data.ip_type || "-"}`,
-      dem,
-    ].join("\n");
+    const dem = d.data.demand;
+    const demStr = dem
+      ? `${dem.cpu_cores} vCPU · ${dem.memory_mib} MiB · ${dem.storage_gb} GB · ${dem.gpu_count} GPU`
+      : "—";
+    return `
+      <div class="tooltip__title">${escapeHtml(d.data.vm_hostname || d.data.vm_id)}</div>
+      ${row("VM", d.data.vm_id)}
+      ${row("BM", `${d.data.bm_id} (${d.data.bm_hostname || "—"})`)}
+      ${row("AG", d.data.ag || "—")}
+      ${row("Role", d.data.node_role || "—")}
+      ${row("IP", d.data.ip_type || "—")}
+      ${row("Demand", demStr)}
+    `;
   }
-  if (d.data.type === "empty-bm") return "Empty baremetal (no assignments)";
-  if (d.data.type === "bm") return `BM ${d.data.bm_id} (${d.data.bm_hostname || "-"})  AG: ${d.data.ag || "-"}`;
-  if (d.data.type === "level") return `${d.data.level}: ${d.data.name}`;
-  return d.data.name ?? "";
+  if (d.data.type === "empty-bm") {
+    return `<div class="tooltip__title">Empty baremetal</div>${row("AG", d.data.ag || "—")}`;
+  }
+  if (d.data.type === "bm") {
+    return `
+      <div class="tooltip__title">${escapeHtml(d.data.bm_hostname || d.data.bm_id)}</div>
+      ${row("BM", d.data.bm_id)}
+      ${row("AG", d.data.ag || "—")}
+    `;
+  }
+  if (d.data.type === "level") {
+    return `<div class="tooltip__title">${escapeHtml(d.data.level)}: ${escapeHtml(d.data.name)}</div>`;
+  }
+  return escapeHtml(d.data.name ?? "");
 }
 
+function showTooltip(html, evt) {
+  const t = getTooltip();
+  if (!t) return;
+  t.innerHTML = html;
+  positionTooltip(evt);
+  t.classList.add("is-visible");
+}
+function positionTooltip(evt) {
+  const t = getTooltip();
+  if (!t) return;
+  const pad = 12;
+  const r = t.getBoundingClientRect();
+  let x = evt.clientX + pad;
+  let y = evt.clientY + pad;
+  if (x + r.width + 8 > window.innerWidth) x = evt.clientX - r.width - pad;
+  if (y + r.height + 8 > window.innerHeight) y = evt.clientY - r.height - pad;
+  t.style.left = `${Math.max(8, x)}px`;
+  t.style.top = `${Math.max(8, y)}px`;
+}
+function hideTooltip() {
+  const t = getTooltip();
+  if (t) t.classList.remove("is-visible");
+}
+
+// ─── Render ─────────────────────────────────────────────────
 export function renderTreemap(container, treeData) {
   const el = typeof container === "string" ? document.querySelector(container) : container;
   if (!el) return;
 
+  // Preserve the empty-state element so it can be re-used later if needed.
+  const empty = el.querySelector(".treemap__empty");
   el.innerHTML = "";
+  if (empty) empty.style.display = "none";
+
   const { width, height } = el.getBoundingClientRect();
   if (width < 10 || height < 10) return;
 
@@ -62,10 +123,10 @@ export function renderTreemap(container, treeData) {
 
   d3.treemap()
     .size([width, height])
-    .tile(d3.treemapSquarify)
-    .paddingOuter(4)
-    .paddingTop((d) => (d.depth === 0 ? 4 : 16))
-    .paddingInner(2)
+    .tile(d3.treemapSquarify.ratio(1.4))
+    .paddingOuter(6)
+    .paddingTop((d) => (d.depth === 0 ? 6 : 20))
+    .paddingInner(3)
     .round(true)(root);
 
   const svg = d3.select(el).append("svg")
@@ -83,34 +144,52 @@ export function renderTreemap(container, treeData) {
     .attr("height", (d) => Math.max(0, d.y1 - d.y0))
     .attr("fill", (d) => nodeFill(d));
 
-  nodes.append("title").text(tooltipText);
+  // Tooltip handlers — attached at the group so it covers rect + label
+  nodes
+    .on("mousemove", (event, d) => {
+      showTooltip(tooltipHtml(d), event);
+    })
+    .on("mouseleave", hideTooltip);
 
-  // Labels for inner nodes (top strip)
+  // Labels for level / BM nodes (top strip)
   nodes.filter((d) => d.data.type === "level" || d.data.type === "bm")
     .filter((d) => (d.x1 - d.x0) >= MIN_LABEL_W && (d.y1 - d.y0) >= MIN_LABEL_H)
     .append("text")
-    .attr("x", 4)
-    .attr("y", 12)
+    .attr("x", 8)
+    .attr("y", 13)
     .text((d) => {
       const w = d.x1 - d.x0;
-      const max = Math.floor((w - 8) / 6); // approx char fit
-      const lbl = nodeLabel(d);
-      return lbl.length > max ? lbl.slice(0, Math.max(1, max - 1)) + "…" : lbl;
+      const kicker = levelKicker(d);
+      const text = kicker ? `${kicker}: ${nodeLabel(d)}` : nodeLabel(d);
+      return truncate(text, w - 12);
     });
 
-  // Labels for VM leaves (centered if tile big enough)
+  // Labels for VM / empty leaves
   nodes.filter((d) => d.data.type === "vm" || d.data.type === "empty-bm")
     .filter((d) => (d.x1 - d.x0) >= MIN_LABEL_W && (d.y1 - d.y0) >= MIN_LABEL_H)
     .append("text")
     .attr("x", (d) => (d.x1 - d.x0) / 2)
     .attr("y", (d) => (d.y1 - d.y0) / 2 + 3)
     .attr("text-anchor", "middle")
-    .text((d) => {
-      const w = d.x1 - d.x0;
-      const max = Math.floor((w - 6) / 6);
-      const lbl = nodeLabel(d);
-      return lbl.length > max ? lbl.slice(0, Math.max(1, max - 1)) + "…" : lbl;
-    });
+    .text((d) => truncate(nodeLabel(d), (d.x1 - d.x0) - 6));
+}
+
+export function showTreemapEmpty(container, message) {
+  const el = typeof container === "string" ? document.querySelector(container) : container;
+  if (!el) return;
+  el.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "treemap__empty";
+  wrap.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="8" height="8" rx="1.5"/>
+      <rect x="13" y="3" width="8" height="8" rx="1.5"/>
+      <rect x="3" y="13" width="8" height="8" rx="1.5"/>
+      <rect x="13" y="13" width="8" height="8" rx="1.5"/>
+    </svg>
+    <span>${message ?? "Run the solver to visualize the topology."}</span>
+  `;
+  el.appendChild(wrap);
 }
 
 export function attachResize(container, rerender) {

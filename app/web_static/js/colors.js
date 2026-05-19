@@ -1,7 +1,29 @@
 import * as d3 from "d3";
 
-const PALETTE_10 = d3.schemeTableau10;
-const PALETTE_12 = d3.schemeSet3;
+// Modern Tailwind-inspired palette, harmonious across hues, color-blind friendly.
+const PALETTE_PRIMARY = [
+  "#6366f1", // indigo
+  "#10b981", // emerald
+  "#f59e0b", // amber
+  "#ec4899", // pink
+  "#06b6d4", // cyan
+  "#8b5cf6", // violet
+  "#84cc16", // lime
+  "#f43f5e", // rose
+  "#0ea5e9", // sky
+  "#a855f7", // purple
+];
+
+const PALETTE_OVERFLOW = [
+  ...PALETTE_PRIMARY,
+  "#14b8a6", // teal
+  "#eab308", // yellow
+  "#ef4444", // red
+  "#22c55e", // green
+  "#3b82f6", // blue
+  "#d946ef", // fuchsia
+];
+
 const MUTED = "#cbd5e1";
 
 let scale = null;
@@ -9,7 +31,7 @@ let agOrder = [];
 
 export function rebuildColorScale(agSet) {
   agOrder = Array.from(agSet).sort();
-  const palette = agOrder.length > 10 ? PALETTE_12 : PALETTE_10;
+  const palette = agOrder.length > PALETTE_PRIMARY.length ? PALETTE_OVERFLOW : PALETTE_PRIMARY;
   scale = d3.scaleOrdinal().domain(agOrder).range(palette);
 }
 

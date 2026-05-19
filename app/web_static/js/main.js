@@ -1,8 +1,8 @@
 import { listExamples, getExample, solve, splitAndSolve } from "./api.js";
 import { buildPhysicalTree, buildAgTree, collectAgSet } from "./hierarchy.js";
 import { rebuildColorScale, legendEntries } from "./colors.js";
-import { renderTreemap, attachResize } from "./treemap.js";
-import { renderResult, renderStatus, renderLegend } from "./summary.js";
+import { renderTreemap, showTreemapEmpty, attachResize } from "./treemap.js";
+import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -44,7 +44,7 @@ function parseRequestText() {
 function rerenderViz() {
   const container = $("#treemap-container");
   if (!state.request || !state.result) {
-    container.innerHTML = `<p class="muted" style="padding:16px">No result yet.</p>`;
+    showTreemapEmpty(container);
     renderLegend($("#ag-legend"), []);
     return;
   }
@@ -63,7 +63,7 @@ async function populateExamples() {
     for (const item of items) {
       const opt = document.createElement("option");
       opt.value = item.name;
-      opt.textContent = `${item.name}  [${item.endpoint_hint}]`;
+      opt.textContent = `${item.name}  ·  ${item.endpoint_hint}`;
       opt.dataset.endpoint = item.endpoint_hint;
       sel.appendChild(opt);
     }
@@ -101,32 +101,60 @@ function handleUpload(file) {
   reader.readAsText(file);
 }
 
+function setRunningState(running) {
+  const btn = $("#run-btn");
+  const label = btn.querySelector(".btn__label");
+  btn.disabled = running;
+  if (running) {
+    btn.dataset.label = label.textContent;
+    label.textContent = "Solving…";
+    btn.querySelector("svg")?.replaceWith(spinnerEl());
+  } else {
+    label.textContent = btn.dataset.label || "Run solver";
+    const spin = btn.querySelector(".btn__spinner");
+    if (spin) spin.replaceWith(playIcon());
+  }
+}
+function playIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.innerHTML = `<polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>`;
+  return svg;
+}
+function spinnerEl() {
+  const d = document.createElement("span");
+  d.className = "btn__spinner";
+  return d;
+}
+
 async function runSolver() {
   const request = parseRequestText();
   if (!request) return;
 
   const endpoint = getEndpoint();
-  const btn = $("#run-btn");
-  const statusBar = $("#status-bar");
-
-  btn.disabled = true;
-  statusBar.textContent = "Solving…";
-  statusBar.className = "status";
+  setRunningState(true);
 
   try {
     const fn = endpoint === "split-and-solve" ? splitAndSolve : solve;
     const result = await fn(request);
     state.request = request;
     state.result = result;
-    renderStatus(statusBar, result);
+    renderStats($("#stats"), result);
     renderResult($("#summary-content"), result);
     rerenderViz();
   } catch (err) {
-    statusBar.textContent = `Error: ${err.message}`;
-    statusBar.className = "status err";
-    $("#summary-content").innerHTML = `<div class="error">${err.message}</div>`;
+    state.request = null;
+    state.result = null;
+    renderStats($("#stats"), null);
+    renderError($("#summary-content"), err.message);
+    showTreemapEmpty($("#treemap-container"), "Request failed. See result panel for details.");
+    renderLegend($("#ag-legend"), []);
   } finally {
-    btn.disabled = false;
+    setRunningState(false);
   }
 }
 

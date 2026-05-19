@@ -6,70 +6,102 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
-function statusClass(status) {
-  if (!status) return "";
+function statusKind(status) {
+  if (!status) return "neutral";
   if (status === "OPTIMAL" || status === "FEASIBLE") return "ok";
-  if (status === "INFEASIBLE") return "err";
+  if (status.startsWith("INFEASIBLE") || status.startsWith("INPUT_ERROR") || status.startsWith("MODEL_INVALID")) return "err";
   return "warn";
 }
 
-export function renderStatus(statusBar, result) {
+// ─── Stat cards ────────────────────────────────────────────
+export function renderStats(container, result) {
   if (!result) {
-    statusBar.textContent = "";
-    statusBar.className = "status";
+    container.classList.add("hidden");
+    container.innerHTML = "";
     return;
   }
-  const parts = [
-    `${result.success ? "✓" : "✗"} ${result.solver_status || "?"}`,
-    `${(result.solve_time_seconds ?? 0).toFixed(3)}s`,
-    `${(result.assignments ?? []).length} placed`,
-  ];
-  if ((result.unplaced_vms ?? []).length > 0) {
-    parts.push(`${result.unplaced_vms.length} unplaced`);
-  }
-  statusBar.textContent = parts.join("  •  ");
-  statusBar.className = `status ${statusClass(result.solver_status)}`;
+  container.classList.remove("hidden");
+
+  const placed = (result.assignments ?? []).length;
+  const unplaced = (result.unplaced_vms ?? []).length;
+  const time = (result.solve_time_seconds ?? 0).toFixed(3);
+  const status = result.solver_status || "—";
+  const kind = statusKind(status);
+  const statusClass = kind === "ok" ? "stat--ok" : kind === "err" ? "stat--err" : "stat--warn";
+
+  const statusShort = status.split(":")[0]; // strip long detail in the headline
+
+  container.innerHTML = `
+    <div class="stat ${statusClass}">
+      <span class="stat__label">Status</span>
+      <span class="stat__value">${escapeHtml(statusShort)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat__label">Solve time</span>
+      <span class="stat__value">${time}<span class="unit">s</span></span>
+    </div>
+    <div class="stat stat--ok">
+      <span class="stat__label">Placed</span>
+      <span class="stat__value">${placed}</span>
+    </div>
+    <div class="stat ${unplaced > 0 ? "stat--err" : ""}">
+      <span class="stat__label">Unplaced</span>
+      <span class="stat__value">${unplaced}</span>
+    </div>
+  `;
 }
 
+// ─── Tables ────────────────────────────────────────────────
 function assignmentsTable(assignments) {
   if (!assignments || assignments.length === 0) {
-    return `<p class="muted">No assignments.</p>`;
+    return `<p class="muted" style="margin:0">No assignments produced.</p>`;
   }
   const rows = assignments.map((a) => `
     <tr>
-      <td>${escapeHtml(a.vm_id)}</td>
+      <td class="cell-mono">${escapeHtml(a.vm_id)}</td>
       <td>${escapeHtml(a.vm_hostname)}</td>
-      <td>${escapeHtml(a.baremetal_id)}</td>
+      <td class="cell-mono">${escapeHtml(a.baremetal_id)}</td>
       <td>${escapeHtml(a.bm_hostname)}</td>
       <td>${escapeHtml(a.ag)}</td>
     </tr>`).join("");
   return `
-    <table class="result-table">
-      <thead>
-        <tr><th>VM ID</th><th>VM hostname</th><th>BM ID</th><th>BM hostname</th><th>AG</th></tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr><th>VM ID</th><th>VM hostname</th><th>BM ID</th><th>BM hostname</th><th>AG</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function splitDecisionsTable(decisions) {
   if (!decisions || decisions.length === 0) return "";
   const rows = decisions.map((d) => {
     const r = d.vm_spec ?? {};
-    const spec = `cpu=${r.cpu_cores ?? 0}, mem=${r.memory_mib ?? 0}MiB, storage=${r.storage_gb ?? 0}GB, gpu=${r.gpu_count ?? 0}`;
-    return `<tr><td>${escapeHtml(d.node_role)}</td><td>${escapeHtml(spec)}</td><td>${d.count}</td></tr>`;
+    const spec = `${r.cpu_cores ?? 0} vCPU · ${r.memory_mib ?? 0} MiB · ${r.storage_gb ?? 0} GB · ${r.gpu_count ?? 0} GPU`;
+    return `<tr><td>${escapeHtml(d.node_role)}</td><td class="cell-mono">${escapeHtml(spec)}</td><td>${d.count}</td></tr>`;
   }).join("");
   return `
-    <div class="section-subtitle">Split decisions</div>
-    <table class="result-table">
-      <thead><tr><th>Role</th><th>VM spec</th><th>Count</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <h3 class="section-title">Split decisions</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Role</th><th>VM spec</th><th>Count</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function unplacedBlock(unplaced) {
   if (!unplaced || unplaced.length === 0) return "";
-  return `<div class="unplaced">Unplaced VMs (${unplaced.length}): ${unplaced.map(escapeHtml).join(", ")}</div>`;
+  return `
+    <div class="unplaced-banner">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="8" r="6.5"/>
+        <path d="M8 5v3.5M8 11h.01"/>
+      </svg>
+      <span><strong>${unplaced.length}</strong> unplaced VM${unplaced.length > 1 ? "s" : ""}: ${unplaced.map(escapeHtml).join(", ")}</span>
+    </div>`;
 }
 
 function diagnosticsBlock(diagnostics) {
@@ -83,14 +115,14 @@ function diagnosticsBlock(diagnostics) {
 
 export function renderResult(container, result) {
   if (!result) {
-    container.innerHTML = `<p class="muted">Run the solver to see assignments.</p>`;
+    container.innerHTML = `<p class="muted" style="margin:0">No result yet. Submit a request to see assignments.</p>`;
     return;
   }
   container.innerHTML = `
-    <div class="section-subtitle">Assignments (${(result.assignments ?? []).length})</div>
+    ${unplacedBlock(result.unplaced_vms)}
+    <h3 class="section-title">Assignments <span class="muted">(${(result.assignments ?? []).length})</span></h3>
     ${assignmentsTable(result.assignments)}
     ${splitDecisionsTable(result.split_decisions)}
-    ${unplacedBlock(result.unplaced_vms)}
     ${diagnosticsBlock(result.diagnostics)}
   `;
 }
@@ -100,9 +132,14 @@ export function renderLegend(container, entries) {
     container.innerHTML = "";
     return;
   }
-  container.innerHTML = entries.map((e) => `
+  const label = `<span style="color: var(--text-subtle); font-weight: 500; margin-right: 4px;">AG</span>`;
+  container.innerHTML = label + entries.map((e) => `
     <span class="legend-item">
       <span class="legend-swatch" style="background:${e.color}"></span>
       ${escapeHtml(e.ag)}
     </span>`).join("");
+}
+
+export function renderError(container, message) {
+  container.innerHTML = `<div class="alert alert--error">${escapeHtml(message)}</div>`;
 }
