@@ -8,7 +8,8 @@
  */
 
 import { colorForAg } from "./colors.js";
-import { showTooltip, moveTooltip, hideTooltip, escapeHtml } from "./tooltip.js";
+import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
+import { escapeHtml } from "./util.js";
 
 const PHYSICAL_DIMS = ["site", "phase", "datacenter", "room", "rack"];
 
@@ -208,36 +209,38 @@ function renderPanel(panel) {
     </article>`;
 }
 
-function vmTooltipHtml(el) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
+function vmTooltipNode(el) {
   const cpu = el.dataset.cpu, mem = el.dataset.mem, st = el.dataset.storage, gpu = el.dataset.gpu;
   const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu} GPU` : "—";
-  return `
-    <div class="tooltip__title">${escapeHtml(el.dataset.vmHostname || el.dataset.vmId)}</div>
-    ${row("VM", el.dataset.vmId)}
-    ${row("BM", `${el.dataset.bmId} (${el.dataset.bmHostname || "—"})`)}
-    ${row("AG", el.dataset.ag || "—")}
-    ${row("Role", el.dataset.role || "—")}
-    ${row("IP", el.dataset.ip || "—")}
-    ${row("Demand", dem)}
-  `;
+  return buildTooltipBody(
+    el.dataset.vmHostname || el.dataset.vmId,
+    [
+      ["VM", el.dataset.vmId],
+      ["BM", `${el.dataset.bmId} (${el.dataset.bmHostname || "—"})`],
+      ["AG", el.dataset.ag || "—"],
+      ["Role", el.dataset.role || "—"],
+      ["IP", el.dataset.ip || "—"],
+      ["Demand", dem],
+    ],
+  );
 }
 
-function bmAgTooltipHtml(el) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
-  return `
-    <div class="tooltip__title">${escapeHtml(el.dataset.bmHostname || el.dataset.bmId)}</div>
-    ${row("BM", el.dataset.bmId)}
-    ${row("AG", el.dataset.ag || "—")}
-  `;
+function bmAgTooltipNode(el) {
+  return buildTooltipBody(
+    el.dataset.bmHostname || el.dataset.bmId,
+    [
+      ["BM", el.dataset.bmId],
+      ["AG", el.dataset.ag || "—"],
+    ],
+  );
 }
 
 function attachTooltips(container) {
   container.addEventListener("mouseover", (e) => {
     const vm = e.target.closest(".vm-chip");
-    if (vm) { showTooltip(vmTooltipHtml(vm), e); return; }
+    if (vm) { showTooltip(vmTooltipNode(vm), e); return; }
     const bmAg = e.target.closest("[data-bm-tooltip]");
-    if (bmAg) { showTooltip(bmAgTooltipHtml(bmAg), e); return; }
+    if (bmAg) { showTooltip(bmAgTooltipNode(bmAg), e); return; }
   });
   container.addEventListener("mousemove", (e) => {
     if (e.target.closest(".vm-chip, [data-bm-tooltip]")) moveTooltip(e);

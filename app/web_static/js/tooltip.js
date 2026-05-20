@@ -1,7 +1,14 @@
 /**
  * Shared floating tooltip used by rack diagram and matrix views.
  * Anchored to #treemap-tooltip element in the DOM.
+ *
+ * Design: showTooltip only accepts DOM Nodes (typically a DocumentFragment
+ * built by buildTooltipBody). innerHTML is never used here, so callers
+ * cannot inject HTML into the tooltip even if their content is attacker-
+ * controlled — textContent is the only sink for user data.
  */
+
+export { escapeHtml } from "./util.js";
 
 let tooltipEl = null;
 
@@ -23,10 +30,19 @@ function position(evt) {
   t.style.top = `${Math.max(8, y)}px`;
 }
 
-export function showTooltip(html, evt) {
+/**
+ * Show the tooltip with the given DOM content.
+ * @param {Node} content - a DOM Node (typically a DocumentFragment).
+ *                         String inputs are rejected to prevent HTML injection.
+ */
+export function showTooltip(content, evt) {
   const t = el();
   if (!t) return;
-  t.innerHTML = html;
+  if (!(content instanceof Node)) {
+    // Defensive: refuse string content so we never re-introduce innerHTML.
+    return;
+  }
+  t.replaceChildren(content);
   position(evt);
   t.classList.add("is-visible");
 }
@@ -39,7 +55,37 @@ export function hideTooltip() {
   el()?.classList.remove("is-visible");
 }
 
-export function escapeHtml(s) {
-  if (s == null) return "";
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/**
+ * Build a standard tooltip body as a DocumentFragment.
+ * All text is inserted via textContent, so user data cannot inject HTML.
+ *
+ * @param {string} title - the title line.
+ * @param {Array<[string, string]>} rows - [key, value] tuples.
+ * @returns {DocumentFragment}
+ */
+export function buildTooltipBody(title, rows) {
+  const frag = document.createDocumentFragment();
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "tooltip__title";
+  titleEl.textContent = title ?? "";
+  frag.appendChild(titleEl);
+
+  for (const [k, v] of rows ?? []) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "tooltip__row";
+
+    const kEl = document.createElement("span");
+    kEl.className = "k";
+    kEl.textContent = k ?? "";
+    rowEl.appendChild(kEl);
+
+    const vEl = document.createElement("span");
+    vEl.className = "v";
+    vEl.textContent = v ?? "";
+    rowEl.appendChild(vEl);
+
+    frag.appendChild(rowEl);
+  }
+  return frag;
 }

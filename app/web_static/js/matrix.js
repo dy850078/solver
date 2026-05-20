@@ -7,7 +7,8 @@
  */
 
 import { colorForAg } from "./colors.js";
-import { showTooltip, moveTooltip, hideTooltip, escapeHtml } from "./tooltip.js";
+import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
+import { escapeHtml } from "./util.js";
 
 function rackPath(bm) {
   const t = bm.topology ?? {};
@@ -81,13 +82,14 @@ export function buildAgRackMatrix(request, result) {
   };
 }
 
-function tooltipForCell(ag, rack, count) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
-  return `
-    <div class="tooltip__title">${count} VM · ${escapeHtml(ag)}</div>
-    ${row("Rack", rack.path || rack.name)}
-    ${row("AG", ag)}
-  `;
+function cellTooltipNode(ag, rack, count) {
+  return buildTooltipBody(
+    `${count} VM · ${ag}`,
+    [
+      ["Rack", rack.path || rack.name],
+      ["AG", ag],
+    ],
+  );
 }
 
 export function renderMatrix(container, matrix) {
@@ -147,7 +149,7 @@ export function renderMatrix(container, matrix) {
   el.addEventListener("mouseover", (e) => {
     const cell = e.target.closest("[data-tip-ag]");
     if (!cell) return;
-    showTooltip(tooltipForCell(
+    showTooltip(cellTooltipNode(
       cell.dataset.tipAg,
       { path: cell.dataset.tipRack, name: cell.dataset.tipRack },
       parseInt(cell.dataset.tipCount, 10),

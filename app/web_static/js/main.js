@@ -12,7 +12,10 @@ const state = {
   groupBy: "rack",
 };
 
+const VALID_ENDPOINTS = new Set(["solve", "split-and-solve"]);
+
 function setEndpoint(value) {
+  if (!VALID_ENDPOINTS.has(value)) return;
   const radio = document.querySelector(`input[name="endpoint"][value="${value}"]`);
   if (radio) radio.checked = true;
 }
