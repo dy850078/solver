@@ -1,5 +1,3 @@
-import * as d3 from "d3";
-
 // Modern Tailwind-inspired palette, harmonious across hues, color-blind friendly.
 const PALETTE_PRIMARY = [
   "#6366f1", // indigo
@@ -26,19 +24,18 @@ const PALETTE_OVERFLOW = [
 
 const MUTED = "#cbd5e1";
 
-let scale = null;
 let agOrder = [];
+let agToColor = new Map();
 
 export function rebuildColorScale(agSet) {
   agOrder = Array.from(agSet).sort();
   const palette = agOrder.length > PALETTE_PRIMARY.length ? PALETTE_OVERFLOW : PALETTE_PRIMARY;
-  scale = d3.scaleOrdinal().domain(agOrder).range(palette);
+  agToColor = new Map(agOrder.map((ag, i) => [ag, palette[i % palette.length]]));
 }
 
 export function colorForAg(ag) {
   if (!ag) return MUTED;
-  if (!scale) return MUTED;
-  return scale(ag);
+  return agToColor.get(ag) ?? MUTED;
 }
 
 export function legendEntries() {

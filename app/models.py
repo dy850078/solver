@@ -110,6 +110,7 @@ class NodeRole(str, Enum):
     WORKER = "worker"
     INFRA = "infra"
     L4LB = "l4lb-storage"
+    BASTION = "bastion"
 
 
 class VM(BaseModel):

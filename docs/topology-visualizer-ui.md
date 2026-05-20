@@ -33,7 +33,7 @@
 3. 以**Rack 機架圖**檢視 placement 結果,並可依任一拓樸維度 (Site / Phase / DataCenter / Room / Rack / AG) 重新分組
 4. 透過 **AG × Rack 反親和矩陣**一眼驗證 anti-affinity 是否如預期分散
 
-技術棧採用**純 HTML + 原生 ES Modules + D3 / CodeMirror via CDN**,**無 npm、無 build step**,由 FastAPI 直接以 StaticFiles 掛載在 `/ui`。
+技術棧採用**純 HTML + 原生 ES Modules + 系統字型**,**無 npm、無 build step、無 CDN 依賴**,由 FastAPI 直接以 StaticFiles 掛載在 `/ui`。完全可在 air-gapped 內網環境運作。
 
 ---
 
@@ -52,7 +52,7 @@
 - **不**支援即時 (real-time) 重算或編輯 placement;每次都是「貼 input → 跑 → 看結果」
 - **不**做 placement 的編輯介面 (表單建構 VM/BM),只接受 JSON
 - **不**做後端持久化 (沒有歷史紀錄、沒有 DB);所有狀態存在瀏覽器 memory
-- **不**支援離線部署 (依賴 jsdelivr CDN 載入 D3);未來若需要再 vendor 化
+- **不**做後端持久化、認證、CDN 依賴 — UI 完全自足,可在 air-gapped 環境運作
 
 ---
 
@@ -94,7 +94,7 @@ curl -X POST :50051/v1/placement/solve -d @request.json | jq
 │                     │ ◄─────► │  /v1/placement/solve         │
 │  /ui (single-page)  │         │  /v1/placement/split-and-solve│
 │  - vanilla JS ESM   │         │  /api/examples               │
-│  - D3 @7 from CDN   │         │  /api/examples/{name}        │
+│  - no CDN deps      │         │  /api/examples/{name}        │
 │  - dark tooltip,    │         │  /ui  ← StaticFiles mount    │
 │    rack cards,      │         │  /docs (Swagger)             │
 │    AG×Rack matrix   │         │  /health                     │
@@ -128,27 +128,40 @@ if _WEB_STATIC_DIR.is_dir():
 
 ### 5.2 Examples API
 
-`app/examples_api.py` 提供兩個端點,讓前端載入 `examples/*.json`:
+`app/examples_api.py` 提供兩個端點,讓前端載入 `examples/**/*.json` (遞迴掃描):
 
 | Endpoint | 用途 |
 |---|---|
-| `GET /api/examples` | 列出 `examples/*.json`,並猜測 endpoint hint (檔名以 `split_` 開頭 → `split-and-solve`,否則 `solve`) |
-| `GET /api/examples/{name}` | 回傳檔案 JSON 內容 |
+| `GET /api/examples` | 列出 `examples/` 下所有 `.json`,含子目錄。回傳 relative path 與 endpoint hint |
+| `GET /api/examples/{name:path}` | 回傳檔案 JSON;`name` 可為多段路徑 (例如 `splitter/basic.json`) |
 
-**Path traversal 防護**:
+**Endpoint hint 推斷**:
+
+1. **依父目錄名**: `splitter/` / `split/` → `split-and-solve`、`placement/` / `solve/` → `solve`
+2. **依檔名 fallback**: 頂層檔案若以 `split_` 開頭 → `split-and-solve`,否則 `solve`
+
+這讓使用者可以選擇:
+- **扁平佈局** (現況): 所有檔案放在 `examples/` 下,靠檔名前綴區分
+- **分類佈局**: `examples/splitter/`、`examples/placement/` 分目錄管理,前端會自動以 `<optgroup>` 分組顯示
+
+**Path traversal 防護** (支援多段路徑後仍維持雙重保險):
 
 ```python
-_NAME_PATTERN = re.compile(r"^[\w\-.]+\.json$")
-
-def get_example(name: str) -> dict:
-    if not _NAME_PATTERN.match(name):
-        raise HTTPException(status_code=400, detail="invalid example name")
+def _resolve_example(name: str) -> Path:
+    if not name or name.startswith("/") or "\\" in name:
+        raise HTTPException(400, "invalid example name")
+    segments = name.split("/")
+    for s in segments:
+        if not s or s in (".", "..") or not _SEGMENT_PATTERN.match(s):
+            raise HTTPException(400, "invalid example name")
+    if not segments[-1].endswith(".json"):
+        raise HTTPException(400, "invalid example name")
     target = (_EXAMPLES_DIR / name).resolve()
     target.relative_to(_EXAMPLES_DIR)  # raises if escapes
-    ...
+    return target
 ```
 
-雙重防護:regex 拒絕 `/`、`..`、空白等;`relative_to()` 在 resolved path 跨出 examples 目錄時拋 `ValueError`。
+每個 path segment 用 `^[\w\-.]+$` regex 檢查並排除 `.` / `..`;最後仍以 `relative_to()` 確認 resolve 後落在 examples 目錄內。
 
 ---
 
@@ -197,15 +210,15 @@ rerenderViz() ──┬─ buildPanels(req, res, groupBy) → rack diagram
                 → rerenderViz()
 ```
 
-### 6.3 Import map (CDN)
+### 6.3 完全離線可運行
 
-```html
-<script type="importmap">
-{ "imports": { "d3": "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm" } }
-</script>
-```
+UI **零外部 runtime 依賴**:
 
-D3 鎖具體版本 `7.9.0`,避免上游飄移。若未來改成 vendored 版本,只需在 `web_static/vendor/` 放一份 D3 並改 import map,前端程式碼不動。
+* **無 D3、無 CDN script**: 初版用了 `d3.scaleOrdinal()`,但這唯一的用途 (AG → palette 顏色) 被改寫成 5 行原生 JS Map 對映,完全不需要 d3.js bundle
+* **無 Web Fonts**: 字型只用系統字型 stack (`-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, ...` + `ui-monospace, "SF Mono", Menlo, ...`),不抓 Google Fonts
+* **無 import map**: HTML head 只有一個 `<link rel="stylesheet" href="styles.css">`
+
+結果是任何 air-gapped / 內網環境只要能跑 FastAPI process 即可使用,無需配 proxy、無需 vendor 任何套件。
 
 ---
 
@@ -310,7 +323,7 @@ function subGroupKey(bm, groupBy) {
 
 ## 8. Tech Stack Rationale
 
-| 評估項 | 純 HTML + ES Modules + CDN | Vite + React + D3 | Streamlit |
+| 評估項 | 純 HTML + ES Modules | Vite + React + D3 | Streamlit |
 |---|---|---|---|
 | Build step | 無 | npm build | 無 |
 | Node.js 依賴 | 無 | 必要 | 無 |
@@ -366,14 +379,16 @@ python -m app.server --port 50051
 
 直接編輯 `app/web_static/**`,瀏覽器強制重新整理 (Cmd-Shift-R / Ctrl-Shift-F5) 即可。沒有 hot reload,但因為是純檔案,reload 成本低。
 
-### 10.3 CDN 依賴
+### 10.3 離線 / 內網部署
 
-前端 runtime 需要連到 `cdn.jsdelivr.net` 載入 D3 與 Inter 字型。在純內網或 air-gapped 環境會無法載入。緩解方式:
+UI **完全自足**,無任何 CDN 或外部資源:
 
-1. 下載 D3 ESM bundle 到 `web_static/vendor/d3.js`
-2. 改 `index.html` 的 import map: `"d3": "/ui/vendor/d3.js"`
+* 沒有 D3 (拔掉了)
+* 沒有 Google Fonts (改用系統字型)
+* 沒有 import map (無 ESM CDN)
+* 圖示全是 inline SVG
 
-字型 fallback 到 system font stack (`-apple-system`, `Segoe UI`, etc.),不致破版。
+唯一外部資源是 `/v1/placement/solve` 與 `/v1/placement/split-and-solve` — 那是同一個 process 自己的 endpoint。整個前端只需把 `app/web_static/` 跟 solver 一起部署。
 
 ### 10.4 安全考量
 
@@ -390,7 +405,7 @@ python -m app.server --port 50051
 * **Solver 重跑與差異對比**: 比較兩次 solve 結果 (例如改 anti-affinity 規則前後)
 * **Spread target 視覺化**: `config.target_spread` 若違反 (但 solver 仍回 OPTIMAL),在 matrix 上高亮對應 row
 * **Capacity heat overlay**: BM 卡片內加 CPU/Mem/Storage 使用率 bar,直接看出哪台 BM 接近滿載
-* **離線打包**: 把 D3 / Inter 字型 vendor 化進 `web_static/vendor/`,設置選項切換 CDN / vendor
+* **CodeMirror 編輯體驗**: 目前是純 `<textarea>` + 即時 JSON.parse 驗證;若有需要可加 syntax highlight (需 vendor 化以維持離線可用)
 * **大規模資料 perf**: 1000+ BM 時 DOM 節點會多,考慮虛擬捲動或 canvas-based BM 列表
 
 ---
@@ -405,4 +420,5 @@ python -m app.server --port 50051
 | Group by 用 dropdown 而非多 segmented | 6 個選項;segmented 視覺壓力大 | — |
 | Matrix 不跟著 Group by 動 | Matrix 是驗證工具,panel 才是 lens | 未來可考慮獨立的 matrix 維度切換 |
 | 後端 examples API 用 regex + `relative_to` 雙重防護 | 兩道防線降低 path traversal 風險 | — |
-| 暫不 vendor CDN | 內網部署為次要場景;CDN 啟動成本零 | 若有離線需求再加 vendor 機制 |
+| 拔掉 D3,改用 5 行原生 ordinal scale | 唯一用途是 AG→color 映射,d3 顯然殺雞用牛刀;同時讓 UI 變得零 CDN 依賴,可在 air-gapped 環境直接跑 | — |
+| 字型改用系統字型,不載 Google Fonts | 配合零 CDN 依賴的目標;系統字型 (SF Pro / Segoe UI / Roboto) 視覺差異小到可忽略 | — |
