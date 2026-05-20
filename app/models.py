@@ -207,21 +207,21 @@ class AntiAffinityRule(BaseModel):
 
     @model_validator(mode="after")
     def _validate_cap_per_bucket(self) -> AntiAffinityRule:
-        if self.cap_per_bucket is None:
-            return self
-        spread_set = set(self.spread_on)
-        bad_keys = [k for k in self.cap_per_bucket if k not in spread_set]
-        if bad_keys:
-            raise ValueError(
-                f"cap_per_bucket keys {bad_keys} must be a subset of "
-                f"spread_on {self.spread_on}"
-            )
-        bad_values = {k: v for k, v in self.cap_per_bucket.items() if v < 1}
-        if bad_values:
-            raise ValueError(
-                f"cap_per_bucket values must be >= 1; got {bad_values}. "
-                f"To disable spreading on a dimension, remove it from spread_on."
-            )
+        cap = self.cap_per_bucket
+        if cap is not None:
+            spread_set = set(self.spread_on)
+            bad_keys = [k for k in cap if k not in spread_set]
+            if bad_keys:
+                raise ValueError(
+                    f"cap_per_bucket keys {bad_keys} must be a subset of "
+                    f"spread_on {self.spread_on}"
+                )
+            bad_values = {k: v for k, v in cap.items() if v < 1}
+            if bad_values:
+                raise ValueError(
+                    f"cap_per_bucket values must be >= 1; got {bad_values}. "
+                    f"To disable spreading on a dimension, remove it from spread_on."
+                )
         return self
 
 
