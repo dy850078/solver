@@ -249,7 +249,7 @@ class TestSplitWithAntiAffinity:
 
         1 explicit worker (8 CPU) + requirement for 16 CPU worker (spec=8 CPU,
         upper=2 slots) → total active = 1 + 2 = 3 VMs, 3 AGs.
-        Dynamic max_per_ag = ceil(3/3) = 1 → each AG gets exactly 1 VM.
+        Dynamic cap_per_bucket[ag] = ceil(3/3) = 1 → each AG gets exactly 1 VM.
         """
         from app.models import VM
 
@@ -279,22 +279,22 @@ class TestSplitWithAntiAffinity:
         ag_counts = Counter(a.ag for a in r.assignments)
         for ag, count in ag_counts.items():
             assert count <= 1, (
-                f"AG {ag} has {count} VMs but max_per_ag should be 1 "
+                f"AG {ag} has {count} VMs but cap_per_bucket[ag] should be 1 "
                 f"(3 VMs / 3 AGs)"
             )
 
     def test_auto_anti_affinity_dynamic_when_count_is_variable(self):
         """When VM count is a decision variable, auto anti-affinity should
-        use dynamic max_per_ag based on actual active count, not upper bound.
+        use dynamic cap_per_bucket[ag] based on actual active count, not upper bound.
 
         Scenario: 32 CPU needed, spec=16 CPU → upper bound = 2 slots.
         Two specs available: 8 CPU (upper=4) and 16 CPU (upper=2).
         3 AGs available. Auto anti-affinity should spread based on actual
         count, not the 6 total slots.
 
-        Without the dynamic fix, max_per_ag = ceil(6/3) = 2, allowing
+        Without the dynamic fix, cap_per_bucket[ag] = ceil(6/3) = 2, allowing
         2 VMs on the same AG. With the fix, if solver picks 2 × 16 CPU,
-        max_per_ag = ceil(2/3) = 1, forcing each VM to a different AG.
+        cap_per_bucket[ag] = ceil(2/3) = 1, forcing each VM to a different AG.
         """
         bms = [make_bm(f"bm-{i}", ag=f"ag-{i}", cpu=64, mem=256_000, disk=2000)
                for i in range(3)]
@@ -316,12 +316,12 @@ class TestSplitWithAntiAffinity:
         ag_counts = Counter(assigned_ags)
         num_vms = len(r.assignments)
         num_ags = 3
-        # Dynamic max_per_ag = ceil(num_vms / num_ags)
+        # Dynamic cap_per_bucket[ag] = ceil(num_vms / num_ags)
         import math
         expected_max = math.ceil(num_vms / num_ags)
         for ag, count in ag_counts.items():
             assert count <= expected_max, (
-                f"AG {ag} has {count} VMs but dynamic max_per_ag should be "
+                f"AG {ag} has {count} VMs but dynamic cap_per_bucket[ag] should be "
                 f"{expected_max} (total {num_vms} VMs / {num_ags} AGs)"
             )
 

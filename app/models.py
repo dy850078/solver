@@ -4,15 +4,20 @@ VM Placement Solver — Data Models
 Uses Pydantic v2 BaseModel for automatic JSON serialization/deserialization
 and type validation on construction.
 
-Topology: site > phase > datacenter > rack
+Topology: site > phase > datacenter > room > rack
 Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 """
 
 from __future__ import annotations
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+SPREAD_DIMENSIONS: frozenset[str] = frozenset({
+    "site", "phase", "datacenter", "room", "rack", "ag",
+})
 
 
 # ---------------------------------------------------------------------------
@@ -63,12 +68,13 @@ class Resources(BaseModel):
 
 class Topology(BaseModel):
     """
-    Physical: site > phase > datacenter > rack
-    Virtual:  AG (availability group) — the key for anti-affinity spreading
+    Physical: site > phase > datacenter > room > rack
+    Virtual:  AG (availability group) — orthogonal to room, crosscuts racks
     """
     site: str = ""
     phase: str = ""
     datacenter: str = ""
+    room: str = ""
     rack: str = ""
     ag: str = ""
 
@@ -100,6 +106,7 @@ class Baremetal(BaseModel):
 class NodeRole(str, Enum):
     """Node role enum. str mixin allows Pydantic to parse directly from JSON strings."""
     MASTER = "master"
+    LEARNER = "learner"
     WORKER = "worker"
     INFRA = "infra"
     L4LB = "l4lb-storage"
@@ -162,10 +169,17 @@ class GroupSelector(BaseModel):
 
 class AntiAffinityRule(BaseModel):
     """
-    "These VMs should NOT all land in the same AG."
+    "Spread these VMs across topology buckets in one or more dimensions."
 
-    Example: 3 master VMs with max_per_ag=1 means each master
-    must be in a different AG (for HA).
+    Each dimension d in `spread_on` adds an independent constraint:
+      ∀ bucket b ∈ buckets(d): Σ assign[vm,bm for bm in b] ≤ cap_d
+    where
+      cap_d = cap_per_bucket[d]   if d in cap_per_bucket
+            = ⌈|VMs| / |buckets(d)|⌉   otherwise (auto-balance)
+
+    Multiple dimensions are AND'd, not the Cartesian product of buckets.
+    Example: spread_on=["ag","room"] enforces both an AG-per-bucket cap
+    AND a Room-per-bucket cap.
 
     Group membership: provide exactly one of `vm_ids` or `selector`.
     `selector` is resolved against the request's VM list at solve time.
@@ -173,7 +187,84 @@ class AntiAffinityRule(BaseModel):
     group_id: str
     vm_ids: list[str] = Field(default_factory=list)
     selector: GroupSelector | None = None
-    max_per_ag: int = 1
+    spread_on: list[str]
+    cap_per_bucket: dict[str, int] | None = None
+
+    @field_validator("spread_on")
+    @classmethod
+    def _validate_spread_on(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("spread_on must contain at least one dimension")
+        unknown = [d for d in v if d not in SPREAD_DIMENSIONS]
+        if unknown:
+            raise ValueError(
+                f"spread_on contains unknown dimension(s) {unknown}; "
+                f"valid: {sorted(SPREAD_DIMENSIONS)}"
+            )
+        if len(set(v)) != len(v):
+            raise ValueError(f"spread_on must not contain duplicates: {v}")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_cap_per_bucket(self) -> AntiAffinityRule:
+        if self.cap_per_bucket is None:
+            return self
+        spread_set = set(self.spread_on)
+        bad_keys = [k for k in self.cap_per_bucket if k not in spread_set]
+        if bad_keys:
+            raise ValueError(
+                f"cap_per_bucket keys {bad_keys} must be a subset of "
+                f"spread_on {self.spread_on}"
+            )
+        bad_values = {k: v for k, v in self.cap_per_bucket.items() if v < 1}
+        if bad_values:
+            raise ValueError(
+                f"cap_per_bucket values must be >= 1; got {bad_values}. "
+                f"To disable spreading on a dimension, remove it from spread_on."
+            )
+        return self
+
+
+class FailoverRule(BaseModel):
+    """
+    Cross-group N-1 redundancy constraint.
+
+    Semantics: for each bucket b of `fault_domain`,
+        sum(backup VMs not in b) >= sum(primary VMs in b)
+
+    Equivalent form used by the solver (easier on CP-SAT):
+        sum(primary in b) + sum(backup in b) <= |backup|
+
+    Result: when bucket b fails entirely, the surviving backups outside b
+    are enough to take over the primaries that were inside b.
+
+    `primary` and `backup` are GroupSelectors resolved against the request's
+    VM list. Role-pair semantics are more stable than enumerating VM IDs
+    and play well with auto-generation of resource splits.
+    """
+    rule_id: str
+    primary: GroupSelector
+    backup: GroupSelector
+    fault_domain: str
+    policy: Literal["n_minus_1"] = "n_minus_1"
+
+    @field_validator("fault_domain")
+    @classmethod
+    def _validate_fault_domain(cls, v: str) -> str:
+        if v not in SPREAD_DIMENSIONS:
+            raise ValueError(
+                f"fault_domain {v!r} is not a valid dimension; "
+                f"valid: {sorted(SPREAD_DIMENSIONS)}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_selectors_nonempty(self) -> FailoverRule:
+        if self.primary.is_empty():
+            raise ValueError(f"FailoverRule {self.rule_id}: primary selector must not be empty")
+        if self.backup.is_empty():
+            raise ValueError(f"FailoverRule {self.rule_id}: backup selector must not be empty")
+        return self
 
 
 class MaxPerBaremetalRule(BaseModel):
@@ -205,9 +296,15 @@ class SolverConfig(BaseModel):
     allow_partial_placement: bool = False
     auto_generate_anti_affinity: bool = True
     # HA policy: VMs in an auto-generated group should spread across at least
-    # this many AGs. When infra has fewer AGs (or the group has fewer VMs),
-    # the solver still succeeds but emits an advisory into diagnostics.
-    target_ag_spread: int = 3
+    # `target_spread[d]` distinct buckets for each dimension d. When infra has
+    # fewer buckets in dimension d (or the group has fewer VMs than the
+    # target), the solver still succeeds but emits a `spread_below_target`
+    # advisory into diagnostics for that dimension.
+    #
+    # Keys are topology dimension names (see SPREAD_DIMENSIONS). The key set
+    # also determines which dimensions auto-generated anti-affinity rules
+    # spread on.
+    target_spread: dict[str, int] = Field(default_factory=lambda: {"ag": 3})
     # Objective function weights
     w_consolidation: int = 10
     w_headroom: int = 8
@@ -224,6 +321,20 @@ class SolverConfig(BaseModel):
     auto_generate_max_per_bm: bool = False
     default_max_per_bm: int | None = None
 
+    @field_validator("target_spread")
+    @classmethod
+    def _validate_target_spread(cls, v: dict[str, int]) -> dict[str, int]:
+        unknown = [k for k in v if k not in SPREAD_DIMENSIONS]
+        if unknown:
+            raise ValueError(
+                f"target_spread contains unknown dimension(s) {unknown}; "
+                f"valid: {sorted(SPREAD_DIMENSIONS)}"
+            )
+        bad = {k: val for k, val in v.items() if val < 1}
+        if bad:
+            raise ValueError(f"target_spread values must be >= 1; got {bad}")
+        return v
+
 
 # ---------------------------------------------------------------------------
 # Solver I/O: the JSON contract
@@ -235,6 +346,7 @@ class PlacementRequest(BaseModel):
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
@@ -293,6 +405,7 @@ class SplitPlacementRequest(BaseModel):
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 

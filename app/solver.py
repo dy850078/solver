@@ -36,9 +36,11 @@ from collections import defaultdict
 from ortools.sat.python import cp_model
 
 from .models import (
+    SPREAD_DIMENSIONS,
     VM,
     AntiAffinityRule,
     Baremetal,
+    FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
     PlacementAssignment,
@@ -121,10 +123,15 @@ class VMPlacementSolver:
                 else:
                     seen_candidates.add(cand)
 
-        # Group baremetals by AG (needed for anti-affinity constraints)
-        self.ag_to_bms: dict[str, list[str]] = defaultdict(list)
-        for bm in self.request.baremetals:
-            self.ag_to_bms[bm.topology.ag].append(bm.id)
+        # Group baremetals by each topology dimension (needed for multi-dim
+        # anti-affinity constraints C3 and failover constraints C5).
+        # Shape: dim_to_bms[dim_name][bucket_value] = [bm_id, ...]
+        self.dim_to_bms: dict[str, dict[str, list[str]]] = {}
+        for dim in SPREAD_DIMENSIONS:
+            buckets: dict[str, list[str]] = defaultdict(list)
+            for bm in self.request.baremetals:
+                buckets[getattr(bm.topology, dim)].append(bm.id)
+            self.dim_to_bms[dim] = dict(buckets)
 
         # Non-fatal advisories collected during rule resolution (e.g. policy
         # target not met). Surfaced via PlacementResult.diagnostics["advisories"].
@@ -147,6 +154,12 @@ class VMPlacementSolver:
 
         # Resolve per-baremetal rules (explicit + auto-generated)
         self.max_per_bm_rules: list[MaxPerBaremetalRule] = self._resolve_max_per_bm_rules()
+
+        # Resolve failover rules (expand selectors into concrete VM-id lists).
+        # Pre-flight check (|P| > |L| under n_minus_1 → INPUT_ERROR) lives here.
+        self.failover_resolved: list[tuple[FailoverRule, list[str], list[str]]] = (
+            self._resolve_failover_rules()
+        )
 
         # Waste penalty terms injected by split_solver (splitter integration)
         self.splitter_waste_terms: list[cp_model.LinearExprT] = []
@@ -242,18 +255,18 @@ class VMPlacementSolver:
 
         Auto-generation: group VMs by (cluster_id, ip_type, node_role) and
         for each group with 2+ VMs, create a rule that spreads them across
-        AGs. Including cluster_id is what makes multi-cluster HA correct —
-        each cluster's masters/workers spread independently rather than
-        being pooled into a single AG-spread budget.
+        each dimension in `config.target_spread.keys()` (typically ["ag"]
+        but may include "room", etc.). Including cluster_id is what makes
+        multi-cluster HA correct — each cluster's masters/workers spread
+        independently rather than being pooled into a single budget.
 
-        max_per_ag is computed dynamically:
-          max_per_ag = ceil(num_vms_in_group / num_ags)
-
-        Example: 5 routable masters in cluster-A, 3 AGs → ceil(5/3) = 2 → allows 2/2/1
-        Example: 3 non-routable workers in cluster-B, 3 AGs → ceil(3/3) = 1 → each in different AG
+        Per-bucket caps are auto-computed at constraint time as
+        ⌈N / |buckets(d)|⌉ for each dimension d in spread_on; no explicit
+        cap_per_bucket is set on auto rules.
 
         VMs already covered by explicit rules are not auto-generated.
-        VMs with empty cluster_id or ip_type are skipped (can't group meaningfully).
+        VMs with empty cluster_id or ip_type are skipped (can't group
+        meaningfully).
         """
         # Canonicalize explicit rules: expand selectors into vm_ids form so
         # downstream constraint building doesn't need to know about selectors.
@@ -263,14 +276,16 @@ class VMPlacementSolver:
             rules.append(AntiAffinityRule(
                 group_id=r.group_id,
                 vm_ids=resolved_ids,
-                max_per_ag=r.max_per_ag,
+                spread_on=list(r.spread_on),
+                cap_per_bucket=(dict(r.cap_per_bucket) if r.cap_per_bucket else None),
             ))
 
         if not self.config.auto_generate_anti_affinity:
             return rules
 
-        # How many AGs do we have?
-        num_ags = len(self.ag_to_bms)
+        # Auto-gen spread_on follows the configured target dimensions.
+        # Sorted for deterministic logging and rule construction.
+        auto_spread_dims = sorted(self.config.target_spread.keys())
 
         # Which VMs are already in explicit rules?
         covered: set[str] = set()
@@ -287,94 +302,121 @@ class VMPlacementSolver:
                 continue
             groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
 
-        target_spread = self.config.target_ag_spread
-
         for (cluster_id, ip_type, role), vm_ids in groups.items():
-            if len(vm_ids) >= 2 and num_ags > 0:
-                import math
+            if len(vm_ids) < 2 or not auto_spread_dims:
+                continue
 
-                has_synthetic = any(vid in self.active_vars for vid in vm_ids)
-                group_id = f"auto/{cluster_id}/{ip_type}/{role}"
+            has_synthetic = any(vid in self.active_vars for vid in vm_ids)
+            group_id = f"auto/{cluster_id}/{ip_type}/{role}"
+            rules.append(AntiAffinityRule(
+                group_id=group_id,
+                vm_ids=vm_ids,
+                spread_on=auto_spread_dims,
+            ))
+            logger.info(
+                "Auto anti-affinity: %s/%s/%s (%d VMs%s → spread_on=%s)",
+                cluster_id, ip_type, role, len(vm_ids),
+                " inc. synthetic" if has_synthetic else "",
+                auto_spread_dims,
+            )
 
-                if has_synthetic:
-                    # max_per_ag is unused — the actual constraint is
-                    # built dynamically in _add_anti_affinity_constraints.
-                    # We use 0 as a placeholder; it is ignored in actual calculations
-                    rules.append(
-                        AntiAffinityRule(
-                            group_id=group_id,
-                            vm_ids=vm_ids,
-                            max_per_ag=0,
-                        )
-                    )
-                    synthetic_count = sum(
-                        1 for vid in vm_ids if vid in self.active_vars
-                    )
-                    logger.info(
-                        "Auto anti-affinity: %s/%s/%s (%d slots, %d synthetic"
-                        " / %d AGs → dynamic max_per_ag=ceil(active/%d))",
-                        cluster_id,
-                        ip_type,
-                        role,
-                        len(vm_ids),
-                        synthetic_count,
-                        num_ags,
-                        num_ags,
-                    )
-                else:
-                    max_per_ag = math.ceil(len(vm_ids) / num_ags)
-                    rules.append(
-                        AntiAffinityRule(
-                            group_id=group_id,
-                            vm_ids=vm_ids,
-                            max_per_ag=max_per_ag,
-                        )
-                    )
-                    logger.info(
-                        "Auto anti-affinity: %s/%s/%s (%d VMs / %d AGs → max_per_ag=%d)",
-                        cluster_id,
-                        ip_type,
-                        role,
-                        len(vm_ids),
-                        num_ags,
-                        max_per_ag,
-                    )
-
-                # Policy check: is the actual spread below the policy target?
-                # effective_spread is the most AGs we could possibly use for
-                # this group, bounded by both infra and group size.
-                # For groups with synthetic VMs, use the upper bound count
-                # as a conservative estimate.
-                effective_spread = min(num_ags, len(vm_ids))
-                if effective_spread < target_spread:
-                    detail_max_per_ag = (
-                        "dynamic" if has_synthetic else math.ceil(len(vm_ids) / num_ags)
-                    )
+            # Per-dimension policy check: emit one spread_below_target
+            # advisory per dimension that fails to meet target_spread[d].
+            for dim in auto_spread_dims:
+                target = self.config.target_spread[dim]
+                buckets = self.dim_to_bms.get(dim, {})
+                num_buckets = len(buckets)
+                # Effective spread = min(infra buckets, group size).
+                # For synthetic groups this is an upper-bound estimate.
+                effective_spread = min(num_buckets, len(vm_ids))
+                if effective_spread < target:
                     msg = (
                         f"Anti-affinity for {cluster_id}/{ip_type}/{role} below "
-                        f"policy target: actual spread={effective_spread}, "
-                        f"target={target_spread} "
-                        f"({num_ags} AG(s), {len(vm_ids)} VMs)."
+                        f"policy target on {dim}: actual spread={effective_spread}, "
+                        f"target={target} ({num_buckets} bucket(s), {len(vm_ids)} VMs)."
                     )
-                    self.advisories.append(
-                        {
-                            "type": "ag_spread_below_target",
-                            "severity": "warning",
-                            "group_id": group_id,
-                            "message": msg,
-                            "details": {
-                                "vm_count": len(vm_ids),
-                                "num_ags": num_ags,
-                                "effective_spread": effective_spread,
-                                "target_ag_spread": target_spread,
-                                "max_per_ag": detail_max_per_ag,
-                                "ag_names": sorted(self.ag_to_bms.keys()),
-                            },
-                        }
-                    )
+                    self.advisories.append({
+                        "type": "spread_below_target",
+                        "severity": "warning",
+                        "group_id": group_id,
+                        "message": msg,
+                        "details": {
+                            "dimension": dim,
+                            "vm_count": len(vm_ids),
+                            "num_buckets": num_buckets,
+                            "effective_spread": effective_spread,
+                            "target_spread": target,
+                            "bucket_names": sorted(buckets.keys()),
+                        },
+                    })
                     logger.warning("Spread advisory: %s", msg)
 
         return rules
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Failover rules — C5 resolve
+    # ------------------------------------------------------------------
+
+    def _resolve_failover_rules(
+        self,
+    ) -> list[tuple[FailoverRule, list[str], list[str]]]:
+        """
+        Materialize each FailoverRule into (rule, primary_vm_ids, backup_vm_ids).
+
+        Pre-flight check: under policy `n_minus_1`, |primary| > |backup| can
+        never satisfy the redundancy invariant (some primary will lack a
+        backup partner after the worst-case bucket failure). Such cases are
+        recorded as INPUT_ERROR so the scheduler can correct upstream.
+
+        Returns only well-formed rules; ill-formed ones are reported via
+        self._input_errors and excluded from constraint building.
+        """
+        resolved: list[tuple[FailoverRule, list[str], list[str]]] = []
+        for f in self.request.failover_rules:
+            primary_ids = [vm.id for vm in self.request.vms if f.primary.matches(vm)]
+            backup_ids = [vm.id for vm in self.request.vms if f.backup.matches(vm)]
+
+            if not primary_ids:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': primary selector matches no VMs"
+                )
+                continue
+            if not backup_ids:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': backup selector matches no VMs"
+                )
+                continue
+
+            overlap = set(primary_ids) & set(backup_ids)
+            if overlap:
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': primary and backup selectors "
+                    f"overlap on VMs {sorted(overlap)}"
+                )
+                continue
+
+            if f.policy == "n_minus_1" and len(primary_ids) > len(backup_ids):
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': |primary|={len(primary_ids)} > "
+                    f"|backup|={len(backup_ids)}; n_minus_1 redundancy is "
+                    f"infeasible by counting"
+                )
+                continue
+
+            if f.fault_domain not in self.dim_to_bms:
+                # Defensive — Pydantic validator should already reject unknown dims.
+                self._input_errors.append(
+                    f"failover rule '{f.rule_id}': fault_domain "
+                    f"'{f.fault_domain}' is not a known topology dimension"
+                )
+                continue
+
+            resolved.append((f, primary_ids, backup_ids))
+            logger.info(
+                "Failover rule %s: %d primary, %d backup, fault_domain=%s",
+                f.rule_id, len(primary_ids), len(backup_ids), f.fault_domain,
+            )
+        return resolved
 
     # ------------------------------------------------------------------
     # Step B (cont.): Per-baremetal rules — C4 resolve
@@ -563,65 +605,141 @@ class VMPlacementSolver:
 
     def _add_anti_affinity_constraints(self):
         """
-        CONSTRAINT: VMs in the same anti-affinity group are spread across AGs.
+        CONSTRAINT C3: VMs in the same anti-affinity group are spread across
+        buckets of each dimension named in `rule.spread_on`.
 
-        For each rule, for each AG:
-          count of VMs from this group assigned to BMs in this AG <= max_per_ag
+        For each rule r, for each dimension d in r.spread_on, for each
+        bucket b of dimension d:
+          sum(assign[vm,bm] for vm in r.vm_ids for bm in b) <= cap_d
+        where
+          cap_d = r.cap_per_bucket[d]   if d in r.cap_per_bucket
+                = ⌈|r.vm_ids| / |buckets(d)|⌉   otherwise
 
-        Example: 3 master VMs, max_per_ag=1, 3 AGs
-          → at most 1 master per AG → each master in a different AG ✓
-
-        Example: 6 worker VMs, max_per_ag=2, 3 AGs
-          → at most 2 workers per AG → workers spread across AGs ✓
+        Multiple dimensions are AND'd. Example: spread_on=["ag","room"]
+        produces independent per-AG and per-Room constraints, both must
+        hold simultaneously.
 
         For auto-generated rules containing synthetic VMs (splitter slots),
-        max_per_ag is computed dynamically because the actual VM count is a
-        decision variable. Instead of a fixed bound we use:
-          count_in_ag * num_ags <= total_active + (num_ags - 1)
+        the cap is replaced by the dynamic ceil expression:
+          count_in_bucket * |B_d| <= total_active + (|B_d| - 1)
         which is equivalent to:
-          count_in_ag <= ceil(total_active / num_ags)
+          count_in_bucket <= ceil(total_active / |B_d|)
         """
-        num_ags = len(self.ag_to_bms)
+        import math
 
         for rule in self.effective_rules:
+            vm_ids = rule.vm_ids
+            N = len(vm_ids)
+            if N == 0:
+                continue
+
             # Check if this auto-generated rule contains synthetic VMs
             # whose active count is a decision variable.
             is_auto = rule.group_id.startswith("auto/")
             synthetic_ids = (
-                [vid for vid in rule.vm_ids if vid in self.active_vars]
+                [vid for vid in vm_ids if vid in self.active_vars]
                 if is_auto
                 else []
             )
-            use_dynamic = is_auto and len(synthetic_ids) > 0 and num_ags > 0
+            use_dynamic = is_auto and len(synthetic_ids) > 0
 
-            # Build total_active expression once (reused across AGs).
-            # total_active = Σ active_var[synthetic] + count(explicit in group)
+            # Build total_active expression once per rule (reused across
+            # all dimensions and buckets). Synthetic VMs contribute their
+            # active var; explicit VMs contribute 1 each.
+            total_active = None
             if use_dynamic:
                 explicit_count = sum(
-                    1 for vid in rule.vm_ids if vid not in self.active_vars
+                    1 for vid in vm_ids if vid not in self.active_vars
                 )
                 total_active = (
-                    sum(self.active_vars[vid] for vid in synthetic_ids) + explicit_count
+                    sum(self.active_vars[vid] for vid in synthetic_ids)
+                    + explicit_count
                 )
 
-            for ag, ag_bm_ids in self.ag_to_bms.items():
-                # Collect assign vars for VMs in this rule × BMs in this AG
-                vars_in_ag = [
+            cap_overrides = rule.cap_per_bucket or {}
+
+            for dim in rule.spread_on:
+                buckets = self.dim_to_bms.get(dim, {})
+                num_buckets = len(buckets)
+                if num_buckets == 0:
+                    continue
+
+                has_override = dim in cap_overrides
+                use_dynamic_here = use_dynamic and not has_override
+
+                if use_dynamic_here:
+                    # count * |B| <= total_active + (|B| - 1)
+                    # ≡ count <= ceil(total_active / |B|)
+                    # Trivially true when |B| == 1 (reduces to count <= total).
+                    if num_buckets <= 1:
+                        continue
+                    for bm_ids in buckets.values():
+                        vars_in_bucket = [
+                            self.assign[(vm_id, bm_id)]
+                            for vm_id in vm_ids
+                            for bm_id in bm_ids
+                            if (vm_id, bm_id) in self.assign
+                        ]
+                        if vars_in_bucket:
+                            self.model.add(
+                                sum(vars_in_bucket) * num_buckets
+                                <= total_active + (num_buckets - 1)
+                            )
+                else:
+                    static_cap = cap_overrides.get(
+                        dim, math.ceil(N / num_buckets)
+                    )
+                    # Trivially true: sum within any bucket can't exceed N
+                    # anyway (it's bounded by |rule.vm_ids|).
+                    if static_cap >= N:
+                        continue
+                    for bm_ids in buckets.values():
+                        vars_in_bucket = [
+                            self.assign[(vm_id, bm_id)]
+                            for vm_id in vm_ids
+                            for bm_id in bm_ids
+                            if (vm_id, bm_id) in self.assign
+                        ]
+                        if vars_in_bucket:
+                            self.model.add(sum(vars_in_bucket) <= static_cap)
+
+    def _add_failover_constraints(self):
+        """
+        CONSTRAINT C5: For each failover rule and each bucket b of its
+        fault_domain dimension d:
+
+            sum(assign[vm,bm] for vm ∈ primary for bm ∈ b)
+          + sum(assign[vm,bm] for vm ∈ backup  for bm ∈ b)
+                ≤ |backup|
+
+        This is equivalent to:
+            sum(backup VMs outside b) ≥ sum(primary VMs inside b)
+        so that if bucket b fails entirely, the surviving backups can take
+        over the primaries that were inside b (N-1 redundancy).
+
+        Pre-flight check (|P| > |L|) already happened in
+        _resolve_failover_rules — only well-formed rules reach this method.
+        """
+        for f, primary_ids, backup_ids in self.failover_resolved:
+            buckets = self.dim_to_bms[f.fault_domain]
+            backup_total = len(backup_ids)
+            for bm_ids in buckets.values():
+                primary_in_b = [
                     self.assign[(vm_id, bm_id)]
-                    for vm_id in rule.vm_ids
-                    for bm_id in ag_bm_ids
+                    for vm_id in primary_ids
+                    for bm_id in bm_ids
                     if (vm_id, bm_id) in self.assign
                 ]
-
-                if vars_in_ag:
-                    if use_dynamic:
-                        # count_in_ag * N <= total_active + (N - 1)
-                        # ≡ count_in_ag <= ceil(total_active / N)
-                        self.model.add(
-                            sum(vars_in_ag) * num_ags <= total_active + (num_ags - 1)
-                        )
-                    else:
-                        self.model.add(sum(vars_in_ag) <= rule.max_per_ag)
+                backup_in_b = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in backup_ids
+                    for bm_id in bm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                if primary_in_b or backup_in_b:
+                    self.model.add(
+                        sum(primary_in_b) + sum(backup_in_b) <= backup_total
+                    )
 
     def _add_max_per_bm_constraints(self):
         """
@@ -932,6 +1050,7 @@ class VMPlacementSolver:
             self._add_one_bm_per_vm_constraint()
             self._add_capacity_constraints()
             self._add_anti_affinity_constraints()
+            self._add_failover_constraints()
             self._add_max_per_bm_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
@@ -950,7 +1069,7 @@ class VMPlacementSolver:
                 len(self.assign),
                 len(self.effective_rules),
                 len(self.max_per_bm_rules),
-                len(self.ag_to_bms),
+                len(self.dim_to_bms.get("ag", {})),
             )
 
             status = solver.solve(self.model)
@@ -999,9 +1118,10 @@ class VMPlacementSolver:
             request=self.request,
             vm_map=self.vm_map,
             bm_map=self.bm_map,
-            ag_to_bms=self.ag_to_bms,
+            dim_to_bms=self.dim_to_bms,
             effective_rules=self.effective_rules,
             max_per_bm_rules=self.max_per_bm_rules,
+            failover_resolved=self.failover_resolved,
             config=self.config,
             num_variables=len(self.assign),
         ).build()

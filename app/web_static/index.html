@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM Placement Solver — Topology Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{
+  "imports": {
+    "d3": "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm"
+  }
+}
+</script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">Topology Visualizer</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Input</h2>
+      </header>
+      <div class="card__body">
+
+        <div class="field">
+          <label class="field-label" for="example-select">Load example</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose a sample request —</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label">Or upload</label>
+          <button id="upload-btn" type="button" class="btn btn--ghost btn--block">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 11V3M8 3l-3 3M8 3l3 3"/>
+              <path d="M2.5 11v1.5a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5V11"/>
+            </svg>
+            Upload JSON file…
+          </button>
+          <input id="upload-input" type="file" accept=".json" hidden>
+        </div>
+
+        <div class="field">
+          <span class="field-label">Endpoint</span>
+          <div class="segmented segmented--block" role="radiogroup" aria-label="Endpoint">
+            <label>
+              <input type="radio" name="endpoint" value="solve" checked>
+              <span>solve</span>
+            </label>
+            <label>
+              <input type="radio" name="endpoint" value="split-and-solve">
+              <span>split &amp; solve</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="json-editor">Request JSON</label>
+          <textarea id="json-editor" class="editor" spellcheck="false" placeholder="Paste PlacementRequest JSON here…"></textarea>
+          <div id="json-error" class="alert alert--error hidden"></div>
+        </div>
+
+        <button id="run-btn" type="button" class="btn btn--primary btn--block">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="btn__label">Run solver</span>
+        </button>
+
+      </div>
+    </section>
+  </aside>
+
+  <div class="content">
+
+    <div id="stats" class="stats hidden"></div>
+
+    <section class="card viz-card">
+      <header class="card__header">
+        <h2 class="card__title">Topology</h2>
+        <div class="card__header-right">
+          <label class="select-inline">
+            <span class="select-inline__label">Group by</span>
+            <select id="group-by" class="select select--compact">
+              <option value="site">Site</option>
+              <option value="phase">Phase</option>
+              <option value="datacenter">DataCenter</option>
+              <option value="room">Room</option>
+              <option value="rack" selected>Rack</option>
+              <option value="ag">AG</option>
+            </select>
+          </label>
+        </div>
+      </header>
+      <div class="card__body card__body--scroll">
+        <div id="rack-container" class="rack-area">
+          <div class="viz-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="3" width="16" height="18" rx="1.5"/>
+              <path d="M4 8h16M4 13h16M4 18h16"/>
+            </svg>
+            <span>Run the solver to see the rack diagram.</span>
+          </div>
+        </div>
+        <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="matrix-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">AG × Rack distribution</h2>
+        <span class="card__hint">Each cell = VMs assigned to that AG inside that rack</span>
+      </header>
+      <div class="card__body">
+        <div id="matrix-container"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Result</h2>
+      </header>
+      <div class="card__body">
+        <div id="summary-content">
+          <p class="muted" style="margin:0">No result yet. Submit a request to see assignments.</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+</main>
+
+<div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

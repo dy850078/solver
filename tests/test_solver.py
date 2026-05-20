@@ -10,6 +10,7 @@ import json
 from app.models import (
     Resources, NodeRole,
     AntiAffinityRule,
+    FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
     PlacementRequest, PlacementResult,
@@ -149,28 +150,28 @@ class TestAntiAffinity:
     def test_spread_3_vms_across_3_ags(self):
         bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
         vms = [make_vm(f"vm-{i}") for i in range(3)]
-        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1", "vm-2"], max_per_ag=1)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1", "vm-2"], spread_on=["ag"], cap_per_bucket={"ag": 1})]
         r = solve(vms, bms, rules)
         assert r.success
         ags = {a.ag for a in r.assignments}
         assert len(ags) == 3  # all different AGs
 
     def test_infeasible_not_enough_ags(self):
-        """2 VMs, max_per_ag=1, but only 1 AG → impossible."""
+        """2 VMs, cap_per_bucket={ag: 1}, but only 1 AG → impossible."""
         bms = [make_bm("bm-1", ag="ag-a"), make_bm("bm-2", ag="ag-a")]
         vms = [make_vm("vm-0"), make_vm("vm-1")]
-        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1"], max_per_ag=1)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=["vm-0", "vm-1"], spread_on=["ag"], cap_per_bucket={"ag": 1})]
         r = solve(vms, bms, rules)
         assert not r.success
 
-    def test_max_per_ag_2(self):
-        """4 VMs, max_per_ag=2, 2 AGs → 2 VMs per AG."""
+    def test_cap_per_bucket_ag_2(self):
+        """4 VMs, cap_per_bucket={ag: 2}, 2 AGs → 2 VMs per AG."""
         bms = [
             make_bm("bm-a1", ag="ag-a"), make_bm("bm-a2", ag="ag-a"),
             make_bm("bm-b1", ag="ag-b"),
         ]
         vms = [make_vm(f"vm-{i}") for i in range(4)]
-        rules = [AntiAffinityRule(group_id="g1", vm_ids=[f"vm-{i}" for i in range(4)], max_per_ag=2)]
+        rules = [AntiAffinityRule(group_id="g1", vm_ids=[f"vm-{i}" for i in range(4)], spread_on=["ag"], cap_per_bucket={"ag": 2})]
         r = solve(vms, bms, rules)
         assert r.success
         ag_counts = {}
@@ -186,7 +187,7 @@ class TestAntiAffinity:
         assert r.success
         assert len({a.ag for a in r.assignments}) == 3
 
-    def test_auto_generate_max_per_ag_dynamic(self):
+    def test_auto_generate_cap_dynamic(self):
         """5 masters / 3 AGs → ceil(5/3)=2 → allows 2/2/1 distribution."""
         bms = []
         for ag_i in range(3):
@@ -247,8 +248,9 @@ class TestAntiAffinity:
 class TestAGSpreadAdvisory:
     """
     When auto-generated anti-affinity cannot meet the policy target
-    (config.target_ag_spread, default 3), the solver still succeeds but
-    emits a structured advisory into PlacementResult.diagnostics["advisories"].
+    (config.target_spread, default {"ag": 3}), the solver still succeeds
+    but emits a `spread_below_target` advisory per dimension into
+    PlacementResult.diagnostics["advisories"].
     """
 
     def test_advisory_one_ag_many_vms(self):
@@ -262,12 +264,13 @@ class TestAGSpreadAdvisory:
         advisories = r.diagnostics["advisories"]
         assert len(advisories) == 1
         a = advisories[0]
-        assert a["type"] == "ag_spread_below_target"
+        assert a["type"] == "spread_below_target"
         assert a["severity"] == "warning"
         assert a["group_id"] == "auto/cluster-1/routable/worker"
-        assert a["details"]["num_ags"] == 1
+        assert a["details"]["dimension"] == "ag"
+        assert a["details"]["num_buckets"] == 1
         assert a["details"]["effective_spread"] == 1
-        assert a["details"]["target_ag_spread"] == 3
+        assert a["details"]["target_spread"] == 3
         assert a["details"]["vm_count"] == 5
 
     def test_advisory_two_ags_below_target(self):
@@ -283,7 +286,7 @@ class TestAGSpreadAdvisory:
         assert "advisories" in r.diagnostics
         a = r.diagnostics["advisories"][0]
         assert a["details"]["effective_spread"] == 2
-        assert a["details"]["target_ag_spread"] == 3
+        assert a["details"]["target_spread"] == 3
 
     def test_no_advisory_when_target_met(self):
         """3 AGs + 5 same-role VMs + target=3 → no advisory."""
@@ -298,28 +301,28 @@ class TestAGSpreadAdvisory:
         assert "advisories" not in r.diagnostics
 
     def test_no_advisory_when_rich_infra(self):
-        """5 AGs + 5 same-role VMs + target=3 → no advisory, max_per_ag=1."""
+        """5 AGs + 5 same-role VMs + target=3 → no advisory, ceil(5/5)=1."""
         bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(5)]
         vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
         r = solve(vms, bms, auto_generate_anti_affinity=True)
 
         assert r.success
         assert "advisories" not in r.diagnostics
-        # Rich infra still spreads VMs as widely as possible (max_per_ag=1)
+        # Rich infra still spreads VMs as widely as possible (cap = 1)
         ags = {a.ag for a in r.assignments}
         assert len(ags) == 5
 
-    def test_custom_target_ag_spread(self):
+    def test_custom_target_spread(self):
         """target=5 + only 3 AGs → advisory fires, verifying policy is configurable."""
         bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
         vms = [make_vm(f"w-{i}", role=NodeRole.WORKER, ip_type="routable") for i in range(5)]
-        r = solve(vms, bms, auto_generate_anti_affinity=True, target_ag_spread=5)
+        r = solve(vms, bms, auto_generate_anti_affinity=True, target_spread={"ag": 5})
 
         assert r.success
         assert "advisories" in r.diagnostics
         a = r.diagnostics["advisories"][0]
         assert a["details"]["effective_spread"] == 3
-        assert a["details"]["target_ag_spread"] == 5
+        assert a["details"]["target_spread"] == 5
 
     def test_no_advisory_when_group_trivial(self):
         """1 BM + 1 VM → no auto-rule, no advisory."""
@@ -339,10 +342,233 @@ class TestAGSpreadAdvisory:
         assert r.success
         assert "advisories" in r.diagnostics
         a = r.diagnostics["advisories"][0]
-        # effective_spread = min(num_ags=5, n_vms=2) = 2 < target=3
+        # effective_spread = min(num_buckets=5, n_vms=2) = 2 < target=3
         assert a["details"]["effective_spread"] == 2
-        assert a["details"]["num_ags"] == 5
+        assert a["details"]["num_buckets"] == 5
         assert a["details"]["vm_count"] == 2
+
+
+# ===========================================================================
+# 4c. Multi-dimension anti-affinity (spread_on with multiple dims)
+# ===========================================================================
+
+class TestMultiDimSpread:
+    """
+    `spread_on=["ag","room"]` enforces both per-AG and per-Room caps as
+    independent AND constraints — not the Cartesian product of buckets.
+    """
+
+    def test_spread_on_two_dims_succeeds(self):
+        """3 AGs × 2 Rooms, 4 masters with spread_on=[ag, room].
+        cap by ag = ceil(4/3) = 2; cap by room = ceil(4/2) = 2 → feasible 2/2 per room and ≤ 2 per ag."""
+        bms = [
+            make_bm("bm-ag0-r0", ag="ag-0", room="room-0"),
+            make_bm("bm-ag1-r0", ag="ag-1", room="room-0"),
+            make_bm("bm-ag1-r1", ag="ag-1", room="room-1"),
+            make_bm("bm-ag2-r1", ag="ag-2", room="room-1"),
+        ]
+        vms = [make_vm(f"m-{i}") for i in range(4)]
+        rules = [AntiAffinityRule(
+            group_id="g", vm_ids=[f"m-{i}" for i in range(4)],
+            spread_on=["ag", "room"],
+        )]
+        r = solve(vms, bms, rules)
+        assert r.success
+        ag_counts = {}
+        room_counts = {}
+        bm_to_topo = {bm.id: bm.topology for bm in bms}
+        for a in r.assignments:
+            t = bm_to_topo[a.baremetal_id]
+            ag_counts[t.ag] = ag_counts.get(t.ag, 0) + 1
+            room_counts[t.room] = room_counts.get(t.room, 0) + 1
+        assert max(ag_counts.values()) <= 2
+        assert max(room_counts.values()) <= 2
+
+    def test_spread_on_room_alone_infeasible_when_buckets_short(self):
+        """3 VMs with spread_on=[room], cap_per_bucket={room: 1}, only 2 Rooms → INFEASIBLE."""
+        bms = [
+            make_bm("bm-r0a", room="room-0", ag="ag-0"),
+            make_bm("bm-r0b", room="room-0", ag="ag-0"),
+            make_bm("bm-r1a", room="room-1", ag="ag-1"),
+        ]
+        vms = [make_vm(f"m-{i}") for i in range(3)]
+        rules = [AntiAffinityRule(
+            group_id="g", vm_ids=[f"m-{i}" for i in range(3)],
+            spread_on=["room"], cap_per_bucket={"room": 1},
+        )]
+        r = solve(vms, bms, rules)
+        assert not r.success
+
+    def test_cap_per_bucket_partial_override(self):
+        """spread_on=[ag, room], cap_per_bucket={ag: 1} only.
+        ag goes by override (cap 1), room goes by auto ceil."""
+        bms = [
+            make_bm("bm-ag0-r0", ag="ag-0", room="room-0"),
+            make_bm("bm-ag1-r0", ag="ag-1", room="room-0"),
+            make_bm("bm-ag2-r1", ag="ag-2", room="room-1"),
+        ]
+        vms = [make_vm(f"m-{i}") for i in range(3)]
+        rules = [AntiAffinityRule(
+            group_id="g", vm_ids=[f"m-{i}" for i in range(3)],
+            spread_on=["ag", "room"], cap_per_bucket={"ag": 1},
+        )]
+        r = solve(vms, bms, rules)
+        assert r.success
+        # cap_per_bucket[ag]=1 → each master in different AG
+        assert len({a.ag for a in r.assignments}) == 3
+
+
+# ===========================================================================
+# 4d. Failover (C5): N-1 redundancy across fault domain
+# ===========================================================================
+
+class TestFailover:
+    """
+    For each bucket b of fault_domain:
+        sum(primary in b) + sum(backup in b) <= |backup|
+    Equivalently: surviving backups outside b >= primaries inside b.
+    """
+
+    def test_failover_n_minus_1_room(self):
+        """5M + 5L across 2 Rooms (3 BMs each).
+        Any single-Room failure leaves enough Learners to cover Masters."""
+        bms = []
+        for room_i in range(2):
+            for slot in range(3):
+                bms.append(make_bm(
+                    f"bm-r{room_i}-{slot}",
+                    cpu=64, mem=256_000, disk=2000,
+                    room=f"room-{room_i}", ag=f"ag-{room_i}-{slot}",
+                ))
+        vms = []
+        for i in range(5):
+            vms.append(make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="routable"))
+        for i in range(5):
+            vms.append(make_vm(f"l-{i}", role=NodeRole.LEARNER, cluster="A", ip_type="routable"))
+        f = FailoverRule(
+            rule_id="masters-learners",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert r.success, r.solver_status
+
+        bm_to_room = {bm.id: bm.topology.room for bm in bms}
+        per_room = {}
+        for a in r.assignments:
+            room = bm_to_room[a.baremetal_id]
+            per_room.setdefault(room, {"M": 0, "L": 0})
+            if a.vm_id.startswith("m-"):
+                per_room[room]["M"] += 1
+            else:
+                per_room[room]["L"] += 1
+        # Surviving learners outside any failed room must cover its masters
+        rooms = list(per_room.keys())
+        total_L = sum(p["L"] for p in per_room.values())
+        for room in rooms:
+            survivors = total_L - per_room[room]["L"]
+            assert survivors >= per_room[room]["M"], (
+                f"Room {room} failure: only {survivors} learners survive but "
+                f"{per_room[room]['M']} masters were there. per_room={per_room}"
+            )
+
+    def test_failover_infeasible_when_primary_outnumbers_backup(self):
+        """|P|=4, |L|=2 → INPUT_ERROR by pre-flight check."""
+        bms = [make_bm(f"bm-{i}", room=f"room-{i%2}") for i in range(6)]
+        vms = (
+            [make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A") for i in range(4)]
+            + [make_vm(f"l-{i}", role=NodeRole.LEARNER, cluster="A") for i in range(2)]
+        )
+        f = FailoverRule(
+            rule_id="bad",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "|primary|=4" in r.solver_status
+        assert "|backup|=2" in r.solver_status
+
+    def test_failover_infeasible_when_selectors_overlap(self):
+        """primary and backup matching the same VM is rejected as INPUT_ERROR."""
+        bms = [make_bm(f"bm-{i}", room=f"room-{i}") for i in range(2)]
+        vms = [
+            make_vm("vm-0", role=NodeRole.MASTER, cluster="A"),
+            make_vm("vm-1", role=NodeRole.MASTER, cluster="A"),
+        ]
+        f = FailoverRule(
+            rule_id="overlap",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert not r.success
+        assert "overlap" in r.solver_status.lower()
+
+    def test_master_learner_2room_example_json(self):
+        """End-to-end: load examples/master_learner_2room.json and verify all
+        three constraint families (spread by ag, spread by room, failover) hold."""
+        import pathlib
+        path = pathlib.Path(__file__).parent.parent / "examples" / "master_learner_2room.json"
+        raw = json.loads(path.read_text())
+        # Strip _description key so Pydantic accepts the payload.
+        raw.pop("_description", None)
+        # Backfill candidate_baremetals so the example is solver-ready.
+        bm_ids = [bm["id"] for bm in raw["baremetals"]]
+        for vm in raw["vms"]:
+            vm.setdefault("candidate_baremetals", bm_ids)
+        request = PlacementRequest.model_validate(raw)
+        r = VMPlacementSolver(request).solve()
+        assert r.success, r.solver_status
+        assert len(r.assignments) == 6
+
+        bm_to_topo = {bm.id: bm.topology for bm in request.baremetals}
+        # Spread by room: each room caps at ceil(3/2)=2 masters and 2 learners
+        m_per_room = {}
+        l_per_room = {}
+        for a in r.assignments:
+            t = bm_to_topo[a.baremetal_id]
+            if a.vm_id.startswith("m-"):
+                m_per_room[t.room] = m_per_room.get(t.room, 0) + 1
+            else:
+                l_per_room[t.room] = l_per_room.get(t.room, 0) + 1
+        assert max(m_per_room.values()) <= 2
+        assert max(l_per_room.values()) <= 2
+
+        # Failover: surviving learners outside any failing room cover its masters
+        total_L = sum(l_per_room.values())
+        for room in m_per_room:
+            survivors = total_L - l_per_room.get(room, 0)
+            assert survivors >= m_per_room[room]
+
+    def test_failover_succeeds_with_balanced_master_learner(self):
+        """1M + 1L spread across 2 Rooms.
+        Room failure leaves 1 L outside to cover 1 M inside ✓."""
+        bms = [
+            make_bm("bm-r0", room="room-0", ag="ag-0"),
+            make_bm("bm-r1", room="room-1", ag="ag-1"),
+        ]
+        vms = [
+            make_vm("m-0", role=NodeRole.MASTER, cluster="A"),
+            make_vm("l-0", role=NodeRole.LEARNER, cluster="A"),
+        ]
+        f = FailoverRule(
+            rule_id="balanced",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert r.success
+        # The single master and single learner must land in different rooms
+        bm_to_room = {bm.id: bm.topology.room for bm in bms}
+        m_room = next(bm_to_room[a.baremetal_id] for a in r.assignments if a.vm_id == "m-0")
+        l_room = next(bm_to_room[a.baremetal_id] for a in r.assignments if a.vm_id == "l-0")
+        assert m_room != l_room
 
 
 # ===========================================================================
@@ -970,7 +1196,8 @@ class TestAntiAffinitySelector:
             selector=GroupSelector(
                 cluster_id="A", ip_type="routable", node_role=NodeRole.MASTER,
             ),
-            max_per_ag=1,
+            spread_on=["ag"],
+            cap_per_bucket={"ag": 1},
         )
         r = _solve_with_bm_rules(vms, bms, aa_rules=[rule])
         assert r.success

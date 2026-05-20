@@ -1,0 +1,48 @@
+{
+  "_description": "Master/Learner N-1 failover across 2 rooms with multi-dim spread. 3 masters + 3 learners, both groups spread by AG and Room; failover rule guarantees that if either room fails entirely, the surviving learners outside it can cover the masters inside it.",
+  "vms": [
+    {"id": "m-1", "hostname": "k8s-master-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "m-2", "hostname": "k8s-master-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "m-3", "hostname": "k8s-master-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "master", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-1", "hostname": "k8s-learner-01", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-2", "hostname": "k8s-learner-02", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]},
+    {"id": "l-3", "hostname": "k8s-learner-03", "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}, "node_role": "learner", "ip_type": "routable", "cluster_id": "A", "candidate_baremetals": ["bm-r0-a", "bm-r0-b", "bm-r0-c", "bm-r1-a", "bm-r1-b", "bm-r1-c"]}
+  ],
+  "baremetals": [
+    {"id": "bm-r0-a", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-0", "rack": "rack-1", "ag": "ag-1"}},
+    {"id": "bm-r0-b", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-0", "rack": "rack-2", "ag": "ag-2"}},
+    {"id": "bm-r0-c", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-0", "rack": "rack-3", "ag": "ag-3"}},
+    {"id": "bm-r1-a", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "room": "room-1", "rack": "rack-4", "ag": "ag-1"}},
+    {"id": "bm-r1-b", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "room": "room-1", "rack": "rack-5", "ag": "ag-2"}},
+    {"id": "bm-r1-c", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "room": "room-1", "rack": "rack-6", "ag": "ag-3"}}
+  ],
+  "anti_affinity_rules": [
+    {
+      "group_id": "masters-spread",
+      "selector": {"cluster_id": "A", "ip_type": "routable", "node_role": "master"},
+      "spread_on": ["ag", "room"]
+    },
+    {
+      "group_id": "learners-spread",
+      "selector": {"cluster_id": "A", "ip_type": "routable", "node_role": "learner"},
+      "spread_on": ["ag", "room"]
+    }
+  ],
+  "failover_rules": [
+    {
+      "rule_id": "masters-learners-by-room",
+      "primary": {"cluster_id": "A", "node_role": "master"},
+      "backup":  {"cluster_id": "A", "node_role": "learner"},
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": false,
+    "target_spread": {"ag": 3, "room": 2},
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "headroom_upper_bound_pct": 90
+  }
+}
