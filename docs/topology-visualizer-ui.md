@@ -128,27 +128,40 @@ if _WEB_STATIC_DIR.is_dir():
 
 ### 5.2 Examples API
 
-`app/examples_api.py` 提供兩個端點,讓前端載入 `examples/*.json`:
+`app/examples_api.py` 提供兩個端點,讓前端載入 `examples/**/*.json` (遞迴掃描):
 
 | Endpoint | 用途 |
 |---|---|
-| `GET /api/examples` | 列出 `examples/*.json`,並猜測 endpoint hint (檔名以 `split_` 開頭 → `split-and-solve`,否則 `solve`) |
-| `GET /api/examples/{name}` | 回傳檔案 JSON 內容 |
+| `GET /api/examples` | 列出 `examples/` 下所有 `.json`,含子目錄。回傳 relative path 與 endpoint hint |
+| `GET /api/examples/{name:path}` | 回傳檔案 JSON;`name` 可為多段路徑 (例如 `splitter/basic.json`) |
 
-**Path traversal 防護**:
+**Endpoint hint 推斷**:
+
+1. **依父目錄名**: `splitter/` / `split/` → `split-and-solve`、`placement/` / `solve/` → `solve`
+2. **依檔名 fallback**: 頂層檔案若以 `split_` 開頭 → `split-and-solve`,否則 `solve`
+
+這讓使用者可以選擇:
+- **扁平佈局** (現況): 所有檔案放在 `examples/` 下,靠檔名前綴區分
+- **分類佈局**: `examples/splitter/`、`examples/placement/` 分目錄管理,前端會自動以 `<optgroup>` 分組顯示
+
+**Path traversal 防護** (支援多段路徑後仍維持雙重保險):
 
 ```python
-_NAME_PATTERN = re.compile(r"^[\w\-.]+\.json$")
-
-def get_example(name: str) -> dict:
-    if not _NAME_PATTERN.match(name):
-        raise HTTPException(status_code=400, detail="invalid example name")
+def _resolve_example(name: str) -> Path:
+    if not name or name.startswith("/") or "\\" in name:
+        raise HTTPException(400, "invalid example name")
+    segments = name.split("/")
+    for s in segments:
+        if not s or s in (".", "..") or not _SEGMENT_PATTERN.match(s):
+            raise HTTPException(400, "invalid example name")
+    if not segments[-1].endswith(".json"):
+        raise HTTPException(400, "invalid example name")
     target = (_EXAMPLES_DIR / name).resolve()
     target.relative_to(_EXAMPLES_DIR)  # raises if escapes
-    ...
+    return target
 ```
 
-雙重防護:regex 拒絕 `/`、`..`、空白等;`relative_to()` 在 resolved path 跨出 examples 目錄時拋 `ValueError`。
+每個 path segment 用 `^[\w\-.]+$` regex 檢查並排除 `.` / `..`;最後仍以 `relative_to()` 確認 resolve 後落在 examples 目錄內。
 
 ---
 

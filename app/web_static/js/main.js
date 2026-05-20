@@ -69,16 +69,46 @@ function rerenderViz() {
   }
 }
 
+function makeExampleOption(item, label) {
+  const opt = document.createElement("option");
+  opt.value = item.name;
+  opt.textContent = `${label}  ·  ${item.endpoint_hint}`;
+  opt.dataset.endpoint = item.endpoint_hint;
+  return opt;
+}
+
 async function populateExamples() {
   const sel = $("#example-select");
   try {
     const items = await listExamples();
+
+    // Group by parent directory so nested examples appear under <optgroup>
+    const groups = new Map();   // dir -> [{name, endpoint_hint, file}]
     for (const item of items) {
-      const opt = document.createElement("option");
-      opt.value = item.name;
-      opt.textContent = `${item.name}  ·  ${item.endpoint_hint}`;
-      opt.dataset.endpoint = item.endpoint_hint;
-      sel.appendChild(opt);
+      const idx = item.name.lastIndexOf("/");
+      const dir = idx >= 0 ? item.name.slice(0, idx) : "";
+      const file = idx >= 0 ? item.name.slice(idx + 1) : item.name;
+      if (!groups.has(dir)) groups.set(dir, []);
+      groups.get(dir).push({ ...item, file });
+    }
+
+    // Root entries first, then subdirs alphabetically
+    const dirs = [...groups.keys()].sort((a, b) => {
+      if (a === "") return -1;
+      if (b === "") return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const dir of dirs) {
+      const bucket = groups.get(dir);
+      if (dir === "") {
+        for (const it of bucket) sel.appendChild(makeExampleOption(it, it.file));
+      } else {
+        const og = document.createElement("optgroup");
+        og.label = dir + "/";
+        for (const it of bucket) og.appendChild(makeExampleOption(it, it.file));
+        sel.appendChild(og);
+      }
     }
   } catch (err) {
     console.error("Failed to load examples", err);
