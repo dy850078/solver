@@ -17,9 +17,10 @@ import swagger_ui_bundle
 import uvicorn
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import examples_api
 from .models import PlacementRequest, PlacementResult, SplitPlacementRequest, SplitPlacementResult
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
@@ -40,6 +41,17 @@ api = FastAPI(
 
 # Serve Swagger UI static assets locally
 api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
+
+api.include_router(examples_api.router)
+
+# Serve the web UI (topology visualization) from app/web_static/
+_WEB_STATIC_DIR = Path(__file__).parent / "web_static"
+if _WEB_STATIC_DIR.is_dir():
+    api.mount("/ui", StaticFiles(directory=str(_WEB_STATIC_DIR), html=True), name="ui")
+
+    @api.get("/", include_in_schema=False)
+    def root_redirect() -> RedirectResponse:
+        return RedirectResponse("/ui/")
 
 
 @api.get("/docs", include_in_schema=False)
