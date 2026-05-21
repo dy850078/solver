@@ -8,7 +8,9 @@
  */
 
 import { colorForAg } from "./colors.js";
-import { showTooltip, moveTooltip, hideTooltip, escapeHtml } from "./tooltip.js";
+import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
+import { escapeHtml } from "./util.js";
+import { lookupVm, matchesFilter, isFilterActive } from "./filter.js";
 
 const PHYSICAL_DIMS = ["site", "phase", "datacenter", "room", "rack"];
 
@@ -22,12 +24,6 @@ export const GROUP_BY_OPTIONS = [
 ];
 
 // ─── Data shaping ─────────────────────────────────────────────
-function indexVmById(request) {
-  const map = new Map();
-  for (const vm of request.vms ?? []) map.set(vm.id, vm);
-  return map;
-}
-
 function groupAssignmentsByBm(result) {
   const map = new Map();
   for (const a of result.assignments ?? []) {
@@ -37,28 +33,32 @@ function groupAssignmentsByBm(result) {
   return map;
 }
 
-function vmEntry(a, vmIndex) {
-  const vm = vmIndex.get(a.vm_id);
+function vmEntry(a, request) {
+  const vm = lookupVm(a.vm_id, request);
   return {
     vm_id: a.vm_id,
     vm_hostname: a.vm_hostname,
     bm_id: a.baremetal_id,
     bm_hostname: a.bm_hostname,
     ag: a.ag || "",
+    cluster_id: vm?.cluster_id ?? "",
     node_role: vm?.node_role ?? "",
     ip_type: vm?.ip_type ?? "",
     demand: vm?.demand ?? null,
   };
 }
 
-function bmEntry(bm, assignmentsByBm, vmIndex) {
+function bmEntry(bm, assignmentsByBm, request, filter) {
   const assigns = assignmentsByBm.get(bm.id) ?? [];
+  const vms = assigns
+    .map((a) => vmEntry(a, request))
+    .filter((v) => !isFilterActive(filter) || matchesFilter(v, filter));
   return {
     id: bm.id,
     hostname: bm.hostname,
     ag: bm.topology?.ag || "",
     topology: bm.topology ?? {},
-    vms: assigns.map((a) => vmEntry(a, vmIndex)),
+    vms,
   };
 }
 
@@ -98,9 +98,8 @@ function subGroupLabel(key) {
   return key.split("|").filter(Boolean).join(" › ");
 }
 
-export function buildPanels(request, result, groupBy) {
+export function buildPanels(request, result, groupBy, filter) {
   const baremetals = request.baremetals ?? [];
-  const vmIndex = indexVmById(request);
   const assignmentsByBm = groupAssignmentsByBm(result);
 
   const panels = new Map();
@@ -108,7 +107,7 @@ export function buildPanels(request, result, groupBy) {
     const pkey = panelKeyFor(bm, groupBy);
     if (!panels.has(pkey)) panels.set(pkey, { key: pkey, subgroups: new Map(), totalBms: 0, totalVms: 0 });
     const panel = panels.get(pkey);
-    const entry = bmEntry(bm, assignmentsByBm, vmIndex);
+    const entry = bmEntry(bm, assignmentsByBm, request, filter);
 
     const skey = subGroupKey(bm, groupBy);
     if (!panel.subgroups.has(skey)) panel.subgroups.set(skey, []);
@@ -159,6 +158,7 @@ function renderVm(vm) {
     data-bm-id="${escapeHtml(vm.bm_id)}"
     data-bm-hostname="${escapeHtml(vm.bm_hostname || "")}"
     data-ag="${escapeHtml(vm.ag)}"
+    data-cluster="${escapeHtml(vm.cluster_id)}"
     data-role="${escapeHtml(vm.node_role)}"
     data-ip="${escapeHtml(vm.ip_type)}"
     data-cpu="${vm.demand?.cpu_cores ?? ""}"
@@ -208,36 +208,39 @@ function renderPanel(panel) {
     </article>`;
 }
 
-function vmTooltipHtml(el) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
+function vmTooltipNode(el) {
   const cpu = el.dataset.cpu, mem = el.dataset.mem, st = el.dataset.storage, gpu = el.dataset.gpu;
   const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu} GPU` : "—";
-  return `
-    <div class="tooltip__title">${escapeHtml(el.dataset.vmHostname || el.dataset.vmId)}</div>
-    ${row("VM", el.dataset.vmId)}
-    ${row("BM", `${el.dataset.bmId} (${el.dataset.bmHostname || "—"})`)}
-    ${row("AG", el.dataset.ag || "—")}
-    ${row("Role", el.dataset.role || "—")}
-    ${row("IP", el.dataset.ip || "—")}
-    ${row("Demand", dem)}
-  `;
+  return buildTooltipBody(
+    el.dataset.vmHostname || el.dataset.vmId,
+    [
+      ["VM", el.dataset.vmId],
+      ["BM", `${el.dataset.bmId} (${el.dataset.bmHostname || "—"})`],
+      ["AG", el.dataset.ag || "—"],
+      ["Cluster", el.dataset.cluster || "—"],
+      ["Role", el.dataset.role || "—"],
+      ["IP", el.dataset.ip || "—"],
+      ["Demand", dem],
+    ],
+  );
 }
 
-function bmAgTooltipHtml(el) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
-  return `
-    <div class="tooltip__title">${escapeHtml(el.dataset.bmHostname || el.dataset.bmId)}</div>
-    ${row("BM", el.dataset.bmId)}
-    ${row("AG", el.dataset.ag || "—")}
-  `;
+function bmAgTooltipNode(el) {
+  return buildTooltipBody(
+    el.dataset.bmHostname || el.dataset.bmId,
+    [
+      ["BM", el.dataset.bmId],
+      ["AG", el.dataset.ag || "—"],
+    ],
+  );
 }
 
 function attachTooltips(container) {
   container.addEventListener("mouseover", (e) => {
     const vm = e.target.closest(".vm-chip");
-    if (vm) { showTooltip(vmTooltipHtml(vm), e); return; }
+    if (vm) { showTooltip(vmTooltipNode(vm), e); return; }
     const bmAg = e.target.closest("[data-bm-tooltip]");
-    if (bmAg) { showTooltip(bmAgTooltipHtml(bmAg), e); return; }
+    if (bmAg) { showTooltip(bmAgTooltipNode(bmAg), e); return; }
   });
   container.addEventListener("mousemove", (e) => {
     if (e.target.closest(".vm-chip, [data-bm-tooltip]")) moveTooltip(e);

@@ -3,6 +3,8 @@ import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./r
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
 import { rebuildColorScale, legendEntries } from "./colors.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
+import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
+import { createMultiSelect } from "./multiselect.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -10,9 +12,21 @@ const state = {
   request: null,
   result: null,
   groupBy: "rack",
+  filter: {
+    clusters: new Set(),
+    roles: new Set(),
+    ipTypes: new Set(),
+  },
 };
 
+let clusterMs = null;
+let roleMs = null;
+let ipTypeMs = null;
+
+const VALID_ENDPOINTS = new Set(["solve", "split-and-solve"]);
+
 function setEndpoint(value) {
+  if (!VALID_ENDPOINTS.has(value)) return;
   const radio = document.querySelector(`input[name="endpoint"][value="${value}"]`);
   if (radio) radio.checked = true;
 }
@@ -41,6 +55,21 @@ function parseRequestText() {
   }
 }
 
+function rerenderAll() {
+  if (!state.request || !state.result) {
+    renderStats($("#stats"), null);
+    renderResult($("#summary-content"), null);
+    showRackEmpty($("#rack-container"));
+    $("#matrix-card").classList.add("hidden");
+    renderLegend($("#ag-legend"), []);
+    return;
+  }
+  const filtered = applyFilter(state.result, state.request, state.filter);
+  renderStats($("#stats"), filtered);
+  renderResult($("#summary-content"), filtered);
+  rerenderViz();
+}
+
 function rerenderViz() {
   const rackEl = $("#rack-container");
   const matrixCard = $("#matrix-card");
@@ -54,19 +83,50 @@ function rerenderViz() {
     return;
   }
 
+  // Color scale uses the unfiltered set so colors stay stable across filter changes
   rebuildColorScale(collectAgSet(state.request, state.result));
 
-  const panels = buildPanels(state.request, state.result, state.groupBy);
+  const panels = buildPanels(state.request, state.result, state.groupBy, state.filter);
   renderRackDiagram(rackEl, panels);
   renderLegend(legendEl, legendEntries());
 
-  const matrix = buildAgRackMatrix(state.request, state.result);
-  if (matrix.isEmpty() || (state.result.assignments ?? []).length === 0) {
+  const matrix = buildAgRackMatrix(state.request, state.result, state.filter);
+  const hasAnyAssignments = (state.result.assignments ?? []).length > 0;
+  if (matrix.isEmpty() || !hasAnyAssignments) {
     matrixCard.classList.add("hidden");
   } else {
     matrixCard.classList.remove("hidden");
     renderMatrix(matrixEl, matrix);
   }
+}
+
+function mapToOptions(countMap) {
+  return [...countMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([value, count]) => ({ value, count }));
+}
+
+function updateFilterControls() {
+  const bar = $("#filter-bar");
+  const clearBtn = $("#filter-clear");
+  if (!state.request || !state.result) {
+    bar.classList.add("hidden");
+    return;
+  }
+  bar.classList.remove("hidden");
+  const opts = buildFilterOptions(state.request, state.result);
+  clusterMs.update({ options: mapToOptions(opts.clusters), selected: state.filter.clusters });
+  roleMs.update({ options: mapToOptions(opts.roles), selected: state.filter.roles });
+  ipTypeMs.update({ options: mapToOptions(opts.ipTypes), selected: state.filter.ipTypes });
+  clearBtn.classList.toggle("hidden", !isFilterActive(state.filter));
+}
+
+function clearFilter() {
+  state.filter.clusters.clear();
+  state.filter.roles.clear();
+  state.filter.ipTypes.clear();
+  updateFilterControls();
+  rerenderAll();
 }
 
 function makeExampleOption(item, label) {
@@ -194,9 +254,8 @@ async function runSolver() {
     const result = await fn(request);
     state.request = request;
     state.result = result;
-    renderStats($("#stats"), result);
-    renderResult($("#summary-content"), result);
-    rerenderViz();
+    // Reset filter on each new run — old selections may not exist in new data
+    clearFilter();
   } catch (err) {
     state.request = null;
     state.result = null;
@@ -205,6 +264,7 @@ async function runSolver() {
     showRackEmpty($("#rack-container"), "Request failed. See result panel for details.");
     $("#matrix-card").classList.add("hidden");
     renderLegend($("#ag-legend"), []);
+    $("#filter-bar").classList.add("hidden");
   } finally {
     setRunningState(false);
   }
@@ -227,6 +287,21 @@ function init() {
       rerenderViz();
     });
   }
+
+  // Multi-select filter dropdowns
+  const onFilterChange = (key) => (selected) => {
+    state.filter[key] = selected;
+    $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
+    rerenderAll();
+  };
+  clusterMs = createMultiSelect({ label: "Cluster",  onChange: onFilterChange("clusters") });
+  roleMs    = createMultiSelect({ label: "Role",     onChange: onFilterChange("roles") });
+  ipTypeMs  = createMultiSelect({ label: "IP type",  onChange: onFilterChange("ipTypes") });
+  $("#filter-cluster").appendChild(clusterMs.element);
+  $("#filter-role").appendChild(roleMs.element);
+  $("#filter-iptype").appendChild(ipTypeMs.element);
+
+  $("#filter-clear").addEventListener("click", clearFilter);
 }
 
 document.addEventListener("DOMContentLoaded", init);

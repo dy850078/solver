@@ -7,7 +7,9 @@
  */
 
 import { colorForAg } from "./colors.js";
-import { showTooltip, moveTooltip, hideTooltip, escapeHtml } from "./tooltip.js";
+import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
+import { escapeHtml } from "./util.js";
+import { lookupVm, matchesFilter, isFilterActive } from "./filter.js";
 
 function rackPath(bm) {
   const t = bm.topology ?? {};
@@ -20,8 +22,9 @@ function rackShortName(bm) {
   return t.rack || t.room || t.datacenter || t.phase || t.site || bm.id;
 }
 
-export function buildAgRackMatrix(request, result) {
+export function buildAgRackMatrix(request, result, filter) {
   const bmById = new Map((request.baremetals ?? []).map((b) => [b.id, b]));
+  const filterOn = isFilterActive(filter);
 
   const rackKeyToBm = new Map();   // first BM that defined this rack key (for naming)
   const racksSet = new Set();
@@ -44,6 +47,7 @@ export function buildAgRackMatrix(request, result) {
   const agTotals = new Map();
   const rackTotals = new Map();
   for (const a of result.assignments ?? []) {
+    if (filterOn && !matchesFilter(lookupVm(a.vm_id, request), filter)) continue;
     const bm = bmById.get(a.baremetal_id);
     if (!bm) continue;
     let key = rackPath(bm);
@@ -81,13 +85,14 @@ export function buildAgRackMatrix(request, result) {
   };
 }
 
-function tooltipForCell(ag, rack, count) {
-  const row = (k, v) => `<div class="tooltip__row"><span class="k">${k}</span><span class="v">${escapeHtml(v)}</span></div>`;
-  return `
-    <div class="tooltip__title">${count} VM · ${escapeHtml(ag)}</div>
-    ${row("Rack", rack.path || rack.name)}
-    ${row("AG", ag)}
-  `;
+function cellTooltipNode(ag, rack, count) {
+  return buildTooltipBody(
+    `${count} VM · ${ag}`,
+    [
+      ["Rack", rack.path || rack.name],
+      ["AG", ag],
+    ],
+  );
 }
 
 export function renderMatrix(container, matrix) {
@@ -147,7 +152,7 @@ export function renderMatrix(container, matrix) {
   el.addEventListener("mouseover", (e) => {
     const cell = e.target.closest("[data-tip-ag]");
     if (!cell) return;
-    showTooltip(tooltipForCell(
+    showTooltip(cellTooltipNode(
       cell.dataset.tipAg,
       { path: cell.dataset.tipRack, name: cell.dataset.tipRack },
       parseInt(cell.dataset.tipCount, 10),
