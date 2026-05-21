@@ -1,0 +1,3072 @@
+{
+  "_description": "2 Rooms x 3 AGs x 21 BMs (R1: AG1=7 + AG2=3; R2: AG2=4 + AG3=7). 4 Clusters x 19 VMs (5 master, 5 learner, 3 l4lb-storage, 5 infra, 1 bastion), all non-routable. Rules: per-cluster master max_per_bm=1, per-cluster non-routable learner max_per_bm=1, master/learner N-1 failover by room. AG spreading via auto_generate_anti_affinity + target_spread={ag:3}.",
+  "vms": [
+    {
+      "id": "c1-m-1",
+      "hostname": "c1-m-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-m-2",
+      "hostname": "c1-m-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-m-3",
+      "hostname": "c1-m-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-m-4",
+      "hostname": "c1-m-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-m-5",
+      "hostname": "c1-m-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-l-1",
+      "hostname": "c1-l-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-l-2",
+      "hostname": "c1-l-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-l-3",
+      "hostname": "c1-l-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-l-4",
+      "hostname": "c1-l-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-l-5",
+      "hostname": "c1-l-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-lb-1",
+      "hostname": "c1-lb-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-lb-2",
+      "hostname": "c1-lb-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-lb-3",
+      "hostname": "c1-lb-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-inf-1",
+      "hostname": "c1-inf-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-inf-2",
+      "hostname": "c1-inf-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-inf-3",
+      "hostname": "c1-inf-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-inf-4",
+      "hostname": "c1-inf-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-inf-5",
+      "hostname": "c1-inf-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c1-bas-1",
+      "hostname": "c1-bas-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "bastion",
+      "ip_type": "non-routable",
+      "cluster_id": "c1",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-m-1",
+      "hostname": "c2-m-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-m-2",
+      "hostname": "c2-m-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-m-3",
+      "hostname": "c2-m-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-m-4",
+      "hostname": "c2-m-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-m-5",
+      "hostname": "c2-m-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-l-1",
+      "hostname": "c2-l-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-l-2",
+      "hostname": "c2-l-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-l-3",
+      "hostname": "c2-l-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-l-4",
+      "hostname": "c2-l-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-l-5",
+      "hostname": "c2-l-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-lb-1",
+      "hostname": "c2-lb-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-lb-2",
+      "hostname": "c2-lb-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-lb-3",
+      "hostname": "c2-lb-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-inf-1",
+      "hostname": "c2-inf-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-inf-2",
+      "hostname": "c2-inf-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-inf-3",
+      "hostname": "c2-inf-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-inf-4",
+      "hostname": "c2-inf-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-inf-5",
+      "hostname": "c2-inf-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c2-bas-1",
+      "hostname": "c2-bas-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "bastion",
+      "ip_type": "non-routable",
+      "cluster_id": "c2",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-m-1",
+      "hostname": "c3-m-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-m-2",
+      "hostname": "c3-m-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-m-3",
+      "hostname": "c3-m-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-m-4",
+      "hostname": "c3-m-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-m-5",
+      "hostname": "c3-m-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-l-1",
+      "hostname": "c3-l-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-l-2",
+      "hostname": "c3-l-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-l-3",
+      "hostname": "c3-l-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-l-4",
+      "hostname": "c3-l-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-l-5",
+      "hostname": "c3-l-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-lb-1",
+      "hostname": "c3-lb-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-lb-2",
+      "hostname": "c3-lb-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-lb-3",
+      "hostname": "c3-lb-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-inf-1",
+      "hostname": "c3-inf-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-inf-2",
+      "hostname": "c3-inf-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-inf-3",
+      "hostname": "c3-inf-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-inf-4",
+      "hostname": "c3-inf-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-inf-5",
+      "hostname": "c3-inf-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c3-bas-1",
+      "hostname": "c3-bas-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "bastion",
+      "ip_type": "non-routable",
+      "cluster_id": "c3",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-m-1",
+      "hostname": "c4-m-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-m-2",
+      "hostname": "c4-m-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-m-3",
+      "hostname": "c4-m-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-m-4",
+      "hostname": "c4-m-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-m-5",
+      "hostname": "c4-m-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "master",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-l-1",
+      "hostname": "c4-l-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-l-2",
+      "hostname": "c4-l-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-l-3",
+      "hostname": "c4-l-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-l-4",
+      "hostname": "c4-l-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-l-5",
+      "hostname": "c4-l-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "learner",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-lb-1",
+      "hostname": "c4-lb-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-lb-2",
+      "hostname": "c4-lb-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-lb-3",
+      "hostname": "c4-lb-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "l4lb-storage",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-inf-1",
+      "hostname": "c4-inf-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-inf-2",
+      "hostname": "c4-inf-2",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-inf-3",
+      "hostname": "c4-inf-3",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-inf-4",
+      "hostname": "c4-inf-4",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-inf-5",
+      "hostname": "c4-inf-5",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "infra",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    },
+    {
+      "id": "c4-bas-1",
+      "hostname": "c4-bas-1",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "bastion",
+      "ip_type": "non-routable",
+      "cluster_id": "c4",
+      "candidate_baremetals": [
+        "bm-r1-ag1-1",
+        "bm-r1-ag1-2",
+        "bm-r1-ag1-3",
+        "bm-r1-ag1-4",
+        "bm-r1-ag1-5",
+        "bm-r1-ag1-6",
+        "bm-r1-ag1-7",
+        "bm-r1-ag2-1",
+        "bm-r1-ag2-2",
+        "bm-r1-ag2-3",
+        "bm-r2-ag2-1",
+        "bm-r2-ag2-2",
+        "bm-r2-ag2-3",
+        "bm-r2-ag2-4",
+        "bm-r2-ag3-1",
+        "bm-r2-ag3-2",
+        "bm-r2-ag3-3",
+        "bm-r2-ag3-4",
+        "bm-r2-ag3-5",
+        "bm-r2-ag3-6",
+        "bm-r2-ag3-7"
+      ]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-r1-ag1-1",
+      "hostname": "bm-r1-ag1-1",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-2",
+      "hostname": "bm-r1-ag1-2",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-3",
+      "hostname": "bm-r1-ag1-3",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-4",
+      "hostname": "bm-r1-ag1-4",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-5",
+      "hostname": "bm-r1-ag1-5",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-6",
+      "hostname": "bm-r1-ag1-6",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag1-7",
+      "hostname": "bm-r1-ag1-7",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-ag2-1",
+      "hostname": "bm-r1-ag2-1",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r1-ag2-2",
+      "hostname": "bm-r1-ag2-2",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r1-ag2-3",
+      "hostname": "bm-r1-ag2-3",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-1",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r2-ag2-1",
+      "hostname": "bm-r2-ag2-1",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r2-ag2-2",
+      "hostname": "bm-r2-ag2-2",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r2-ag2-3",
+      "hostname": "bm-r2-ag2-3",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r2-ag2-4",
+      "hostname": "bm-r2-ag2-4",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-1",
+      "hostname": "bm-r2-ag3-1",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-2",
+      "hostname": "bm-r2-ag3-2",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-3",
+      "hostname": "bm-r2-ag3-3",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-4",
+      "hostname": "bm-r2-ag3-4",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-5",
+      "hostname": "bm-r2-ag3-5",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-6",
+      "hostname": "bm-r2-ag3-6",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r2-ag3-7",
+      "hostname": "bm-r2-ag3-7",
+      "total_capacity": {
+        "cpu_cores": 96,
+        "memory_mib": 786432,
+        "storage_gb": 4000
+      },
+      "topology": {
+        "room": "room-2",
+        "ag": "ag-3"
+      }
+    }
+  ],
+  "max_per_bm_rules": [
+    {
+      "group_id": "c1-master-per-bm",
+      "selector": {
+        "cluster_id": "c1",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c1-learner-nonrt-per-bm",
+      "selector": {
+        "cluster_id": "c1",
+        "node_role": "learner",
+        "ip_type": "non-routable"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c2-master-per-bm",
+      "selector": {
+        "cluster_id": "c2",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c2-learner-nonrt-per-bm",
+      "selector": {
+        "cluster_id": "c2",
+        "node_role": "learner",
+        "ip_type": "non-routable"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c3-master-per-bm",
+      "selector": {
+        "cluster_id": "c3",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c3-learner-nonrt-per-bm",
+      "selector": {
+        "cluster_id": "c3",
+        "node_role": "learner",
+        "ip_type": "non-routable"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c4-master-per-bm",
+      "selector": {
+        "cluster_id": "c4",
+        "node_role": "master"
+      },
+      "max_per_bm": 1
+    },
+    {
+      "group_id": "c4-learner-nonrt-per-bm",
+      "selector": {
+        "cluster_id": "c4",
+        "node_role": "learner",
+        "ip_type": "non-routable"
+      },
+      "max_per_bm": 1
+    }
+  ],
+  "failover_rules": [
+    {
+      "rule_id": "c1-master-learner-failover-by-room",
+      "primary": {
+        "cluster_id": "c1",
+        "node_role": "master"
+      },
+      "backup": {
+        "cluster_id": "c1",
+        "node_role": "learner"
+      },
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    },
+    {
+      "rule_id": "c2-master-learner-failover-by-room",
+      "primary": {
+        "cluster_id": "c2",
+        "node_role": "master"
+      },
+      "backup": {
+        "cluster_id": "c2",
+        "node_role": "learner"
+      },
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    },
+    {
+      "rule_id": "c3-master-learner-failover-by-room",
+      "primary": {
+        "cluster_id": "c3",
+        "node_role": "master"
+      },
+      "backup": {
+        "cluster_id": "c3",
+        "node_role": "learner"
+      },
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    },
+    {
+      "rule_id": "c4-master-learner-failover-by-room",
+      "primary": {
+        "cluster_id": "c4",
+        "node_role": "master"
+      },
+      "backup": {
+        "cluster_id": "c4",
+        "node_role": "learner"
+      },
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 60,
+    "auto_generate_anti_affinity": true,
+    "target_spread": {
+      "ag": 3
+    },
+    "auto_generate_max_per_bm": false
+  }
+}
