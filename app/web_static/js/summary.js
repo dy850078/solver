@@ -25,6 +25,15 @@ export function renderStats(container, result) {
 
   const statusShort = status.split(":")[0]; // strip long detail in the headline
 
+  const filtered = result._filterActive;
+  const totals = result._filterTotals ?? { placed, unplaced };
+  const placedDisplay = filtered
+    ? `${placed}<span class="unit"> / ${totals.placed}</span>`
+    : String(placed);
+  const unplacedDisplay = filtered
+    ? `${unplaced}<span class="unit"> / ${totals.unplaced}</span>`
+    : String(unplaced);
+
   container.innerHTML = `
     <div class="stat ${statusClass}">
       <span class="stat__label">Status</span>
@@ -35,12 +44,12 @@ export function renderStats(container, result) {
       <span class="stat__value">${time}<span class="unit">s</span></span>
     </div>
     <div class="stat stat--ok">
-      <span class="stat__label">Placed</span>
-      <span class="stat__value">${placed}</span>
+      <span class="stat__label">Placed${filtered ? " (filtered)" : ""}</span>
+      <span class="stat__value">${placedDisplay}</span>
     </div>
     <div class="stat ${unplaced > 0 ? "stat--err" : ""}">
-      <span class="stat__label">Unplaced</span>
-      <span class="stat__value">${unplaced}</span>
+      <span class="stat__label">Unplaced${filtered ? " (filtered)" : ""}</span>
+      <span class="stat__value">${unplacedDisplay}</span>
     </div>
   `;
 }
@@ -112,9 +121,16 @@ export function renderResult(container, result) {
     container.innerHTML = `<p class="muted" style="margin:0">No result yet. Submit a request to see assignments.</p>`;
     return;
   }
+  const filtered = result._filterActive;
+  const placed = (result.assignments ?? []).length;
+  const totalPlaced = result._filterTotals?.placed ?? placed;
+  const assignmentsCount = filtered
+    ? `(${placed} of ${totalPlaced} — filtered)`
+    : `(${placed})`;
+
   container.innerHTML = `
     ${unplacedBlock(result.unplaced_vms)}
-    <h3 class="section-title">Assignments <span class="muted">(${(result.assignments ?? []).length})</span></h3>
+    <h3 class="section-title">Assignments <span class="muted">${assignmentsCount}</span></h3>
     ${assignmentsTable(result.assignments)}
     ${splitDecisionsTable(result.split_decisions)}
     ${diagnosticsBlock(result.diagnostics)}
