@@ -277,6 +277,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .role-row .input, .role-row .select { height: 30px; font-size: 12px; min-width: 0; }
 /* Smaller dropdown chevron for the narrow Roles-table selects */
 .role-row .select { background-size: 9px; background-position: right 6px center; padding-right: 18px; }
+/* …and for the preset picker */
+#mock-preset { background-size: 9px; background-position: right 10px center; padding-right: 24px; }
 
 /* Capacity rows (VM specs, baremetal profiles): self-labeling fields that wrap
    instead of cramming into one rigid row, so digits are always fully visible. */
