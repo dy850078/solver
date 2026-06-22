@@ -275,16 +275,24 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* Capacity rows (VM specs, baremetal profiles): self-labeling fields that wrap
    instead of cramming into one rigid row, so digits are always fully visible. */
 .spec-rows, .bm-rows { display: flex; flex-direction: column; gap: 10px; }
-.cap-row { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end;
-  padding: 8px; border: 1px solid var(--border-base); border-radius: var(--radius-sm); background: var(--bg-subtle); }
-.mini { display: flex; flex-direction: column; gap: 2px; }
-.mini__label { font-size: 10px; color: var(--text-muted); padding-left: 1px; }
+.cap-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+  padding: 10px; border: 1px solid var(--border-base); border-radius: var(--radius-sm); background: var(--bg-subtle); }
+.mini { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mini__label { font-size: 10px; color: var(--text-muted); padding-left: 1px; white-space: nowrap; }
 .cap-row .input { height: 30px; font-size: 12px; padding: 0 8px; width: 100%; }
-.mini--name { flex: 1 1 100%; }
+/* name shares the first line with the remove button; numeric fields wrap below */
+.mini--name { flex: 1 1 140px; }
 .mini--roles { flex: 1 1 100%; }
-.mini--num { flex: 1 1 70px; min-width: 64px; }
-.mini--mem { flex: 1 1 96px; min-width: 88px; }
-.cap-remove { height: 30px; padding: 0 8px; margin-left: auto; align-self: flex-end; }
+.mini--num { flex: 1 1 64px; }
+.mini--mem { flex: 1 1 92px; }
+.cap-remove { height: 30px; padding: 0 10px; align-self: flex-end; }
+
+/* Draggable sidebar resize handle (sits on the sidebar's right edge) */
+#sidebar-resizer { position: fixed; top: var(--header-h); height: calc(100vh - var(--header-h));
+  width: 11px; margin-left: -5px; cursor: col-resize; z-index: 50; }
+#sidebar-resizer::after { content: ""; position: absolute; left: 5px; top: 0; bottom: 0;
+  width: 1px; background: var(--border-base); transition: background 120ms, width 120ms; }
+#sidebar-resizer:hover::after, #sidebar-resizer.dragging::after { left: 4px; width: 3px; background: var(--brand); }
 
 .mock-checks { display: flex; flex-direction: column; gap: 8px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-base); cursor: pointer; }
@@ -984,4 +992,5 @@ details.diagnostics pre {
   .app-main { grid-template-columns: 1fr; padding: 20px; gap: 20px; }
   .sidebar { position: static; max-height: none; }
   .rack-grid { grid-template-columns: 1fr; }
+  #sidebar-resizer { display: none; }
 }

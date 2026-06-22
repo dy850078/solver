@@ -316,6 +316,51 @@ function spinnerEl() {
   return d;
 }
 
+// Drag the right edge of the sidebar to resize it; width persists in localStorage.
+function initSidebarResize() {
+  const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
+  const root = document.documentElement;
+  const MIN = 300, MAX = 760;
+
+  const saved = parseInt(localStorage.getItem("sidebarW") || "", 10);
+  if (saved >= MIN && saved <= MAX) root.style.setProperty("--sidebar-w", saved + "px");
+
+  const handle = document.createElement("div");
+  handle.id = "sidebar-resizer";
+  document.body.appendChild(handle);
+
+  const place = () => { handle.style.left = sidebar.getBoundingClientRect().right + "px"; };
+  place();
+  window.addEventListener("resize", place);
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    handle.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+    const onMove = (ev) => {
+      const w = Math.min(MAX, Math.max(MIN, Math.round(startW + ev.clientX - startX)));
+      root.style.setProperty("--sidebar-w", w + "px");
+      place();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      handle.classList.remove("dragging");
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      const cur = parseInt(getComputedStyle(root).getPropertyValue("--sidebar-w"), 10);
+      if (cur) localStorage.setItem("sidebarW", String(cur));
+      place();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 async function runSolver() {
   const request = parseRequestText();
   if (!request) return;
@@ -345,6 +390,7 @@ async function runSolver() {
 }
 
 function init() {
+  initSidebarResize();
   renderMockForm($("#mock-form"));
   populateExamples();
 
