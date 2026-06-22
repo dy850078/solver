@@ -123,16 +123,32 @@ def test_max_per_bm_sets_config():
     assert resp.request.config.default_max_per_bm == 1
 
 
-def test_failover_emits_rule():
+def test_failover_emits_per_cluster_rule():
+    """One rule per cluster so backups never span clusters."""
     req = GenerateRequest(
+        clusters=2,
         roles={"master": 3, "learner": 3},
         ip_type_by_role={"master": "routable", "learner": "routable"},
         failover=True,
     )
     resp = generate_mock_request(req)
-    assert len(resp.request.failover_rules) == 1
-    rule = resp.request.failover_rules[0]
-    assert rule.fault_domain == "ag"
+    assert len(resp.request.failover_rules) == 2
+    for rule in resp.request.failover_rules:
+        assert rule.fault_domain == "ag"
+        assert rule.primary.cluster_id == rule.backup.cluster_id
+        assert rule.primary.cluster_id is not None
+    assert resp.feasibility == "verified"
+
+
+def test_failover_skipped_without_learner():
+    req = GenerateRequest(
+        roles={"master": 3, "worker": 2},
+        ip_type_by_role={"master": "routable", "worker": "routable"},
+        failover=True,
+    )
+    resp = generate_mock_request(req)
+    assert resp.request.failover_rules == []
+    assert "failover_skipped" in resp.diagnostics
 
 
 def test_ags_auto_bumped_to_target_spread():

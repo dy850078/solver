@@ -430,13 +430,22 @@ class _Generator:
     def _build_failover_rules(self) -> list[FailoverRule]:
         if not self.req.failover:
             return []
-        # master (primary) backed by learner across AG fault domain.
-        return [FailoverRule(
-            rule_id="auto-master-learner",
-            primary=GroupSelector(node_role=NodeRole.MASTER),
-            backup=GroupSelector(node_role=NodeRole.LEARNER),
-            fault_domain="ag",
-        )]
+        # Require both roles to exist, else the backup selector resolves empty.
+        if self.req.roles.get("master", 0) < 1 or self.req.roles.get("learner", 0) < 1:
+            self.diag["failover_skipped"] = "needs >=1 master and >=1 learner per cluster"
+            return []
+        # One rule per cluster so masters are backed by learners of the SAME
+        # cluster (mirrors auto anti-affinity keying on cluster_id).
+        rules: list[FailoverRule] = []
+        for c in range(1, self.req.clusters + 1):
+            cid = f"cluster-{c}"
+            rules.append(FailoverRule(
+                rule_id=f"auto-failover-{cid}",
+                primary=GroupSelector(cluster_id=cid, node_role=NodeRole.MASTER),
+                backup=GroupSelector(cluster_id=cid, node_role=NodeRole.LEARNER),
+                fault_domain="ag",
+            ))
+        return rules
 
     def _build_config(self) -> SolverConfig:
         req = self.req

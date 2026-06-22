@@ -43,7 +43,6 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 - brownfield（`used_capacity > 0` 的既有負載）
 - `split-and-solve` 形態的輸出（`ResourceRequirement`）
 - profile 綁定特定 rack（GPU 機集中某些 rack）
-- Web UI 表單（先提供 API，UI 後續）
 
 ---
 
@@ -112,7 +111,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 3. **BM fleet**：實例化固定 profile，必要時依 §5 補彈性 profile，平均撒到 racks。
 4. **Candidates**：依 `candidate_strategy` 給每個 cluster 決定 home scope，VM 的 `candidate_baremetals` = scope 內的 BM。
 5. **Constructive placement（ground truth）**：把每個自動反親和群依 `⌈n/桶數⌉` 平均鋪到各 AG，於候選 BM 中挑容量足夠者放置（同時遵守 `max_per_bm`）；非分群的單台 VM 直接擇一候選放置。
-6. **Assemble**：組出 `PlacementRequest`（config 帶上 `auto_generate_anti_affinity`、`target_spread`、`auto_generate_max_per_bm`/`default_max_per_bm`，`failover` 規則），套用 `config_overrides`。
+6. **Assemble**：組出 `PlacementRequest`（config 帶上 `auto_generate_anti_affinity`、`target_spread`、`auto_generate_max_per_bm`/`default_max_per_bm`），套用 `config_overrides`。`failover=true` 時**每個 cluster 各產一條** N-1 規則（primary=該 cluster 的 master、backup=同 cluster 的 learner、fault_domain=ag），確保 backup 不會跨 cluster 互相支援；缺 master 或 learner 則略過並記入診斷。
 7. **Verify**：選擇性跑 solver，產生 `feasibility`。
 
 ---
@@ -142,11 +141,21 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 9. File Layout
 
 ```
-app/mockgen.py          # 生成器：GenerateRequest/Response + 演算法 + APIRouter
-app/server.py           # 掛載 mockgen.router
-tests/test_mockgen.py   # 單元 + 端點測試
+app/mockgen.py              # 生成器：GenerateRequest/Response + 演算法 + APIRouter
+app/server.py               # 掛載 mockgen.router
+app/web_static/             # /ui「Generate mock」區塊（index.html / js/main.js / js/api.js / styles.css）
+examples/mock/*.json        # GenerateRequest 範例（UI preset 下拉、curl、CLI）
+tests/test_mockgen.py       # 單元 + 端點測試
 docs/mock-request-generator.md
 ```
+
+## 9a. Web UI
+
+`/ui` 側欄新增 **Generate mock** 卡片：選 `examples/mock/` preset 或自填 `GenerateRequest`
+參數 → 「Generate request」呼叫 `/api/mock/generate` → 把回傳的 `request` 灌入既有
+solver 編輯器並切到 `solve` endpoint，狀態列顯示 `feasibility` 與 VM/BM/AG 計數，
+再按「Run solver」即可視覺化。mock preset 為 GenerateRequest（非 PlacementRequest），
+故從主 example 下拉中過濾掉、只出現在 mock preset 下拉。
 
 ---
 
@@ -156,4 +165,3 @@ docs/mock-request-generator.md
 - brownfield：`used_capacity > 0` 的既有負載旋鈕
 - `split-and-solve` 輸出（`ResourceRequirement`）
 - profile 綁定特定 rack/room（異質硬體佈局）
-- Web UI 生成表單，接到既有 `/ui`

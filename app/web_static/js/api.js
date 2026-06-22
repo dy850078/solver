@@ -35,3 +35,12 @@ export async function splitAndSolve(body) {
   });
   return jsonOrThrow(res);
 }
+
+export async function generateMock(body) {
+  const res = await fetch("/api/mock/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}

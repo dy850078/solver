@@ -249,6 +249,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 0 0 3px var(--brand-ring);
   background: var(--bg-surface);
 }
+.editor--short { min-height: 120px; }
 
 /* ─────────────────────────────────────────────────────────────
    Buttons
@@ -338,6 +339,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 .alert--error { color: var(--error); background: var(--error-soft); border-color: #fecaca; }
+.alert--ok { color: var(--success); background: var(--success-soft); border-color: #a7f3d0; }
+.alert--warn { color: var(--warning); background: var(--warning-soft); border-color: #fde68a; }
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
 

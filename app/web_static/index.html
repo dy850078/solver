@@ -39,6 +39,37 @@
   <aside class="sidebar">
     <section class="card">
       <header class="card__header">
+        <h2 class="card__title">Generate mock</h2>
+        <span class="card__hint">Build a request from high-level knobs</span>
+      </header>
+      <div class="card__body">
+
+        <div class="field">
+          <label class="field-label" for="mock-preset">Preset</label>
+          <select id="mock-preset" class="select">
+            <option value="">— Choose a mock preset —</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="mock-editor">Generator params (JSON)</label>
+          <textarea id="mock-editor" class="editor editor--short" spellcheck="false" placeholder="Mock GenerateRequest params, e.g. { &quot;clusters&quot;: 2, ... }"></textarea>
+          <div id="mock-error" class="alert alert--error hidden"></div>
+        </div>
+
+        <button id="generate-btn" type="button" class="btn btn--ghost btn--block">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3M3.4 3.4l2.1 2.1M10.5 10.5l2.1 2.1M12.6 3.4l-2.1 2.1M5.5 10.5l-2.1 2.1"/>
+          </svg>
+          <span class="btn__label">Generate request</span>
+        </button>
+        <div id="mock-status" class="alert hidden" style="margin-top:8px"></div>
+
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
         <h2 class="card__title">Input</h2>
       </header>
       <div class="card__body">
