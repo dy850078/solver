@@ -21,7 +21,7 @@ import random
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     Baremetal,
@@ -99,6 +99,10 @@ class GenerateRequest(BaseModel):
     role_demands: dict[str, Resources] | None = None
     # value: a single ip_type string, or a weighted distribution {ip_type: weight}
     ip_type_by_role: dict[str, str | dict[str, float]] = Field(default_factory=dict)
+    # Named VM specs (a reusable catalog) and which spec each role uses.
+    # spec_by_role key is "<role>" or "<role>:<ip_type>" (the latter wins).
+    vm_specs: dict[str, Resources] = Field(default_factory=dict)
+    spec_by_role: dict[str, str] = Field(default_factory=dict)
 
     # Baremetal
     bm_profiles: list[BmProfile] = Field(
@@ -149,6 +153,16 @@ class GenerateRequest(BaseModel):
             raise ValueError("tightness must be in (0, 1]")
         return v
 
+    @model_validator(mode="after")
+    def _validate_spec_assignment(self) -> GenerateRequest:
+        bad = sorted({v for v in self.spec_by_role.values() if v not in self.vm_specs})
+        if bad:
+            raise ValueError(
+                f"spec_by_role references unknown vm_specs {bad}; "
+                f"defined specs: {sorted(self.vm_specs)}"
+            )
+        return self
+
 
 class GenerateResponse(BaseModel):
     request: PlacementRequest
@@ -198,9 +212,18 @@ class _Generator:
 
     # -- VMs ----------------------------------------------------------------
 
-    def _demand_for(self, role: str) -> Resources:
+    def _demand_for(self, role: str, ip_type: str) -> Resources:
+        # 1. named spec assigned to this (role, ip_type) or role
+        sa = self.req.spec_by_role
+        if sa:
+            name = sa.get(f"{role}:{ip_type}") if ip_type else None
+            name = name or sa.get(role)
+            if name and name in self.req.vm_specs:
+                return self.req.vm_specs[name]
+        # 2. explicit per-role demand
         if self.req.role_demands and role in self.req.role_demands:
             return self.req.role_demands[role]
+        # 3. size-profile-scaled baseline
         base = _ROLE_BASELINE.get(role, _ROLE_BASELINE[NodeRole.WORKER.value])
         return _scaled(base, _SIZE_SCALE[self.req.vm_size_profile])
 
@@ -221,15 +244,14 @@ class _Generator:
         for c in range(1, req.clusters + 1):
             cluster_id = f"cluster-{c}"
             for role, count in req.roles.items():
-                demand = self._demand_for(role)
                 for n in range(1, count + 1):
-                    vm_id = f"{cluster_id}-{role}-{n}"
+                    ip_type = self._resolve_ip_type(role)
                     vms.append(VM(
-                        id=vm_id,
+                        id=f"{cluster_id}-{role}-{n}",
                         hostname=f"{role}-{n}.{cluster_id}",
-                        demand=demand,
+                        demand=self._demand_for(role, ip_type),
                         node_role=NodeRole(role),
-                        ip_type=self._resolve_ip_type(role),
+                        ip_type=ip_type,
                         cluster_id=cluster_id,
                     ))
         return vms

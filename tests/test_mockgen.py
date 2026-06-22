@@ -112,6 +112,30 @@ def test_multi_cluster_spread_across_ags():
         assert len(ags) == 3, f"{cid} masters not spread across 3 AGs: {ags}"
 
 
+def test_vm_specs_assigned_per_role_and_iptype():
+    """Named specs resolve by 'role:ip_type' first, then 'role'."""
+    req = GenerateRequest(
+        roles={"master": 3, "worker": 4},
+        ip_type_by_role={"master": "routable", "worker": "routable"},
+        vm_specs={
+            "big": Resources(cpu_cores=32, memory_mib=128_000, storage_gb=500),
+            "small": Resources(cpu_cores=2, memory_mib=8_000, storage_gb=50),
+        },
+        spec_by_role={"master": "big", "worker:routable": "small"},
+    )
+    resp = generate_mock_request(req)
+    masters = [v for v in resp.request.vms if "master" in v.id]
+    workers = [v for v in resp.request.vms if "worker" in v.id]
+    assert all(v.demand.cpu_cores == 32 for v in masters)
+    assert all(v.demand.cpu_cores == 2 for v in workers)
+    assert resp.feasibility == "verified"
+
+
+def test_spec_by_role_rejects_unknown_spec():
+    with pytest.raises(Exception):
+        GenerateRequest(roles={"worker": 1}, spec_by_role={"worker": "missing"})
+
+
 def test_max_per_bm_sets_config():
     req = GenerateRequest(
         roles={"worker": 4},

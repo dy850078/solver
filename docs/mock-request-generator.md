@@ -63,8 +63,10 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `verify` | `true` | 產後用真實 solver 自我驗證 |
 | Cluster/VM | `clusters` | 1 | cluster 數 |
 | | `roles` | `{master:3,worker:3,infra:2}` | 每 cluster 各 role 的 VM 數 |
-| | `vm_size_profile` | `"medium"` | `small`/`medium`/`large`，縮放各 role 的基準 demand |
-| | `role_demands` | null | 逐 role 指定 `Resources`，完全覆寫 profile |
+| | `vm_size_profile` | `"medium"` | fallback：`small`/`medium`/`large` 縮放各 role 基準 demand |
+| | `role_demands` | null | 逐 role 指定 `Resources`，覆寫 profile |
+| | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
+| | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
 | Baremetal | `bm_profiles` | `[standard]` | 固定機型清單，每項 `{name, capacity, count?}`；`count` 省略 → 彈性數量（見 §5） |
 | Topology | `sites`/`phases`/`datacenters`/`rooms`/`racks`/`ags` | `1/1/1/1/4/3` | 各維度桶數，BM 平均撒 |
@@ -107,7 +109,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 6. Generation Algorithm
 
 1. **Topology**：產生 `racks` 個 rack，site/room/ag 以 round-robin 平均分配；若 `ags < target_spread[ag]` 或 `racks < target_spread[rack]` 自動上調並記入診斷。
-2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；demand 取 `role_demands` 或 `vm_size_profile` 縮放後的 role 基準；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）。
+2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ `role_demands[role]` → `vm_size_profile` 縮放後的 role 基準。
 3. **BM fleet**：實例化固定 profile，必要時依 §5 補彈性 profile，平均撒到 racks。
 4. **Candidates**：依 `candidate_strategy` 給每個 cluster 決定 home scope，VM 的 `candidate_baremetals` = scope 內的 BM。
 5. **Constructive placement（ground truth）**：把每個自動反親和群依 `⌈n/桶數⌉` 平均鋪到各 AG，於候選 BM 中挑容量足夠者放置（同時遵守 `max_per_bm`）；非分群的單台 VM 直接擇一候選放置。
@@ -152,7 +154,9 @@ docs/mock-request-generator.md
 ## 9a. Web UI
 
 `/ui` 側欄新增 **Generate mock** 卡片，採**逐欄位表單**（非 raw JSON），對非開發者友善：
-- clusters/seed、各 role 的 count 與 ip_type 下拉、VM size、candidate 策略
+- clusters/seed、**Candidate BMs**（`candidate_strategy`，控制每台 VM 可落的 baremetal）
+- **VM specs 動態列**（name + cpu/mem/storage/gpu）定義具名規格目錄
+- **Roles 表格**：每 role 的 count、ip_type 下拉、**spec 下拉**（指派該 role/ip_type 用哪個 VM spec）
 - **Baremetal profiles 動態列**（name + cpu/mem/storage/gpu + count；count 留白＝自動估數量），可增刪
 - topology（sites/rooms/racks/ags）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
 - **Advanced overrides (JSON)** 摺疊區：放 `role_demands`、`config_overrides`、加權 `ip_type` 等

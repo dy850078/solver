@@ -1,17 +1,15 @@
 // Mock generator form — renders individual fields for GenerateRequest, reads
 // them back into a params object, and populates them from a preset. Anything
 // not representable as a simple field (role_demands, config_overrides, weighted
-// ip_type distributions) flows through the "Advanced overrides (JSON)" box,
-// which is deep-merged over the form-built params.
+// ip_type distributions, vm_size_profile) flows through the "Advanced overrides
+// (JSON)" box, which is deep-merged over the form-built params.
 
 const ROLES = ["master", "learner", "worker", "infra"];
 
 const DEFAULTS = {
-  seed: "",
   clusters: 1,
   roles: { master: 3, learner: 0, worker: 3, infra: 2 },
   ip_type: { master: "routable", learner: "routable", worker: "routable", infra: "non-routable" },
-  vm_size_profile: "medium",
   sites: 1, rooms: 1, racks: 4, ags: 3,
   anti_affinity: true,
   target_spread_ag: 3,
@@ -19,6 +17,7 @@ const DEFAULTS = {
   max_per_bm: "",
   tightness: 0.7,
   candidate_strategy: "same_site",
+  vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu_count: 0 }],
   bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu_count: 0, count: "" }],
 };
 
@@ -44,7 +43,52 @@ function numField(id, label, value, { step, min } = {}) {
   return el("div", { class: "field field--inline" }, [el("label", { class: "field-label", for: id, text: label }), input]);
 }
 
+let specRowsEl = null;
 let bmRowsEl = null;
+
+// ─── VM spec catalog rows (name + cpu/mem/storage/gpu) ───
+
+function getSpecNames() {
+  return [...specRowsEl.querySelectorAll(".spec-row")]
+    .map((r) => r.querySelector(".spec-name").value.trim())
+    .filter(Boolean);
+}
+
+function refreshSpecDropdowns() {
+  const names = getSpecNames();
+  for (const r of ROLES) {
+    const sel = document.getElementById(`mf-spec-${r}`);
+    if (!sel) continue;
+    const cur = sel.value;
+    sel.innerHTML = "";
+    sel.appendChild(el("option", { value: "", text: "(default)" }));
+    for (const n of names) sel.appendChild(el("option", { value: n, text: n, selected: n === cur }));
+  }
+}
+
+function specRow(p = {}) {
+  const mk = (cls, ph, val) => {
+    const i = el("input", { class: `input ${cls}`, placeholder: ph, type: cls === "spec-name" ? "text" : "number" });
+    if (val !== undefined && val !== "") i.value = val;
+    return i;
+  };
+  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small spec-remove", text: "✕" });
+  const row = el("div", { class: "spec-row" }, [
+    mk("spec-name", "name", p.name),
+    mk("spec-cpu", "cpu", p.cpu_cores),
+    mk("spec-mem", "mem MiB", p.memory_mib),
+    mk("spec-sto", "GB", p.storage_gb),
+    mk("spec-gpu", "gpu", p.gpu_count ?? 0),
+    remove,
+  ]);
+  row.querySelector(".spec-name").addEventListener("input", refreshSpecDropdowns);
+  remove.addEventListener("click", () => {
+    if (specRowsEl.querySelectorAll(".spec-row").length > 1) { row.remove(); refreshSpecDropdowns(); }
+  });
+  return row;
+}
+
+// ─── Baremetal profile rows ───
 
 function bmRow(p = {}) {
   const mk = (cls, ph, val, step) => {
@@ -75,41 +119,44 @@ export function renderMockForm(container) {
   // Scale
   container.appendChild(el("div", { class: "mock-grid" }, [
     numField("mf-clusters", "Clusters", DEFAULTS.clusters, { min: 1 }),
-    numField("mf-seed", "Seed (optional)", DEFAULTS.seed),
+    numField("mf-seed", "Seed (optional)", "", {}),
   ]));
 
-  // Roles table: count + ip_type per role
+  // VM specs (define a reusable catalog)
+  specRowsEl = el("div", { class: "spec-rows" }, DEFAULTS.vm_specs.map(specRow));
+  const addSpec = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add spec" });
+  addSpec.addEventListener("click", () => { specRowsEl.appendChild(specRow()); refreshSpecDropdowns(); });
+  container.appendChild(el("div", { class: "field" }, [
+    el("label", { class: "field-label", text: "VM specs (name · cpu · mem · storage · gpu)" }),
+    el("div", { class: "spec-row spec-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", ""].map((t) => el("span", { text: t }))),
+    specRowsEl,
+    addSpec,
+  ]));
+
+  // Roles table: count + ip_type + spec per role
   const roleRows = ROLES.map((r) => {
     const count = el("input", { id: `mf-role-${r}`, class: "input", type: "number", min: 0, value: DEFAULTS.roles[r] });
     const ip = el("select", { id: `mf-ip-${r}`, class: "select" },
       IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === DEFAULTS.ip_type[r] })));
-    return el("div", { class: "role-row" }, [el("span", { class: "role-row__name", text: r }), count, ip]);
+    const spec = el("select", { id: `mf-spec-${r}`, class: "select" },
+      [el("option", { value: "", text: "(default)" }), ...getSpecNames().map((n) => el("option", { value: n, text: n }))]);
+    return el("div", { class: "role-row" }, [el("span", { class: "role-row__name", text: r }), count, ip, spec]);
   });
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Roles (count · ip_type)" }),
-    el("div", { class: "role-row role-row--head" }, [el("span", {}), el("span", { class: "muted", text: "count" }), el("span", { class: "muted", text: "ip_type" })]),
+    el("label", { class: "field-label", text: "Roles (count · ip_type · spec)" }),
+    el("div", { class: "role-row role-row--head muted" }, [el("span", {}), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" })]),
     ...roleRows,
-  ]));
-
-  // VM size + candidate strategy
-  const sizeSel = el("select", { id: "mf-size", class: "select" },
-    ["small", "medium", "large"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.vm_size_profile })));
-  const candSel = el("select", { id: "mf-candidate", class: "select" },
-    ["all", "same_site", "same_room", "topology_affinity"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.candidate_strategy })));
-  container.appendChild(el("div", { class: "mock-grid" }, [
-    el("div", { class: "field field--inline" }, [el("label", { class: "field-label", text: "VM size" }), sizeSel]),
-    el("div", { class: "field field--inline" }, [el("label", { class: "field-label", text: "Candidates" }), candSel]),
   ]));
 
   // Baremetal profiles (dynamic rows)
   bmRowsEl = el("div", { class: "bm-rows" }, DEFAULTS.bm_profiles.map(bmRow));
-  const addBtn = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add profile" });
-  addBtn.addEventListener("click", () => bmRowsEl.appendChild(bmRow()));
+  const addBm = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add profile" });
+  addBm.addEventListener("click", () => bmRowsEl.appendChild(bmRow()));
   container.appendChild(el("div", { class: "field" }, [
     el("label", { class: "field-label", text: "Baremetal profiles (count blank = auto-size)" }),
     el("div", { class: "bm-row bm-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", "count", ""].map((t) => el("span", { text: t }))),
     bmRowsEl,
-    addBtn,
+    addBm,
   ]));
 
   // Topology
@@ -118,6 +165,14 @@ export function renderMockForm(container) {
     numField("mf-rooms", "Rooms", DEFAULTS.rooms, { min: 1 }),
     numField("mf-racks", "Racks", DEFAULTS.racks, { min: 1 }),
     numField("mf-ags", "AGs", DEFAULTS.ags, { min: 1 }),
+  ]));
+
+  // Candidate baremetals (placement filtering — which BMs each VM may land on)
+  const candSel = el("select", { id: "mf-candidate", class: "select" },
+    ["all", "same_site", "same_room", "topology_affinity"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.candidate_strategy })));
+  container.appendChild(el("div", { class: "field" }, [
+    el("label", { class: "field-label", for: "mf-candidate", text: "Candidate BMs (which baremetals each VM may use)" }),
+    candSel,
   ]));
 
   // Rules
@@ -139,25 +194,25 @@ const num = (id) => {
   return v === "" ? null : Number(v);
 };
 
-function readBmProfiles() {
-  const rows = [...bmRowsEl.querySelectorAll(".bm-row")];
-  const profiles = [];
-  for (const row of rows) {
-    const name = row.querySelector(".bm-name").value.trim();
-    const cpu = row.querySelector(".bm-cpu").value.trim();
+function readCapacityRows(rootEl, rowSel, prefix, withCount) {
+  const out = [];
+  for (const row of rootEl.querySelectorAll(rowSel)) {
+    const name = row.querySelector(`.${prefix}-name`).value.trim();
+    const cpu = row.querySelector(`.${prefix}-cpu`).value.trim();
     if (!name && !cpu) continue;  // skip blank row
     const cap = {
-      cpu_cores: Number(row.querySelector(".bm-cpu").value || 0),
-      memory_mib: Number(row.querySelector(".bm-mem").value || 0),
-      storage_gb: Number(row.querySelector(".bm-sto").value || 0),
-      gpu_count: Number(row.querySelector(".bm-gpu").value || 0),
+      cpu_cores: Number(row.querySelector(`.${prefix}-cpu`).value || 0),
+      memory_mib: Number(row.querySelector(`.${prefix}-mem`).value || 0),
+      storage_gb: Number(row.querySelector(`.${prefix}-sto`).value || 0),
+      gpu_count: Number(row.querySelector(`.${prefix}-gpu`).value || 0),
     };
-    const p = { name: name || "bm", capacity: cap };
-    const cnt = row.querySelector(".bm-cnt").value.trim();
-    if (cnt !== "") p.count = Number(cnt);
-    profiles.push(p);
+    out.push({ name: name || prefix, cap, row });
+    if (withCount) {
+      const cnt = row.querySelector(`.${prefix}-cnt`).value.trim();
+      out[out.length - 1].count = cnt === "" ? null : Number(cnt);
+    }
   }
-  return profiles;
+  return out;
 }
 
 function deepMerge(base, over) {
@@ -173,23 +228,36 @@ function deepMerge(base, over) {
 // Reads the form into a GenerateRequest params object, then deep-merges the
 // Advanced JSON box over it. Throws on invalid advanced JSON.
 export function readMockParams() {
+  // VM spec catalog
+  const vm_specs = {};
+  for (const s of readCapacityRows(specRowsEl, ".spec-row", "spec", false)) vm_specs[s.name] = s.cap;
+
   const roles = {};
   const ipByRole = {};
+  const specByRole = {};
   for (const r of ROLES) {
     const c = num(`mf-role-${r}`);
-    if (c && c > 0) {
-      roles[r] = c;
-      const ip = document.getElementById(`mf-ip-${r}`).value;
-      if (ip) ipByRole[r] = ip;
-    }
+    if (!c || c <= 0) continue;
+    roles[r] = c;
+    const ip = document.getElementById(`mf-ip-${r}`).value;
+    if (ip) ipByRole[r] = ip;
+    const spec = document.getElementById(`mf-spec-${r}`).value;
+    if (spec) specByRole[ip ? `${r}:${ip}` : r] = spec;
   }
+
+  const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
+    const p = { name: b.name, capacity: b.cap };
+    if (b.count != null) p.count = b.count;
+    return p;
+  });
 
   const params = {
     clusters: num("mf-clusters") ?? 1,
     roles,
     ip_type_by_role: ipByRole,
-    vm_size_profile: document.getElementById("mf-size").value,
-    bm_profiles: readBmProfiles(),
+    vm_specs,
+    spec_by_role: specByRole,
+    bm_profiles,
     sites: num("mf-sites") ?? 1,
     rooms: num("mf-rooms") ?? 1,
     racks: num("mf-racks") ?? 4,
@@ -219,14 +287,18 @@ export function readMockParams() {
 const setVal = (id, v) => { const e = document.getElementById(id); if (e != null && v != null) e.value = v; };
 const setChk = (id, v) => { const e = document.getElementById(id); if (e != null) e.checked = !!v; };
 
+function rebuildCapRows(rootEl, rowFn, items, mapFn) {
+  rootEl.innerHTML = "";
+  for (const it of items) rootEl.appendChild(rowFn(mapFn(it)));
+}
+
 // Populates the form from a preset object. Keys that can't be represented as
-// simple fields (role_demands, config_overrides, phases, datacenters, weighted
-// ip_type) are written into the Advanced box so nothing is silently dropped.
+// simple fields (role_demands, config_overrides, weighted ip_type,
+// vm_size_profile) are written to the Advanced box so nothing is silently lost.
 export function populateMockForm(preset) {
   const p = preset || {};
   setVal("mf-clusters", p.clusters ?? DEFAULTS.clusters);
   setVal("mf-seed", p.seed ?? "");
-  setVal("mf-size", p.vm_size_profile ?? DEFAULTS.vm_size_profile);
   setVal("mf-candidate", p.candidate_strategy ?? DEFAULTS.candidate_strategy);
   setVal("mf-sites", p.sites ?? DEFAULTS.sites);
   setVal("mf-rooms", p.rooms ?? DEFAULTS.rooms);
@@ -238,32 +310,45 @@ export function populateMockForm(preset) {
   setVal("mf-maxperbm", p.max_per_bm ?? "");
   setVal("mf-tightness", p.tightness ?? DEFAULTS.tightness);
 
-  // Roles + ip_type (string only; weighted dists go to advanced)
+  // VM spec catalog
+  const specEntries = Object.entries(p.vm_specs ?? {});
+  const specItems = specEntries.length
+    ? specEntries.map(([name, cap]) => ({ name, ...cap }))
+    : DEFAULTS.vm_specs;
+  rebuildCapRows(specRowsEl, specRow, specItems, (s) => s);
+
+  // Roles + ip_type (string only; weighted dists go to advanced) + spec assignment
   const presetRoles = p.roles ?? {};
   const ipMap = p.ip_type_by_role ?? {};
+  const specMap = p.spec_by_role ?? {};
   const advIp = {};
   for (const r of ROLES) {
     setVal(`mf-role-${r}`, presetRoles[r] ?? 0);
     const ip = ipMap[r];
-    if (typeof ip === "string") setVal(`mf-ip-${r}`, ip);
-    else { setVal(`mf-ip-${r}`, ""); if (ip !== undefined) advIp[r] = ip; }
+    let ipVal = "";
+    if (typeof ip === "string") ipVal = ip;
+    else if (ip !== undefined) advIp[r] = ip;
+    setVal(`mf-ip-${r}`, ipVal);
+  }
+  refreshSpecDropdowns();
+  for (const r of ROLES) {
+    const ipVal = document.getElementById(`mf-ip-${r}`).value;
+    const assigned = specMap[ipVal ? `${r}:${ipVal}` : r] || specMap[r] || "";
+    setVal(`mf-spec-${r}`, assigned);
   }
 
   // Baremetal profiles
-  bmRowsEl.innerHTML = "";
-  const profiles = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
-  for (const prof of profiles) {
+  const profs = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
+  rebuildCapRows(bmRowsEl, bmRow, profs, (prof) => {
     const cap = prof.capacity ?? prof;
-    bmRowsEl.appendChild(bmRow({
-      name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib,
-      storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "",
-    }));
-  }
+    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "" };
+  });
 
   // Anything the form can't hold → Advanced box
   const adv = {};
   if (p.role_demands) adv.role_demands = p.role_demands;
   if (p.config_overrides) adv.config_overrides = p.config_overrides;
+  if (p.vm_size_profile && p.vm_size_profile !== "medium") adv.vm_size_profile = p.vm_size_profile;
   if (p.phases && p.phases !== 1) adv.phases = p.phases;
   if (p.datacenters && p.datacenters !== 1) adv.datacenters = p.datacenters;
   if (p.target_spread) {
