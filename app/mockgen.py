@@ -42,7 +42,7 @@ router = APIRouter(prefix="/api/mock", tags=["mock"])
 
 # ---------------------------------------------------------------------------
 # Built-in per-role baseline demand — the fallback when a role has no explicit
-# vm_specs/spec_by_role assignment or role_demands override.
+# vm_specs/spec_by_role assignment.
 # ---------------------------------------------------------------------------
 
 _ROLE_BASELINE: dict[str, Resources] = {
@@ -100,10 +100,6 @@ class GenerateRequest(BaseModel):
     # Cluster / VM
     clusters: int = 1
     roles: dict[str, int] = Field(default_factory=lambda: {"master": 3, "worker": 3, "infra": 2})
-    # VM demand resolution (first match wins): a named spec assigned via
-    # spec_by_role -> an explicit role_demands entry -> the built-in per-role
-    # baseline (_ROLE_BASELINE).
-    role_demands: dict[str, Resources] | None = None
     # value: a single ip_type string, or a weighted distribution {ip_type: weight}
     ip_type_by_role: dict[str, str | dict[str, float]] = Field(default_factory=dict)
     # Named VM specs (a reusable catalog) and which spec each role uses.
@@ -227,10 +223,7 @@ class _Generator:
             name = name or sa.get(role)
             if name and name in self.req.vm_specs:
                 return self.req.vm_specs[name]
-        # 2. explicit per-role demand
-        if self.req.role_demands and role in self.req.role_demands:
-            return self.req.role_demands[role]
-        # 3. built-in per-role baseline
+        # 2. built-in per-role baseline
         return _ROLE_BASELINE.get(role, _ROLE_BASELINE[NodeRole.WORKER.value])
 
     def _resolve_ip_type(self, role: str) -> str:

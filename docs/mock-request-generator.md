@@ -65,10 +65,7 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `roles` | `{master:3,worker:3,infra:2}` | 每 cluster 各 role 的 VM 數 |
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
-| | `role_demands` | null | 逐 role 直接指定 `Resources`（介於 `vm_specs` 與內建基準之間的覆寫層） |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
-
-> VM demand 解析（先命中先用）：`spec_by_role`→`vm_specs` → `role_demands` → **內建各 role 基準**（master/learner 8c、worker 16c、infra 4c…）。沒有任何全域 size profile 旋鈕。
 | Baremetal | `bm_profiles` | `[standard]` | 固定機型清單，每項 `{name, capacity, count?, roles?}`；`count` 省略 → 彈性數量（見 §5）；`roles` 設定 → 該機型只服務這些 role（專屬 pool） |
 | Topology | `sites`/`phases`/`datacenters`/`rooms`/`racks`/`ags` | `1/1/1/1/4/3` | 各維度桶數，BM 平均撒 |
 | 規則 | `anti_affinity` | true | 開啟 solver 自動反親和（吃 `target_spread` 的 key） |
@@ -78,6 +75,8 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | 其他 | `tightness` | 0.7 | demand/capacity 目標比；僅在有彈性 profile 時用於估數量 |
 | | `candidate_strategy` | `"same_site"` | `all`/`same_site`/`same_room`/`topology_affinity`/`by_role_pool`。當任一 `bm_profile` 設了 `roles`，自動切換為 `by_role_pool`（依 role 專屬機隊決定候選），忽略拓樸策略 |
 | | `config_overrides` | `{}` | 直接覆寫任何 `SolverConfig` 欄位 |
+
+> **VM demand 解析**（先命中先用）：`spec_by_role` → `vm_specs` → **內建各 role 基準**（master/learner 8c、worker 16c、infra 4c…）。除此之外沒有其他 VM size 旋鈕（已移除 `vm_size_profile` 與 `role_demands`）。
 
 ### `target_spread` 語意（重要）
 
@@ -110,7 +109,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 6. Generation Algorithm
 
 1. **Topology**：產生 `racks` 個 rack，site/room/ag 以 round-robin 平均分配；若 `ags < target_spread[ag]` 或 `racks < target_spread[rack]` 自動上調並記入診斷。
-2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ `role_demands[role]` → 內建各 role 基準。
+2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ 內建各 role 基準。
 3. **BM fleet**：實例化固定 profile，必要時依 §5 補彈性 profile，平均撒到 racks。
 4. **Candidates**：
    - **pool 模式**（任一 profile 設 `roles`，或 `candidate_strategy=by_role_pool`）：VM 的 `candidate_baremetals` = 所有「pool 服務其 role」的 BM（空 `roles` = 共用 pool 服務所有 role）；某 role 無任何 pool 服務 → 回 400。彈性 sizing 改為**每 pool 依其服務 role 的 demand 估數量**，並讓每個 pool 各自跨 rack/AG 平均分佈（避免單一 pool 漏 AG 害 anti-affinity 不可解）。
@@ -162,8 +161,8 @@ docs/mock-request-generator.md
 - **Roles 表格**：每 role 的 count、ip_type 下拉、**spec 下拉**（指派該 role/ip_type 用哪個 VM spec）
 - **Baremetal profiles 動態列**（name + cpu/mem/storage/gpu + count；count 留白＝自動估數量），可增刪
 - topology（sites/rooms/racks/ags）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
-- **Advanced overrides (JSON)** 摺疊區：放 `role_demands`、`config_overrides`、加權 `ip_type` 等
-  巢狀進階項，**deep-merge 疊在表單值之上**（escape hatch，確保完整參數面不被欄位化限制）
+- **Advanced overrides (JSON)** 摺疊區：放 `config_overrides`、加權 `ip_type`、`phases`/`datacenters` 等
+  巢狀／少用進階項，**deep-merge 疊在表單值之上**（escape hatch，確保完整參數面不被欄位化限制）
 
 兩顆按鈕：**Generate**（只把產出的 `PlacementRequest` 灌入 solver 編輯器並切到 `solve`）與
 **Generate & Run**（產生後立即求解並視覺化）。狀態列顯示 `feasibility` 與 VM/BM/AG 計數。
