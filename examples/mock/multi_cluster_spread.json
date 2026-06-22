@@ -16,6 +16,5 @@
   "ags": 3,
   "tightness": 0.6,
   "anti_affinity": true,
-  "target_spread": { "ag": 3 },
-  "candidate_strategy": "same_site"
+  "target_spread": { "ag": 3 }
 }

@@ -67,7 +67,7 @@ class BmProfile(BaseModel):
     ``roles``: which node roles may use these baremetals (a dedicated pool).
     Empty = usable by all roles. When ANY profile sets ``roles``, candidate
     assignment becomes pool-based (a VM may only land on BMs whose pool serves
-    its role), and the topology ``candidate_strategy`` is ignored.
+    its role); otherwise every VM may use any baremetal.
     """
     name: str
     capacity: Resources
@@ -128,7 +128,6 @@ class GenerateRequest(BaseModel):
 
     # Misc
     tightness: float = 0.7
-    candidate_strategy: Literal["all", "same_site", "same_room", "topology_affinity", "by_role_pool"] = "same_site"
     config_overrides: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("roles")
@@ -368,14 +367,12 @@ class _Generator:
     def _assign_candidates(self, vms: list[VM], bms: list[Baremetal]) -> None:
         """Set each VM's candidate_baremetals.
 
-        Pool mode (any profile sets roles, or candidate_strategy=by_role_pool):
-        a VM may only land on BMs whose pool serves its role. Otherwise the
-        topology strategy applies (each cluster gets a home scope).
+        Pool mode (any bm_profile sets ``roles``): a VM may only land on BMs
+        whose pool serves its role. Otherwise every VM may use any baremetal.
         """
-        strategy = self.req.candidate_strategy
         all_ids = [bm.id for bm in bms]
 
-        if getattr(self, "_pool_mode", False) or strategy == "by_role_pool":
+        if getattr(self, "_pool_mode", False):
             self.diag["candidate_mode"] = "by_role_pool"
             for vm in vms:
                 role = vm.node_role.value
@@ -390,27 +387,9 @@ class _Generator:
                 vm.candidate_baremetals = pool
             return
 
-        if strategy == "all":
-            for vm in vms:
-                vm.candidate_baremetals = list(all_ids)
-            return
-
-        # Map cluster_id -> scope key, then BMs grouped by scope.
-        def scope_key(topo: Topology) -> str:
-            if strategy == "same_site":
-                return topo.site
-            return topo.room  # same_room / topology_affinity
-
-        by_scope: dict[str, list[str]] = {}
-        for bm in bms:
-            by_scope.setdefault(scope_key(bm.topology), []).append(bm.id)
-        scopes = sorted(by_scope.keys())
-
-        cluster_ids = sorted({vm.cluster_id for vm in vms})
-        cluster_scope = {cid: scopes[i % len(scopes)] for i, cid in enumerate(cluster_ids)}
+        self.diag["candidate_mode"] = "all"
         for vm in vms:
-            candidates = by_scope[cluster_scope[vm.cluster_id]]
-            vm.candidate_baremetals = list(candidates)
+            vm.candidate_baremetals = list(all_ids)
 
     # -- constructive placement (ground truth) ------------------------------
 

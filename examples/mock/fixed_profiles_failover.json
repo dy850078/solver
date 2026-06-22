@@ -31,6 +31,5 @@
   "target_spread": { "ag": 3 },
   "failover": true,
   "max_per_bm": 1,
-  "candidate_strategy": "same_room",
   "config_overrides": { "w_consolidation": 12, "w_headroom": 6 }
 }

@@ -20,7 +20,6 @@ const DEFAULTS = {
   failover: false,
   max_per_bm: "",
   tightness: 0.7,
-  candidate_strategy: "same_site",
   vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu_count: 0 }],
   bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu_count: 0, count: "" }],
 };
@@ -166,14 +165,6 @@ export function renderMockForm(container) {
     numField("mf-ags", "AGs", DEFAULTS.ags, { min: 1 }),
   ]));
 
-  // Candidate baremetals (placement filtering — which BMs each VM may land on)
-  const candSel = el("select", { id: "mf-candidate", class: "select" },
-    ["all", "same_site", "same_room", "topology_affinity", "by_role_pool"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.candidate_strategy })));
-  container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", for: "mf-candidate", text: "Candidate BMs (auto by_role_pool when any profile sets roles)" }),
-    candSel,
-  ]));
-
   // Rules
   const aa = el("input", { id: "mf-aa", type: "checkbox", checked: DEFAULTS.anti_affinity });
   const fo = el("input", { id: "mf-failover", type: "checkbox", checked: DEFAULTS.failover });
@@ -267,7 +258,6 @@ export function readMockParams() {
     target_spread: { ag: num("mf-spread-ag") ?? 3 },
     failover: document.getElementById("mf-failover").checked,
     tightness: num("mf-tightness") ?? 0.7,
-    candidate_strategy: document.getElementById("mf-candidate").value,
   };
   const seed = num("mf-seed");
   if (seed != null) params.seed = seed;
@@ -300,7 +290,6 @@ export function populateMockForm(preset) {
   const p = preset || {};
   setVal("mf-clusters", p.clusters ?? DEFAULTS.clusters);
   setVal("mf-seed", p.seed ?? "");
-  setVal("mf-candidate", p.candidate_strategy ?? DEFAULTS.candidate_strategy);
   setVal("mf-sites", p.sites ?? DEFAULTS.sites);
   setVal("mf-rooms", p.rooms ?? DEFAULTS.rooms);
   setVal("mf-racks", p.racks ?? DEFAULTS.racks);
