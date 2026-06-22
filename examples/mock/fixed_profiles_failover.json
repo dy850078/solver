@@ -1,0 +1,31 @@
+{
+  "seed": 7,
+  "clusters": 2,
+  "roles": { "master": 3, "learner": 3, "worker": 20, "infra": 3 },
+  "role_demands": {
+    "master": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
+    "learner": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
+    "worker": { "cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400 },
+    "infra": { "cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100 }
+  },
+  "ip_type_by_role": {
+    "master": "routable",
+    "learner": "routable",
+    "worker": "routable",
+    "infra": "non-routable"
+  },
+  "bm_profiles": [
+    { "name": "standard", "capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 }, "count": 40 },
+    { "name": "highmem", "capacity": { "cpu_cores": 96, "memory_mib": 768000, "storage_gb": 2000 }, "count": 8 }
+  ],
+  "sites": 1,
+  "rooms": 2,
+  "racks": 6,
+  "ags": 3,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 },
+  "failover": true,
+  "max_per_bm": 1,
+  "candidate_strategy": "same_room",
+  "config_overrides": { "w_consolidation": 12, "w_headroom": 6 }
+}

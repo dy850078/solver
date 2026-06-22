@@ -1,0 +1,16 @@
+{
+  "seed": 1,
+  "clusters": 1,
+  "roles": { "master": 3, "worker": 3, "infra": 2 },
+  "vm_size_profile": "medium",
+  "ip_type_by_role": {
+    "master": "routable",
+    "worker": "routable",
+    "infra": "non-routable"
+  },
+  "rooms": 1,
+  "racks": 4,
+  "ags": 3,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 }
+}
