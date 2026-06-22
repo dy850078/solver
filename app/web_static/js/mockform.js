@@ -4,12 +4,16 @@
 // ip_type distributions, vm_size_profile) flows through the "Advanced overrides
 // (JSON)" box, which is deep-merged over the form-built params.
 
-const ROLES = ["master", "learner", "worker", "infra"];
+// All NodeRole values from the backend (app/models.py NodeRole).
+const ROLES = ["master", "learner", "worker", "infra", "l4lb-storage", "bastion"];
 
 const DEFAULTS = {
   clusters: 1,
-  roles: { master: 3, learner: 0, worker: 3, infra: 2 },
-  ip_type: { master: "routable", learner: "routable", worker: "routable", infra: "non-routable" },
+  roles: { master: 3, learner: 0, worker: 3, infra: 2, "l4lb-storage": 0, bastion: 0 },
+  ip_type: {
+    master: "routable", learner: "routable", worker: "routable",
+    infra: "non-routable", "l4lb-storage": "non-routable", bastion: "routable",
+  },
   sites: 1, rooms: 1, racks: 4, ags: 3,
   anti_affinity: true,
   target_spread_ag: 3,
