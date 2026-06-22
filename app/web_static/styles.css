@@ -46,7 +46,7 @@
   --radius-full: 9999px;
 
   /* Layout */
-  --sidebar-w: 340px;
+  --sidebar-w: 420px;
   --header-h: 56px;
 }
 
@@ -265,25 +265,26 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mock-grid--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .mock-grid .input, .mock-grid .select { height: 32px; font-size: 12px; }
 
-.role-row { display: grid; grid-template-columns: 78px 0.7fr 1.1fr 1.1fr; gap: 6px; align-items: center; }
+.role-row { display: grid; grid-template-columns: 84px 64px 1fr 1fr; gap: 6px; align-items: center; }
 .role-row + .role-row { margin-top: 6px; }
 .role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role-row--head { margin-bottom: 2px; font-size: 11px; }
 .role-row--head span { padding-left: 2px; }
-.role-row .input, .role-row .select { height: 30px; font-size: 12px; }
-.role-row .select { padding-right: 22px; }
+.role-row .input, .role-row .select { height: 30px; font-size: 12px; min-width: 0; }
 
-.spec-rows { display: flex; flex-direction: column; gap: 6px; }
-.spec-row { display: grid; grid-template-columns: 1.3fr 0.7fr 1fr 0.8fr 0.6fr 24px; gap: 4px; align-items: center; }
-.spec-row .input { height: 30px; font-size: 12px; padding: 0 6px; }
-.spec-row--head span { font-size: 10px; padding-left: 4px; }
-.spec-remove { width: 24px; padding: 0; }
-
-.bm-rows { display: flex; flex-direction: column; gap: 6px; }
-.bm-row { display: grid; grid-template-columns: 1.1fr 0.6fr 0.9fr 0.7fr 0.5fr 0.6fr 1.1fr 24px; gap: 4px; align-items: center; }
-.bm-row .input { height: 30px; font-size: 12px; padding: 0 6px; }
-.bm-row--head span { font-size: 10px; padding-left: 4px; }
-.bm-remove { width: 24px; padding: 0; }
+/* Capacity rows (VM specs, baremetal profiles): self-labeling fields that wrap
+   instead of cramming into one rigid row, so digits are always fully visible. */
+.spec-rows, .bm-rows { display: flex; flex-direction: column; gap: 10px; }
+.cap-row { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: flex-end;
+  padding: 8px; border: 1px solid var(--border-base); border-radius: var(--radius-sm); background: var(--bg-subtle); }
+.mini { display: flex; flex-direction: column; gap: 2px; }
+.mini__label { font-size: 10px; color: var(--text-muted); padding-left: 1px; }
+.cap-row .input { height: 30px; font-size: 12px; padding: 0 8px; width: 100%; }
+.mini--name { flex: 1 1 100%; }
+.mini--roles { flex: 1 1 100%; }
+.mini--num { flex: 1 1 70px; min-width: 64px; }
+.mini--mem { flex: 1 1 96px; min-width: 88px; }
+.cap-remove { height: 30px; padding: 0 8px; margin-left: auto; align-self: flex-end; }
 
 .mock-checks { display: flex; flex-direction: column; gap: 8px; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-base); cursor: pointer; }
@@ -976,7 +977,7 @@ details.diagnostics pre {
    Responsive
    ───────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
-  :root { --sidebar-w: 320px; }
+  :root { --sidebar-w: 380px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 880px) {

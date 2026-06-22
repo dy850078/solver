@@ -70,19 +70,21 @@ function refreshSpecDropdowns() {
   }
 }
 
+// A self-labeling field (label above input) that wraps within a .cap-row.
+function miniField(cls, label, val, { text = false, ph = "", extra = "mini--num" } = {}) {
+  const input = el("input", { class: `input ${cls}`, type: text ? "text" : "number", placeholder: ph });
+  if (val !== undefined && val !== "" && val !== null) input.value = val;
+  return el("label", { class: `mini ${extra}` }, [el("span", { class: "mini__label", text: label }), input]);
+}
+
 function specRow(p = {}) {
-  const mk = (cls, ph, val) => {
-    const i = el("input", { class: `input ${cls}`, placeholder: ph, type: cls === "spec-name" ? "text" : "number" });
-    if (val !== undefined && val !== "") i.value = val;
-    return i;
-  };
-  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small spec-remove", text: "✕" });
-  const row = el("div", { class: "spec-row" }, [
-    mk("spec-name", "name", p.name),
-    mk("spec-cpu", "cpu", p.cpu_cores),
-    mk("spec-mem", "mem MiB", p.memory_mib),
-    mk("spec-sto", "GB", p.storage_gb),
-    mk("spec-gpu", "gpu", p.gpu_count ?? 0),
+  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
+  const row = el("div", { class: "cap-row spec-row" }, [
+    miniField("spec-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
+    miniField("spec-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
+    miniField("spec-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
+    miniField("spec-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
+    miniField("spec-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
     remove,
   ]);
   row.querySelector(".spec-name").addEventListener("input", refreshSpecDropdowns);
@@ -95,22 +97,15 @@ function specRow(p = {}) {
 // ─── Baremetal profile rows ───
 
 function bmRow(p = {}) {
-  const TEXT = new Set(["bm-name", "bm-roles"]);
-  const mk = (cls, ph, val, step) => {
-    const i = el("input", { class: `input ${cls}`, placeholder: ph, type: TEXT.has(cls) ? "text" : "number" });
-    if (val !== undefined && val !== "") i.value = val;
-    if (step) i.step = step;
-    return i;
-  };
-  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small bm-remove", text: "✕" });
-  const row = el("div", { class: "bm-row" }, [
-    mk("bm-name", "name", p.name),
-    mk("bm-cpu", "cpu", p.cpu_cores),
-    mk("bm-mem", "mem MiB", p.memory_mib),
-    mk("bm-sto", "GB", p.storage_gb),
-    mk("bm-gpu", "gpu", p.gpu_count ?? 0),
-    mk("bm-cnt", "auto", p.count),
-    mk("bm-roles", "all roles", (p.roles || []).join(",")),
+  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
+  const row = el("div", { class: "cap-row bm-row" }, [
+    miniField("bm-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
+    miniField("bm-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
+    miniField("bm-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
+    miniField("bm-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
+    miniField("bm-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
+    miniField("bm-cnt", "count", p.count, { ph: "auto" }),
+    miniField("bm-roles", "roles (comma, blank = all)", (p.roles || []).join(","), { text: true, ph: "all roles", extra: "mini--roles" }),
     remove,
   ]);
   remove.addEventListener("click", () => {
@@ -133,8 +128,7 @@ export function renderMockForm(container) {
   const addSpec = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add spec" });
   addSpec.addEventListener("click", () => { specRowsEl.appendChild(specRow()); refreshSpecDropdowns(); });
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "VM specs (name · cpu · mem · storage · gpu)" }),
-    el("div", { class: "spec-row spec-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", ""].map((t) => el("span", { text: t }))),
+    el("label", { class: "field-label", text: "VM specs (reusable catalog)" }),
     specRowsEl,
     addSpec,
   ]));
@@ -160,7 +154,6 @@ export function renderMockForm(container) {
   addBm.addEventListener("click", () => bmRowsEl.appendChild(bmRow()));
   container.appendChild(el("div", { class: "field" }, [
     el("label", { class: "field-label", text: "Baremetal profiles (count blank = auto-size · roles blank = all)" }),
-    el("div", { class: "bm-row bm-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", "count", "roles", ""].map((t) => el("span", { text: t }))),
     bmRowsEl,
     addBm,
   ]));
