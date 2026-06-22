@@ -68,14 +68,14 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
-| Baremetal | `bm_profiles` | `[standard]` | 固定機型清單，每項 `{name, capacity, count?}`；`count` 省略 → 彈性數量（見 §5） |
+| Baremetal | `bm_profiles` | `[standard]` | 固定機型清單，每項 `{name, capacity, count?, roles?}`；`count` 省略 → 彈性數量（見 §5）；`roles` 設定 → 該機型只服務這些 role（專屬 pool） |
 | Topology | `sites`/`phases`/`datacenters`/`rooms`/`racks`/`ags` | `1/1/1/1/4/3` | 各維度桶數，BM 平均撒 |
 | 規則 | `anti_affinity` | true | 開啟 solver 自動反親和（吃 `target_spread` 的 key） |
 | | `target_spread` | `{ag:3}` | key=分散維度（硬），value=期望桶數（軟，警告線） |
 | | `failover` | false | 產生 master→learner 的 N-1 failover 規則 |
 | | `max_per_bm` | null | 給數字即開每台同群上限 |
 | 其他 | `tightness` | 0.7 | demand/capacity 目標比；僅在有彈性 profile 時用於估數量 |
-| | `candidate_strategy` | `"same_site"` | `all`/`same_site`/`same_room`/`topology_affinity` |
+| | `candidate_strategy` | `"same_site"` | `all`/`same_site`/`same_room`/`topology_affinity`/`by_role_pool`。當任一 `bm_profile` 設了 `roles`，自動切換為 `by_role_pool`（依 role 專屬機隊決定候選），忽略拓樸策略 |
 | | `config_overrides` | `{}` | 直接覆寫任何 `SolverConfig` 欄位 |
 
 ### `target_spread` 語意（重要）
@@ -111,7 +111,9 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 1. **Topology**：產生 `racks` 個 rack，site/room/ag 以 round-robin 平均分配；若 `ags < target_spread[ag]` 或 `racks < target_spread[rack]` 自動上調並記入診斷。
 2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ `role_demands[role]` → `vm_size_profile` 縮放後的 role 基準。
 3. **BM fleet**：實例化固定 profile，必要時依 §5 補彈性 profile，平均撒到 racks。
-4. **Candidates**：依 `candidate_strategy` 給每個 cluster 決定 home scope，VM 的 `candidate_baremetals` = scope 內的 BM。
+4. **Candidates**：
+   - **pool 模式**（任一 profile 設 `roles`，或 `candidate_strategy=by_role_pool`）：VM 的 `candidate_baremetals` = 所有「pool 服務其 role」的 BM（空 `roles` = 共用 pool 服務所有 role）；某 role 無任何 pool 服務 → 回 400。彈性 sizing 改為**每 pool 依其服務 role 的 demand 估數量**，並讓每個 pool 各自跨 rack/AG 平均分佈（避免單一 pool 漏 AG 害 anti-affinity 不可解）。
+   - **拓樸模式**（預設）：依 `candidate_strategy` 給每個 cluster 決定 home scope，candidate = scope 內的 BM。
 5. **Constructive placement（ground truth）**：把每個自動反親和群依 `⌈n/桶數⌉` 平均鋪到各 AG，於候選 BM 中挑容量足夠者放置（同時遵守 `max_per_bm`）；非分群的單台 VM 直接擇一候選放置。
 6. **Assemble**：組出 `PlacementRequest`（config 帶上 `auto_generate_anti_affinity`、`target_spread`、`auto_generate_max_per_bm`/`default_max_per_bm`），套用 `config_overrides`。`failover=true` 時**每個 cluster 各產一條** N-1 規則（primary=該 cluster 的 master、backup=同 cluster 的 learner、fault_domain=ag），確保 backup 不會跨 cluster 互相支援；缺 master 或 learner 則略過並記入診斷。
 7. **Verify**：選擇性跑 solver，產生 `feasibility`。

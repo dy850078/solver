@@ -136,6 +136,47 @@ def test_spec_by_role_rejects_unknown_spec():
         GenerateRequest(roles={"worker": 1}, spec_by_role={"worker": "missing"})
 
 
+def test_role_pools_restrict_candidates():
+    """Profiles with roles → each VM only sees BMs in pools serving its role."""
+    req = GenerateRequest(
+        roles={"master": 3, "infra": 2, "worker": 8},
+        ip_type_by_role={"master": "routable", "infra": "non-routable", "worker": "routable"},
+        bm_profiles=[
+            BmProfile(name="cp", roles=["master", "infra"],
+                      capacity=Resources(cpu_cores=48, memory_mib=192_000, storage_gb=1000)),
+            BmProfile(name="wk", roles=["worker"],
+                      capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)),
+        ],
+    )
+    resp = generate_mock_request(req)
+    assert resp.diagnostics["candidate_mode"] == "by_role_pool"
+    assert resp.feasibility == "verified"
+    by_id = {bm.id: bm for bm in resp.request.baremetals}
+    for vm in resp.request.vms:
+        for bid in vm.candidate_baremetals:
+            # Every candidate BM must come from a profile serving this role.
+            assert by_id[bid] is not None
+    worker = next(v for v in resp.request.vms if v.node_role.value == "worker")
+    master = next(v for v in resp.request.vms if v.node_role.value == "master")
+    assert set(worker.candidate_baremetals).isdisjoint(master.candidate_baremetals)
+
+
+def test_role_without_pool_rejected():
+    from fastapi import HTTPException
+    req = GenerateRequest(
+        roles={"master": 3, "worker": 2},
+        ip_type_by_role={"master": "routable", "worker": "routable"},
+        bm_profiles=[
+            BmProfile(name="cp", roles=["master"],
+                      capacity=Resources(cpu_cores=48, memory_mib=192_000, storage_gb=1000)),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(req)
+    assert exc.value.status_code == 400
+    assert "worker" in exc.value.detail
+
+
 def test_max_per_bm_sets_config():
     req = GenerateRequest(
         roles={"worker": 4},

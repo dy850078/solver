@@ -91,8 +91,9 @@ function specRow(p = {}) {
 // ─── Baremetal profile rows ───
 
 function bmRow(p = {}) {
+  const TEXT = new Set(["bm-name", "bm-roles"]);
   const mk = (cls, ph, val, step) => {
-    const i = el("input", { class: `input ${cls}`, placeholder: ph, type: cls === "bm-name" ? "text" : "number" });
+    const i = el("input", { class: `input ${cls}`, placeholder: ph, type: TEXT.has(cls) ? "text" : "number" });
     if (val !== undefined && val !== "") i.value = val;
     if (step) i.step = step;
     return i;
@@ -105,6 +106,7 @@ function bmRow(p = {}) {
     mk("bm-sto", "GB", p.storage_gb),
     mk("bm-gpu", "gpu", p.gpu_count ?? 0),
     mk("bm-cnt", "auto", p.count),
+    mk("bm-roles", "all roles", (p.roles || []).join(",")),
     remove,
   ]);
   remove.addEventListener("click", () => {
@@ -153,8 +155,8 @@ export function renderMockForm(container) {
   const addBm = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add profile" });
   addBm.addEventListener("click", () => bmRowsEl.appendChild(bmRow()));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Baremetal profiles (count blank = auto-size)" }),
-    el("div", { class: "bm-row bm-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", "count", ""].map((t) => el("span", { text: t }))),
+    el("label", { class: "field-label", text: "Baremetal profiles (count blank = auto-size · roles blank = all)" }),
+    el("div", { class: "bm-row bm-row--head muted" }, ["name", "cpu", "mem", "storage", "gpu", "count", "roles", ""].map((t) => el("span", { text: t }))),
     bmRowsEl,
     addBm,
   ]));
@@ -169,9 +171,9 @@ export function renderMockForm(container) {
 
   // Candidate baremetals (placement filtering — which BMs each VM may land on)
   const candSel = el("select", { id: "mf-candidate", class: "select" },
-    ["all", "same_site", "same_room", "topology_affinity"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.candidate_strategy })));
+    ["all", "same_site", "same_room", "topology_affinity", "by_role_pool"].map((s) => el("option", { value: s, text: s, selected: s === DEFAULTS.candidate_strategy })));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", for: "mf-candidate", text: "Candidate BMs (which baremetals each VM may use)" }),
+    el("label", { class: "field-label", for: "mf-candidate", text: "Candidate BMs (auto by_role_pool when any profile sets roles)" }),
     candSel,
   ]));
 
@@ -248,6 +250,8 @@ export function readMockParams() {
   const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
     const p = { name: b.name, capacity: b.cap };
     if (b.count != null) p.count = b.count;
+    const rolesStr = b.row.querySelector(".bm-roles").value.trim();
+    if (rolesStr) p.roles = rolesStr.split(",").map((s) => s.trim()).filter(Boolean);
     return p;
   });
 
@@ -341,7 +345,7 @@ export function populateMockForm(preset) {
   const profs = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
   rebuildCapRows(bmRowsEl, bmRow, profs, (prof) => {
     const cap = prof.capacity ?? prof;
-    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "" };
+    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "", roles: prof.roles ?? [] };
   });
 
   // Anything the form can't hold → Advanced box

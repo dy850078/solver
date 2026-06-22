@@ -73,16 +73,32 @@ def _scaled(base: Resources, scale: float) -> Resources:
 # ---------------------------------------------------------------------------
 
 class BmProfile(BaseModel):
-    """A fixed baremetal spec. ``count`` omitted → elastic (sized by tightness)."""
+    """A fixed baremetal spec. ``count`` omitted → elastic (sized by tightness).
+
+    ``roles``: which node roles may use these baremetals (a dedicated pool).
+    Empty = usable by all roles. When ANY profile sets ``roles``, candidate
+    assignment becomes pool-based (a VM may only land on BMs whose pool serves
+    its role), and the topology ``candidate_strategy`` is ignored.
+    """
     name: str
     capacity: Resources
     count: int | None = None
+    roles: list[str] = Field(default_factory=list)
 
     @field_validator("count")
     @classmethod
     def _count_positive(cls, v: int | None) -> int | None:
         if v is not None and v < 1:
             raise ValueError("bm_profile count must be >= 1 when given")
+        return v
+
+    @field_validator("roles")
+    @classmethod
+    def _validate_roles(cls, v: list[str]) -> list[str]:
+        valid = {r.value for r in NodeRole}
+        bad = [r for r in v if r not in valid]
+        if bad:
+            raise ValueError(f"bm_profile roles {bad} invalid; valid: {sorted(valid)}")
         return v
 
 
@@ -125,7 +141,7 @@ class GenerateRequest(BaseModel):
 
     # Misc
     tightness: float = 0.7
-    candidate_strategy: Literal["all", "same_site", "same_room", "topology_affinity"] = "same_site"
+    candidate_strategy: Literal["all", "same_site", "same_room", "topology_affinity", "by_role_pool"] = "same_site"
     config_overrides: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("roles")
@@ -281,73 +297,115 @@ class _Generator:
 
     # -- baremetals ---------------------------------------------------------
 
+    @staticmethod
+    def _covers(have: Resources, need: Resources) -> bool:
+        return (have.cpu_cores >= need.cpu_cores and have.memory_mib >= need.memory_mib
+                and have.storage_gb >= need.storage_gb and have.gpu_count >= need.gpu_count)
+
+    @staticmethod
+    def _required(demand: Resources, tightness: float) -> Resources:
+        return Resources(
+            cpu_cores=math.ceil(demand.cpu_cores / tightness),
+            memory_mib=math.ceil(demand.memory_mib / tightness),
+            storage_gb=math.ceil(demand.storage_gb / tightness),
+            gpu_count=math.ceil(demand.gpu_count / tightness),
+        )
+
     def _build_baremetals(self, vms: list[VM], racks: list[Topology]) -> list[Baremetal]:
         req = self.req
-        specs: list[Resources] = []  # one capacity per BM instance
+        # Pool mode: any profile dedicates itself to specific roles.
+        self._pool_mode = any(p.roles for p in req.bm_profiles)
+        # Each entry: (capacity, frozenset(roles))  — empty roles = serves all.
+        specs: list[tuple[Resources, frozenset[str]]] = []
 
-        fixed = [p for p in req.bm_profiles if p.count is not None]
+        for p in req.bm_profiles:
+            if p.count is not None:
+                specs.extend([(p.capacity, frozenset(p.roles))] * int(p.count))
+
         elastic = [p for p in req.bm_profiles if p.count is None]
+        num_ags = len({t.ag for t in racks})
+        min_pool = max(req.target_spread.values(), default=1) if req.anti_affinity else 1
+        added = 0
 
-        for p in fixed:
-            specs.extend([p.capacity] * int(p.count))
+        def serves(roles: frozenset[str], target: frozenset[str]) -> bool:
+            # A BM serves the target role-set if it's a shared pool (empty) or
+            # its roles overlap the target.
+            return not roles or not target or bool(roles & target)
 
-        if elastic:
-            # Size elastic fleet so total capacity covers demand at the target
-            # tightness (demand/capacity), with at least one BM per AG.
-            total_demand = Resources()
+        for p in elastic:
+            served = frozenset(p.roles)  # empty = all
+            # Demand this profile must help cover.
+            demand = Resources()
             for vm in vms:
-                total_demand = total_demand + vm.demand
-            required = Resources(
-                cpu_cores=math.ceil(total_demand.cpu_cores / req.tightness),
-                memory_mib=math.ceil(total_demand.memory_mib / req.tightness),
-                storage_gb=math.ceil(total_demand.storage_gb / req.tightness),
-                gpu_count=math.ceil(total_demand.gpu_count / req.tightness),
-            )
-
-            def covered(have: Resources) -> bool:
-                return (required.cpu_cores <= have.cpu_cores
-                        and required.memory_mib <= have.memory_mib
-                        and required.storage_gb <= have.storage_gb
-                        and required.gpu_count <= have.gpu_count)
-
+                if not served or vm.node_role.value in served:
+                    demand = demand + vm.demand
+            need = self._required(demand, req.tightness)
             have = Resources()
-            for s in specs:
-                have = have + s
-            num_ags = len({t.ag for t in racks})
-            i = 0
+            for cap, roles in specs:
+                if serves(roles, served):
+                    have = have + cap
+            copies = 0
             guard = 0
-            max_iter = 100_000
-            while (not covered(have) or len(specs) < num_ags) and guard < max_iter:
-                cap = elastic[i % len(elastic)].capacity
-                specs.append(cap)
-                have = have + cap
-                i += 1
+            while (not self._covers(have, need) or copies < (min_pool if self._pool_mode else num_ags)) and guard < 100_000:
+                specs.append((p.capacity, served))
+                have = have + p.capacity
+                copies += 1
                 guard += 1
-            self.diag["elastic_added"] = i
+            added += copies
+        if elastic:
+            self.diag["elastic_added"] = added
 
-        # Spread BM instances evenly across racks (round-robin).
+        # Spread each pool's BMs across racks independently (round-robin), so
+        # every pool spans AGs evenly — a shared global index would let one
+        # pool miss AGs and break anti-affinity spread.
+        pools: dict[frozenset[str], list[Resources]] = {}
+        for cap, roles in specs:
+            pools.setdefault(roles, []).append(cap)
+
+        self._bm_pool_roles: dict[str, frozenset[str]] = {}
         bms: list[Baremetal] = []
-        for idx, cap in enumerate(specs):
-            topo = racks[idx % len(racks)]
-            bms.append(Baremetal(
-                id=f"bm-{idx + 1:03d}",
-                hostname=f"bare-{idx + 1:03d}.{topo.rack}.{topo.site}",
-                total_capacity=cap,
-                used_capacity=Resources(),
-                topology=topo,
-            ))
+        idx = 0
+        for roles, caps in pools.items():
+            for j, cap in enumerate(caps):
+                topo = racks[j % len(racks)]
+                idx += 1
+                bm_id = f"bm-{idx:03d}"
+                self._bm_pool_roles[bm_id] = roles
+                bms.append(Baremetal(
+                    id=bm_id,
+                    hostname=f"bare-{idx:03d}.{topo.rack}.{topo.site}",
+                    total_capacity=cap,
+                    used_capacity=Resources(),
+                    topology=topo,
+                ))
         return bms
 
     # -- candidates ---------------------------------------------------------
 
     def _assign_candidates(self, vms: list[VM], bms: list[Baremetal]) -> None:
-        """Set each VM's candidate_baremetals according to candidate_strategy.
+        """Set each VM's candidate_baremetals.
 
-        For scoped strategies each cluster gets a deterministic home scope and
-        its VMs may only land on BMs inside that scope.
+        Pool mode (any profile sets roles, or candidate_strategy=by_role_pool):
+        a VM may only land on BMs whose pool serves its role. Otherwise the
+        topology strategy applies (each cluster gets a home scope).
         """
         strategy = self.req.candidate_strategy
         all_ids = [bm.id for bm in bms]
+
+        if getattr(self, "_pool_mode", False) or strategy == "by_role_pool":
+            self.diag["candidate_mode"] = "by_role_pool"
+            for vm in vms:
+                role = vm.node_role.value
+                pool = [bm.id for bm in bms
+                        if not self._bm_pool_roles[bm.id] or role in self._bm_pool_roles[bm.id]]
+                if not pool:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"no baremetal pool serves role '{role}'; "
+                               f"add a bm_profile whose roles include it (or leave roles empty for a shared pool)",
+                    )
+                vm.candidate_baremetals = pool
+            return
 
         if strategy == "all":
             for vm in vms:

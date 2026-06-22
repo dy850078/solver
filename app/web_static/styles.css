@@ -280,7 +280,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .spec-remove { width: 24px; padding: 0; }
 
 .bm-rows { display: flex; flex-direction: column; gap: 6px; }
-.bm-row { display: grid; grid-template-columns: 1.3fr 0.7fr 1fr 0.8fr 0.6fr 0.7fr 24px; gap: 4px; align-items: center; }
+.bm-row { display: grid; grid-template-columns: 1.1fr 0.6fr 0.9fr 0.7fr 0.5fr 0.6fr 1.1fr 24px; gap: 4px; align-items: center; }
 .bm-row .input { height: 30px; font-size: 12px; padding: 0 6px; }
 .bm-row--head span { font-size: 10px; padding-left: 4px; }
 .bm-remove { width: 24px; padding: 0; }
