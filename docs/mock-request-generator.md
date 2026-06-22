@@ -161,7 +161,7 @@ docs/mock-request-generator.md
 - **VM specs 動態列**（name + cpu/mem/storage/gpu）定義具名規格目錄
 - **Roles 表格**：每 role 的 count、ip_type 下拉、**spec 下拉**（指派該 role/ip_type 用哪個 VM spec）
 - **Baremetal profiles 動態列**（name + cpu/mem/storage/gpu + count；count 留白＝自動估數量），可增刪
-- topology（sites/rooms/racks/ags）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
+- topology（sites/phases/datacenters/rooms/racks/ags；預設 1 的維度留空，以灰底淡字「1」表示「沒設＝塌成單桶」）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
 - **Advanced overrides (JSON)** 摺疊區：放 `config_overrides`、加權 `ip_type`、`phases`/`datacenters` 等
   巢狀／少用進階項，**deep-merge 疊在表單值之上**（escape hatch，確保完整參數面不被欄位化限制）
 

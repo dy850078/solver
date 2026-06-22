@@ -264,6 +264,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mock-grid--3 { grid-template-columns: 1fr 1fr 1fr; }
 .mock-grid--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
 .mock-grid .input, .mock-grid .select { height: 32px; font-size: 12px; }
+/* Empty number fields (e.g. topology dims that default to 1) read as a faint
+   greyed placeholder so it's clear "unset = 1". */
+.mock-grid .input::placeholder { color: var(--text-muted); opacity: 0.55; }
+.mock-grid .input:placeholder-shown { background: var(--bg-subtle); }
 
 .role-row { display: grid; grid-template-columns: 84px 64px 1fr 1fr; gap: 6px; align-items: center; }
 .role-row + .role-row { margin-top: 6px; }

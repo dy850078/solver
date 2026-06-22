@@ -14,7 +14,7 @@ const DEFAULTS = {
     master: "routable", learner: "routable", worker: "routable",
     infra: "non-routable", "l4lb-storage": "non-routable", bastion: "routable",
   },
-  sites: 1, rooms: 1, racks: 4, ags: 3,
+  racks: 4, ags: 3,
   anti_affinity: true,
   target_spread_ag: 3,
   failover: false,
@@ -39,10 +39,11 @@ const el = (tag, attrs = {}, children = []) => {
   return e;
 };
 
-function numField(id, label, value, { step, min } = {}) {
+function numField(id, label, value, { step, min, placeholder } = {}) {
   const input = el("input", { id, class: "input", type: "number", value });
   if (step != null) input.step = step;
   if (min != null) input.min = min;
+  if (placeholder != null) input.placeholder = placeholder;
   return el("div", { class: "field field--inline" }, [el("label", { class: "field-label", for: id, text: label }), input]);
 }
 
@@ -157,10 +158,14 @@ export function renderMockForm(container) {
     addBm,
   ]));
 
-  // Topology
-  container.appendChild(el("div", { class: "mock-grid mock-grid--4" }, [
-    numField("mf-sites", "Sites", DEFAULTS.sites, { min: 1 }),
-    numField("mf-rooms", "Rooms", DEFAULTS.rooms, { min: 1 }),
+  // Topology (site > phase > datacenter > room > rack, + ag). Dimensions that
+  // default to 1 are left blank with a faint "1" placeholder — unset = collapses
+  // to a single bucket, which is harmless unless you spread on that dimension.
+  container.appendChild(el("div", { class: "mock-grid mock-grid--3" }, [
+    numField("mf-sites", "Sites", "", { min: 1, placeholder: "1" }),
+    numField("mf-phases", "Phases", "", { min: 1, placeholder: "1" }),
+    numField("mf-datacenters", "DCs", "", { min: 1, placeholder: "1" }),
+    numField("mf-rooms", "Rooms", "", { min: 1, placeholder: "1" }),
     numField("mf-racks", "Racks", DEFAULTS.racks, { min: 1 }),
     numField("mf-ags", "AGs", DEFAULTS.ags, { min: 1 }),
   ]));
@@ -250,8 +255,11 @@ export function readMockParams() {
     vm_specs,
     spec_by_role: specByRole,
     bm_profiles,
-    sites: num("mf-sites") ?? 1,
-    rooms: num("mf-rooms") ?? 1,
+    // Default-1 dims sent only when set, so blank stays an implicit 1.
+    sites: num("mf-sites") ?? undefined,
+    phases: num("mf-phases") ?? undefined,
+    datacenters: num("mf-datacenters") ?? undefined,
+    rooms: num("mf-rooms") ?? undefined,
     racks: num("mf-racks") ?? 4,
     ags: num("mf-ags") ?? 3,
     anti_affinity: document.getElementById("mf-aa").checked,
@@ -290,8 +298,12 @@ export function populateMockForm(preset) {
   const p = preset || {};
   setVal("mf-clusters", p.clusters ?? DEFAULTS.clusters);
   setVal("mf-seed", p.seed ?? "");
-  setVal("mf-sites", p.sites ?? DEFAULTS.sites);
-  setVal("mf-rooms", p.rooms ?? DEFAULTS.rooms);
+  // Default-1 dims: blank (faint placeholder) unless the preset sets >1.
+  const topoSet = (id, v) => setVal(id, (v && v !== 1) ? v : "");
+  topoSet("mf-sites", p.sites);
+  topoSet("mf-phases", p.phases);
+  topoSet("mf-datacenters", p.datacenters);
+  topoSet("mf-rooms", p.rooms);
   setVal("mf-racks", p.racks ?? DEFAULTS.racks);
   setVal("mf-ags", p.ags ?? DEFAULTS.ags);
   setChk("mf-aa", p.anti_affinity ?? DEFAULTS.anti_affinity);
@@ -337,8 +349,6 @@ export function populateMockForm(preset) {
   // Anything the form can't hold → Advanced box
   const adv = {};
   if (p.config_overrides) adv.config_overrides = p.config_overrides;
-  if (p.phases && p.phases !== 1) adv.phases = p.phases;
-  if (p.datacenters && p.datacenters !== 1) adv.datacenters = p.datacenters;
   if (p.target_spread) {
     const extra = { ...p.target_spread };
     delete extra.ag;
