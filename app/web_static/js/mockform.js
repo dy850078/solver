@@ -1,8 +1,8 @@
 // Mock generator form — renders individual fields for GenerateRequest, reads
 // them back into a params object, and populates them from a preset. Anything
 // not representable as a simple field (role_demands, config_overrides, weighted
-// ip_type distributions, vm_size_profile) flows through the "Advanced overrides
-// (JSON)" box, which is deep-merged over the form-built params.
+// ip_type distributions) flows through the "Advanced overrides (JSON)" box,
+// which is deep-merged over the form-built params.
 
 // All NodeRole values from the backend (app/models.py NodeRole).
 const ROLES = ["master", "learner", "worker", "infra", "l4lb-storage", "bastion"];
@@ -294,8 +294,8 @@ function rebuildCapRows(rootEl, rowFn, items, mapFn) {
 }
 
 // Populates the form from a preset object. Keys that can't be represented as
-// simple fields (role_demands, config_overrides, weighted ip_type,
-// vm_size_profile) are written to the Advanced box so nothing is silently lost.
+// simple fields (role_demands, config_overrides, weighted ip_type) are written
+// to the Advanced box so nothing is silently lost.
 export function populateMockForm(preset) {
   const p = preset || {};
   setVal("mf-clusters", p.clusters ?? DEFAULTS.clusters);
@@ -349,7 +349,6 @@ export function populateMockForm(preset) {
   const adv = {};
   if (p.role_demands) adv.role_demands = p.role_demands;
   if (p.config_overrides) adv.config_overrides = p.config_overrides;
-  if (p.vm_size_profile && p.vm_size_profile !== "medium") adv.vm_size_profile = p.vm_size_profile;
   if (p.phases && p.phases !== 1) adv.phases = p.phases;
   if (p.datacenters && p.datacenters !== 1) adv.datacenters = p.datacenters;
   if (p.target_spread) {

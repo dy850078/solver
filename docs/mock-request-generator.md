@@ -63,11 +63,12 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `verify` | `true` | 產後用真實 solver 自我驗證 |
 | Cluster/VM | `clusters` | 1 | cluster 數 |
 | | `roles` | `{master:3,worker:3,infra:2}` | 每 cluster 各 role 的 VM 數 |
-| | `vm_size_profile` | `"medium"` | fallback：`small`/`medium`/`large` 縮放各 role 基準 demand |
-| | `role_demands` | null | 逐 role 指定 `Resources`，覆寫 profile |
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
+| | `role_demands` | null | 逐 role 直接指定 `Resources`（介於 `vm_specs` 與內建基準之間的覆寫層） |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
+
+> VM demand 解析（先命中先用）：`spec_by_role`→`vm_specs` → `role_demands` → **內建各 role 基準**（master/learner 8c、worker 16c、infra 4c…）。沒有任何全域 size profile 旋鈕。
 | Baremetal | `bm_profiles` | `[standard]` | 固定機型清單，每項 `{name, capacity, count?, roles?}`；`count` 省略 → 彈性數量（見 §5）；`roles` 設定 → 該機型只服務這些 role（專屬 pool） |
 | Topology | `sites`/`phases`/`datacenters`/`rooms`/`racks`/`ags` | `1/1/1/1/4/3` | 各維度桶數，BM 平均撒 |
 | 規則 | `anti_affinity` | true | 開啟 solver 自動反親和（吃 `target_spread` 的 key） |
@@ -109,7 +110,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 6. Generation Algorithm
 
 1. **Topology**：產生 `racks` 個 rack，site/room/ag 以 round-robin 平均分配；若 `ags < target_spread[ag]` 或 `racks < target_spread[rack]` 自動上調並記入診斷。
-2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ `role_demands[role]` → `vm_size_profile` 縮放後的 role 基準。
+2. **VMs**：對每個 `cluster-i` 的每個 role 產生對應數量 VM；`ip_type` 由 `ip_type_by_role` 解析（加權分佈用 seeded RNG 抽樣）；demand 解析順序為 `spec_by_role["role:ip_type"]` → `spec_by_role["role"]`（查 `vm_specs`）→ `role_demands[role]` → 內建各 role 基準。
 3. **BM fleet**：實例化固定 profile，必要時依 §5 補彈性 profile，平均撒到 racks。
 4. **Candidates**：
    - **pool 模式**（任一 profile 設 `roles`，或 `candidate_strategy=by_role_pool`）：VM 的 `candidate_baremetals` = 所有「pool 服務其 role」的 BM（空 `roles` = 共用 pool 服務所有 role）；某 role 無任何 pool 服務 → 回 400。彈性 sizing 改為**每 pool 依其服務 role 的 demand 估數量**，並讓每個 pool 各自跨 rack/AG 平均分佈（避免單一 pool 漏 AG 害 anti-affinity 不可解）。

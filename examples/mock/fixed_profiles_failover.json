@@ -2,11 +2,16 @@
   "seed": 7,
   "clusters": 2,
   "roles": { "master": 3, "learner": 3, "worker": 20, "infra": 3 },
-  "role_demands": {
-    "master": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
-    "learner": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
-    "worker": { "cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400 },
-    "infra": { "cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100 }
+  "vm_specs": {
+    "cp-node": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
+    "worker-node": { "cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400 },
+    "infra-node": { "cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100 }
+  },
+  "spec_by_role": {
+    "master": "cp-node",
+    "learner": "cp-node",
+    "worker": "worker-node",
+    "infra": "infra-node"
   },
   "ip_type_by_role": {
     "master": "routable",

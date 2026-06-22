@@ -41,10 +41,10 @@ router = APIRouter(prefix="/api/mock", tags=["mock"])
 
 
 # ---------------------------------------------------------------------------
-# Demand profiles: per-role baseline, scaled by vm_size_profile
+# Built-in per-role baseline demand — the fallback when a role has no explicit
+# vm_specs/spec_by_role assignment or role_demands override.
 # ---------------------------------------------------------------------------
 
-# Baseline demand per role (medium profile, scale 1.0).
 _ROLE_BASELINE: dict[str, Resources] = {
     NodeRole.MASTER.value:  Resources(cpu_cores=8,  memory_mib=32_000, storage_gb=200),
     NodeRole.LEARNER.value: Resources(cpu_cores=8,  memory_mib=32_000, storage_gb=200),
@@ -54,18 +54,7 @@ _ROLE_BASELINE: dict[str, Resources] = {
     NodeRole.BASTION.value: Resources(cpu_cores=2,  memory_mib=8_000,  storage_gb=50),
 }
 
-_SIZE_SCALE: dict[str, float] = {"small": 0.5, "medium": 1.0, "large": 2.0}
-
 _DEFAULT_BM_CAPACITY = Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)
-
-
-def _scaled(base: Resources, scale: float) -> Resources:
-    return Resources(
-        cpu_cores=max(1, int(base.cpu_cores * scale)),
-        memory_mib=max(1, int(base.memory_mib * scale)),
-        storage_gb=max(1, int(base.storage_gb * scale)),
-        gpu_count=int(base.gpu_count * scale),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +100,9 @@ class GenerateRequest(BaseModel):
     # Cluster / VM
     clusters: int = 1
     roles: dict[str, int] = Field(default_factory=lambda: {"master": 3, "worker": 3, "infra": 2})
-    vm_size_profile: Literal["small", "medium", "large"] = "medium"
+    # VM demand resolution (first match wins): a named spec assigned via
+    # spec_by_role -> an explicit role_demands entry -> the built-in per-role
+    # baseline (_ROLE_BASELINE).
     role_demands: dict[str, Resources] | None = None
     # value: a single ip_type string, or a weighted distribution {ip_type: weight}
     ip_type_by_role: dict[str, str | dict[str, float]] = Field(default_factory=dict)
@@ -239,9 +230,8 @@ class _Generator:
         # 2. explicit per-role demand
         if self.req.role_demands and role in self.req.role_demands:
             return self.req.role_demands[role]
-        # 3. size-profile-scaled baseline
-        base = _ROLE_BASELINE.get(role, _ROLE_BASELINE[NodeRole.WORKER.value])
-        return _scaled(base, _SIZE_SCALE[self.req.vm_size_profile])
+        # 3. built-in per-role baseline
+        return _ROLE_BASELINE.get(role, _ROLE_BASELINE[NodeRole.WORKER.value])
 
     def _resolve_ip_type(self, role: str) -> str:
         spec = self.req.ip_type_by_role.get(role)

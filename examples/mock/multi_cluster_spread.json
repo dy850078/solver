@@ -2,7 +2,6 @@
   "seed": 42,
   "clusters": 3,
   "roles": { "master": 3, "worker": 10, "infra": 2 },
-  "vm_size_profile": "medium",
   "ip_type_by_role": {
     "master": "routable",
     "worker": { "routable": 0.5, "non-routable": 0.5 },
