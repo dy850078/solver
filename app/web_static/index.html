@@ -51,18 +51,27 @@
           </select>
         </div>
 
-        <div class="field">
-          <label class="field-label" for="mock-editor">Generator params (JSON)</label>
-          <textarea id="mock-editor" class="editor editor--short" spellcheck="false" placeholder="Mock GenerateRequest params, e.g. { &quot;clusters&quot;: 2, ... }"></textarea>
-          <div id="mock-error" class="alert alert--error hidden"></div>
-        </div>
+        <div id="mock-form"></div>
 
-        <button id="generate-btn" type="button" class="btn btn--ghost btn--block">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M8 1.5v3M8 11.5v3M1.5 8h3M11.5 8h3M3.4 3.4l2.1 2.1M10.5 10.5l2.1 2.1M12.6 3.4l-2.1 2.1M5.5 10.5l-2.1 2.1"/>
-          </svg>
-          <span class="btn__label">Generate request</span>
-        </button>
+        <details class="mock-advanced">
+          <summary>Advanced overrides (JSON)</summary>
+          <textarea id="mock-advanced" class="editor editor--short" spellcheck="false"
+            placeholder='Deep-merged over the form, e.g. { "role_demands": {...}, "config_overrides": {...} }'></textarea>
+        </details>
+
+        <div id="mock-error" class="alert alert--error hidden"></div>
+
+        <div class="mock-actions">
+          <button id="generate-btn" type="button" class="btn btn--ghost">
+            <span class="btn__label">Generate</span>
+          </button>
+          <button id="generate-run-btn" type="button" class="btn btn--primary">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+            </svg>
+            <span class="btn__label">Generate &amp; Run</span>
+          </button>
+        </div>
         <div id="mock-status" class="alert hidden" style="margin-top:8px"></div>
 
       </div>

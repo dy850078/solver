@@ -143,7 +143,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ```
 app/mockgen.py              # 生成器：GenerateRequest/Response + 演算法 + APIRouter
 app/server.py               # 掛載 mockgen.router
-app/web_static/             # /ui「Generate mock」區塊（index.html / js/main.js / js/api.js / styles.css）
+app/web_static/             # /ui「Generate mock」表單（index.html / js/mockform.js / js/main.js / js/api.js / styles.css）
 examples/mock/*.json        # GenerateRequest 範例（UI preset 下拉、curl、CLI）
 tests/test_mockgen.py       # 單元 + 端點測試
 docs/mock-request-generator.md
@@ -151,11 +151,18 @@ docs/mock-request-generator.md
 
 ## 9a. Web UI
 
-`/ui` 側欄新增 **Generate mock** 卡片：選 `examples/mock/` preset 或自填 `GenerateRequest`
-參數 → 「Generate request」呼叫 `/api/mock/generate` → 把回傳的 `request` 灌入既有
-solver 編輯器並切到 `solve` endpoint，狀態列顯示 `feasibility` 與 VM/BM/AG 計數，
-再按「Run solver」即可視覺化。mock preset 為 GenerateRequest（非 PlacementRequest），
-故從主 example 下拉中過濾掉、只出現在 mock preset 下拉。
+`/ui` 側欄新增 **Generate mock** 卡片，採**逐欄位表單**（非 raw JSON），對非開發者友善：
+- clusters/seed、各 role 的 count 與 ip_type 下拉、VM size、candidate 策略
+- **Baremetal profiles 動態列**（name + cpu/mem/storage/gpu + count；count 留白＝自動估數量），可增刪
+- topology（sites/rooms/racks/ags）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
+- **Advanced overrides (JSON)** 摺疊區：放 `role_demands`、`config_overrides`、加權 `ip_type` 等
+  巢狀進階項，**deep-merge 疊在表單值之上**（escape hatch，確保完整參數面不被欄位化限制）
+
+兩顆按鈕：**Generate**（只把產出的 `PlacementRequest` 灌入 solver 編輯器並切到 `solve`）與
+**Generate & Run**（產生後立即求解並視覺化）。狀態列顯示 `feasibility` 與 VM/BM/AG 計數。
+選 `examples/mock/` preset 會回填表單（無法欄位化的鍵自動寫入 Advanced 區，不靜默丟失）；
+mock preset 為 GenerateRequest（非 PlacementRequest），故從主 example 下拉過濾掉、只出現在 preset 下拉。
+表單邏輯獨立在 `app/web_static/js/mockform.js`。
 
 ---
 

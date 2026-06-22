@@ -251,6 +251,35 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .editor--short { min-height: 120px; }
 
+/* ─── Mock generator form ─── */
+#mock-form { display: flex; flex-direction: column; gap: 12px; }
+.field--inline { gap: 4px; }
+.mock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mock-grid--3 { grid-template-columns: 1fr 1fr 1fr; }
+.mock-grid--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.mock-grid .input, .mock-grid .select { height: 32px; font-size: 12px; }
+
+.role-row { display: grid; grid-template-columns: 64px 1fr 1.4fr; gap: 6px; align-items: center; }
+.role-row + .role-row { margin-top: 6px; }
+.role-row__name { font-size: 12px; color: var(--text-base); text-transform: capitalize; }
+.role-row--head { margin-bottom: 2px; font-size: 11px; }
+.role-row .input, .role-row .select { height: 30px; font-size: 12px; }
+
+.bm-rows { display: flex; flex-direction: column; gap: 6px; }
+.bm-row { display: grid; grid-template-columns: 1.3fr 0.7fr 1fr 0.8fr 0.6fr 0.7fr 24px; gap: 4px; align-items: center; }
+.bm-row .input { height: 30px; font-size: 12px; padding: 0 6px; }
+.bm-row--head span { font-size: 10px; padding-left: 4px; }
+.bm-remove { width: 24px; padding: 0; }
+
+.mock-checks { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-base); cursor: pointer; }
+.check input { width: 15px; height: 15px; accent-color: var(--brand); }
+
+.mock-advanced { border: 1px solid var(--border-base); border-radius: var(--radius-sm); padding: 8px 10px; }
+.mock-advanced summary { font-size: 12px; color: var(--text-muted); cursor: pointer; }
+.mock-advanced .editor { margin-top: 8px; }
+.mock-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; margin-top: 4px; }
+
 /* ─────────────────────────────────────────────────────────────
    Buttons
    ───────────────────────────────────────────────────────────── */

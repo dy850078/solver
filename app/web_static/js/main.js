@@ -5,6 +5,7 @@ import { rebuildColorScale, legendEntries } from "./colors.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
+import { renderMockForm, readMockParams, populateMockForm } from "./mockform.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -209,27 +210,11 @@ async function loadMockPreset(name) {
   if (!name) return;
   try {
     const content = await getExample(name);
-    $("#mock-editor").value = JSON.stringify(content, null, 2);
+    populateMockForm(content);
     $("#mock-error").classList.add("hidden");
   } catch (err) {
     $("#mock-error").classList.remove("hidden");
     $("#mock-error").textContent = `Failed to load preset: ${err.message}`;
-  }
-}
-
-function parseMockParams() {
-  const raw = $("#mock-editor").value.trim();
-  const errEl = $("#mock-error");
-  // Empty params are valid — the generator applies defaults.
-  if (!raw) { errEl.classList.add("hidden"); return {}; }
-  try {
-    const parsed = JSON.parse(raw);
-    errEl.classList.add("hidden");
-    return parsed;
-  } catch (err) {
-    errEl.classList.remove("hidden");
-    errEl.textContent = `JSON parse error: ${err.message}`;
-    return null;
   }
 }
 
@@ -240,12 +225,20 @@ function showMockStatus(kind, text) {
   el.classList.remove("hidden");
 }
 
-async function generateRequest() {
-  const params = parseMockParams();
-  if (params === null) return;
+// Generate a request from the form. When run=true, immediately solve it too.
+async function generateRequest({ run = false } = {}) {
+  let params;
+  try {
+    params = readMockParams();
+    $("#mock-error").classList.add("hidden");
+  } catch (err) {
+    $("#mock-error").classList.remove("hidden");
+    $("#mock-error").textContent = err.message;
+    return;
+  }
 
-  const btn = $("#generate-btn");
-  btn.disabled = true;
+  const ids = ["#generate-btn", "#generate-run-btn"];
+  ids.forEach((s) => { $(s).disabled = true; });
   try {
     const resp = await generateMock(params);
     // Load the generated PlacementRequest into the solver editor.
@@ -256,16 +249,18 @@ async function generateRequest() {
     const d = resp.diagnostics || {};
     const counts = `${d.num_vms ?? "?"} VMs · ${d.num_baremetals ?? "?"} BMs · ${d.num_ags ?? "?"} AGs`;
     if (resp.feasibility === "verified") {
-      showMockStatus("ok", `✓ Generated & verified solvable (${counts}). Click "Run solver".`);
+      showMockStatus("ok", `✓ Generated & verified solvable (${counts}).`);
     } else if (resp.feasibility === "infeasible") {
       showMockStatus("warn", `⚠ Generated but NOT solvable: ${d.solver_status ?? "infeasible"} (${counts}). Loaded anyway.`);
     } else {
-      showMockStatus("warn", `Generated (unverified, ${counts}). Click "Run solver".`);
+      showMockStatus("warn", `Generated (unverified, ${counts}).`);
     }
+
+    if (run) await runSolver();
   } catch (err) {
     showMockStatus("error", `Generate failed — ${err.message}`);
   } finally {
-    btn.disabled = false;
+    ids.forEach((s) => { $(s).disabled = false; });
   }
 }
 
@@ -350,11 +345,13 @@ async function runSolver() {
 }
 
 function init() {
+  renderMockForm($("#mock-form"));
   populateExamples();
 
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
   $("#mock-preset").addEventListener("change", (e) => loadMockPreset(e.target.value));
-  $("#generate-btn").addEventListener("click", generateRequest);
+  $("#generate-btn").addEventListener("click", () => generateRequest({ run: false }));
+  $("#generate-run-btn").addEventListener("click", () => generateRequest({ run: true }));
   $("#upload-btn").addEventListener("click", () => $("#upload-input").click());
   $("#upload-input").addEventListener("change", (e) => handleUpload(e.target.files[0]));
   $("#run-btn").addEventListener("click", runSolver);
