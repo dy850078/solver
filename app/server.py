@@ -20,7 +20,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import examples_api
+from . import examples_api, mockgen
 from .models import PlacementRequest, PlacementResult, SplitPlacementRequest, SplitPlacementResult
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
@@ -43,6 +43,7 @@ api = FastAPI(
 api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
 
 api.include_router(examples_api.router)
+api.include_router(mockgen.router)
 
 # Serve the web UI (topology visualization) from app/web_static/
 _WEB_STATIC_DIR = Path(__file__).parent / "web_static"
