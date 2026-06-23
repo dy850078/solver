@@ -27,6 +27,7 @@ from .models import (
     Baremetal,
     FailoverRule,
     GroupSelector,
+    MaxPerBaremetalRule,
     NodeRole,
     PlacementAssignment,
     PlacementRequest,
@@ -124,7 +125,9 @@ class GenerateRequest(BaseModel):
     anti_affinity: bool = True
     target_spread: dict[str, int] = Field(default_factory=lambda: {"ag": 3})
     failover: bool = False
-    max_per_bm: int | None = None
+    # Per-role cap: at most N VMs of (each cluster, role's ip_type, role) on one
+    # baremetal. Expanded into one MaxPerBaremetalRule per cluster.
+    max_per_bm_by_role: dict[str, int] = Field(default_factory=dict)
 
     # Misc
     tightness: float = 0.7
@@ -139,6 +142,18 @@ class GenerateRequest(BaseModel):
             raise ValueError(f"unknown role(s) {bad}; valid: {sorted(valid)}")
         if any(n < 0 for n in v.values()):
             raise ValueError("role counts must be >= 0")
+        return v
+
+    @field_validator("max_per_bm_by_role")
+    @classmethod
+    def _validate_max_per_bm_by_role(cls, v: dict[str, int]) -> dict[str, int]:
+        valid = {r.value for r in NodeRole}
+        bad = [k for k in v if k not in valid]
+        if bad:
+            raise ValueError(f"max_per_bm_by_role has unknown role(s) {bad}; valid: {sorted(valid)}")
+        bad_vals = {k: n for k, n in v.items() if n < 1}
+        if bad_vals:
+            raise ValueError(f"max_per_bm_by_role values must be >= 1; got {bad_vals}")
         return v
 
     @field_validator("bm_profiles")
@@ -396,9 +411,9 @@ class _Generator:
     def _place(self, vms: list[VM], bms: list[Baremetal]) -> list[PlacementAssignment]:
         bm_by_id = {bm.id: bm for bm in bms}
         remaining = {bm.id: bm.total_capacity for bm in bms}
-        # per-BM, per auto-AA group counts (for max_per_bm)
+        # per-BM, per group counts (for max_per_bm_by_role)
         group_on_bm: dict[tuple[str, str], int] = {}
-        max_per_bm = self.req.max_per_bm
+        caps = self.req.max_per_bm_by_role
 
         assignments: list[PlacementAssignment] = []
 
@@ -408,11 +423,11 @@ class _Generator:
             key = (vm.cluster_id, vm.ip_type, vm.node_role.value)
             groups.setdefault(key, []).append(vm)
 
-        def try_place_on(vm: VM, bm_id: str, group_key: str) -> bool:
+        def try_place_on(vm: VM, bm_id: str, group_key: str, cap_limit: int | None) -> bool:
             cap = remaining[bm_id]
             if not vm.demand.fits_in(cap):
                 return False
-            if max_per_bm is not None and group_on_bm.get((bm_id, group_key), 0) >= max_per_bm:
+            if cap_limit is not None and group_on_bm.get((bm_id, group_key), 0) >= cap_limit:
                 return False
             remaining[bm_id] = cap - vm.demand
             group_on_bm[(bm_id, group_key)] = group_on_bm.get((bm_id, group_key), 0) + 1
@@ -425,6 +440,7 @@ class _Generator:
 
         for (cluster_id, ip_type, role), members in groups.items():
             group_key = f"{cluster_id}/{ip_type}/{role}"
+            role_cap = caps.get(role)
             # Candidate BMs shared by the group (VMs in a group share candidates).
             cand_ids = members[0].candidate_baremetals
             cand_ags = sorted({bm_by_id[i].topology.ag for i in cand_ids})
@@ -448,7 +464,7 @@ class _Generator:
                         continue
                     for bm_id in sorted(ag_bms[ag],
                                         key=lambda b: remaining[b].cpu_cores, reverse=True):
-                        if try_place_on(vm, bm_id, group_key):
+                        if try_place_on(vm, bm_id, group_key, role_cap):
                             per_ag_count[ag] += 1
                             ag_cursor = (cand_ags.index(ag) + 1) % len(cand_ags)
                             placed = True
@@ -459,7 +475,7 @@ class _Generator:
                     # Fall back: any candidate BM with capacity (cap may be relaxed).
                     for bm_id in sorted(cand_ids,
                                         key=lambda b: remaining[b].cpu_cores, reverse=True):
-                        if try_place_on(vm, bm_id, group_key):
+                        if try_place_on(vm, bm_id, group_key, role_cap):
                             placed = True
                             break
                 if not placed:
@@ -489,15 +505,30 @@ class _Generator:
             ))
         return rules
 
+    def _build_max_per_bm_rules(self) -> list[MaxPerBaremetalRule]:
+        """Per-role cap → one MaxPerBaremetalRule per cluster, scoped to the
+        role (and its declared ip_type when it's a single string)."""
+        rules: list[MaxPerBaremetalRule] = []
+        for role, cap in self.req.max_per_bm_by_role.items():
+            if self.req.roles.get(role, 0) < 1:
+                continue
+            ip = self.req.ip_type_by_role.get(role)
+            ip = ip if isinstance(ip, str) and ip else None
+            for c in range(1, self.req.clusters + 1):
+                cid = f"cluster-{c}"
+                rules.append(MaxPerBaremetalRule(
+                    group_id=f"maxbm/{cid}/{ip or '*'}/{role}",
+                    selector=GroupSelector(cluster_id=cid, ip_type=ip, node_role=NodeRole(role)),
+                    max_per_bm=cap,
+                ))
+        return rules
+
     def _build_config(self) -> SolverConfig:
         req = self.req
         cfg: dict[str, Any] = {
             "auto_generate_anti_affinity": req.anti_affinity,
             "target_spread": dict(req.target_spread),
         }
-        if req.max_per_bm is not None:
-            cfg["auto_generate_max_per_bm"] = True
-            cfg["default_max_per_bm"] = req.max_per_bm
         cfg.update(req.config_overrides)
         return SolverConfig(**cfg)
 
@@ -515,6 +546,7 @@ class _Generator:
         placement = PlacementRequest(
             vms=vms,
             baremetals=bms,
+            max_per_bm_rules=self._build_max_per_bm_rules(),
             failover_rules=self._build_failover_rules(),
             config=self._build_config(),
         )

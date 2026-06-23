@@ -18,7 +18,6 @@ const DEFAULTS = {
   anti_affinity: true,
   target_spread_ag: 3,
   failover: false,
-  max_per_bm: "",
   tightness: 0.7,
   vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu_count: 0 }],
   bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu_count: 0, count: "" }],
@@ -140,11 +139,12 @@ export function renderMockForm(container) {
       IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === DEFAULTS.ip_type[r] })));
     const spec = el("select", { id: `mf-spec-${r}`, class: "select" },
       [el("option", { value: "", text: "(default)" }), ...getSpecNames().map((n) => el("option", { value: n, text: n }))]);
-    return el("div", { class: "role-row" }, [el("span", { class: "role-row__name", text: r }), count, ip, spec]);
+    const maxbm = el("input", { id: `mf-maxbm-${r}`, class: "input", type: "number", min: 1, placeholder: "∞" });
+    return el("div", { class: "role-row" }, [el("span", { class: "role-row__name", text: r }), count, ip, spec, maxbm]);
   });
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Roles (count · ip_type · spec)" }),
-    el("div", { class: "role-row role-row--head muted" }, [el("span", {}), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" })]),
+    el("label", { class: "field-label", text: "Roles (count · ip_type · spec · max/BM per cluster)" }),
+    el("div", { class: "role-row role-row--head muted" }, [el("span", {}), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" })]),
     ...roleRows,
   ]));
 
@@ -177,9 +177,8 @@ export function renderMockForm(container) {
     el("label", { class: "check" }, [aa, el("span", { text: "anti-affinity" })]),
     el("label", { class: "check" }, [fo, el("span", { text: "failover (master→learner)" })]),
   ]));
-  container.appendChild(el("div", { class: "mock-grid mock-grid--3" }, [
+  container.appendChild(el("div", { class: "mock-grid" }, [
     numField("mf-spread-ag", "Spread AGs", DEFAULTS.target_spread_ag, { min: 1 }),
-    numField("mf-maxperbm", "Max/BM", DEFAULTS.max_per_bm, { min: 1 }),
     numField("mf-tightness", "Tightness", DEFAULTS.tightness, { step: 0.05, min: 0.1 }),
   ]));
 }
@@ -230,6 +229,7 @@ export function readMockParams() {
   const roles = {};
   const ipByRole = {};
   const specByRole = {};
+  const maxByRole = {};
   for (const r of ROLES) {
     const c = num(`mf-role-${r}`);
     if (!c || c <= 0) continue;
@@ -238,6 +238,8 @@ export function readMockParams() {
     if (ip) ipByRole[r] = ip;
     const spec = document.getElementById(`mf-spec-${r}`).value;
     if (spec) specByRole[ip ? `${r}:${ip}` : r] = spec;
+    const mx = num(`mf-maxbm-${r}`);
+    if (mx != null) maxByRole[r] = mx;
   }
 
   const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
@@ -254,6 +256,7 @@ export function readMockParams() {
     ip_type_by_role: ipByRole,
     vm_specs,
     spec_by_role: specByRole,
+    max_per_bm_by_role: maxByRole,
     bm_profiles,
     // Default-1 dims sent only when set, so blank stays an implicit 1.
     sites: num("mf-sites") ?? undefined,
@@ -269,8 +272,6 @@ export function readMockParams() {
   };
   const seed = num("mf-seed");
   if (seed != null) params.seed = seed;
-  const maxbm = num("mf-maxperbm");
-  if (maxbm != null) params.max_per_bm = maxbm;
 
   const advRaw = document.getElementById("mock-advanced").value.trim();
   if (!advRaw) return params;
@@ -309,7 +310,6 @@ export function populateMockForm(preset) {
   setChk("mf-aa", p.anti_affinity ?? DEFAULTS.anti_affinity);
   setChk("mf-failover", p.failover ?? DEFAULTS.failover);
   setVal("mf-spread-ag", (p.target_spread && p.target_spread.ag) ?? DEFAULTS.target_spread_ag);
-  setVal("mf-maxperbm", p.max_per_bm ?? "");
   setVal("mf-tightness", p.tightness ?? DEFAULTS.tightness);
 
   // VM spec catalog
@@ -319,10 +319,11 @@ export function populateMockForm(preset) {
     : DEFAULTS.vm_specs;
   rebuildCapRows(specRowsEl, specRow, specItems, (s) => s);
 
-  // Roles + ip_type (string only; weighted dists go to advanced) + spec assignment
+  // Roles + ip_type (string only; weighted dists go to advanced) + spec + max/BM
   const presetRoles = p.roles ?? {};
   const ipMap = p.ip_type_by_role ?? {};
   const specMap = p.spec_by_role ?? {};
+  const maxMap = p.max_per_bm_by_role ?? {};
   const advIp = {};
   for (const r of ROLES) {
     setVal(`mf-role-${r}`, presetRoles[r] ?? 0);
@@ -331,6 +332,7 @@ export function populateMockForm(preset) {
     if (typeof ip === "string") ipVal = ip;
     else if (ip !== undefined) advIp[r] = ip;
     setVal(`mf-ip-${r}`, ipVal);
+    setVal(`mf-maxbm-${r}`, maxMap[r] ?? "");
   }
   refreshSpecDropdowns();
   for (const r of ROLES) {

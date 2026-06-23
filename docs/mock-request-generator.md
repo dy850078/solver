@@ -71,7 +71,7 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | 規則 | `anti_affinity` | true | 開啟 solver 自動反親和（吃 `target_spread` 的 key） |
 | | `target_spread` | `{ag:3}` | key=分散維度（硬），value=期望桶數（軟，警告線） |
 | | `failover` | false | 產生 master→learner 的 N-1 failover 規則 |
-| | `max_per_bm` | null | 給數字即開每台同群上限 |
+| | `max_per_bm_by_role` | `{}` | 逐 role 的每台上限，如 `{"master":1}`；展開成**每個 cluster 一條** `MaxPerBaremetalRule`，selector 帶該 role 的 ip_type |
 | 其他 | `tightness` | 0.7 | demand/capacity 目標比；僅在有彈性 profile 時用於估數量 |
 | | `config_overrides` | `{}` | 直接覆寫任何 `SolverConfig` 欄位 |
 
@@ -115,8 +115,8 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 4. **Candidates**：
    - **pool 模式**（任一 profile 設 `roles`）：VM 的 `candidate_baremetals` = 所有「pool 服務其 role」的 BM（空 `roles` = 共用 pool 服務所有 role）；某 role 無任何 pool 服務 → 回 400。彈性 sizing 改為**每 pool 依其服務 role 的 demand 估數量**，並讓每個 pool 各自跨 rack/AG 平均分佈（避免單一 pool 漏 AG 害 anti-affinity 不可解）。
    - **無 pool**（都沒設 `roles`）：每台 VM 的 `candidate_baremetals` = 全部 BM。
-5. **Constructive placement（ground truth）**：把每個自動反親和群依 `⌈n/桶數⌉` 平均鋪到各 AG，於候選 BM 中挑容量足夠者放置（同時遵守 `max_per_bm`）；非分群的單台 VM 直接擇一候選放置。
-6. **Assemble**：組出 `PlacementRequest`（config 帶上 `auto_generate_anti_affinity`、`target_spread`、`auto_generate_max_per_bm`/`default_max_per_bm`），套用 `config_overrides`。`failover=true` 時**每個 cluster 各產一條** N-1 規則（primary=該 cluster 的 master、backup=同 cluster 的 learner、fault_domain=ag），確保 backup 不會跨 cluster 互相支援；缺 master 或 learner 則略過並記入診斷。
+5. **Constructive placement（ground truth）**：把每個自動反親和群依 `⌈n/桶數⌉` 平均鋪到各 AG，於候選 BM 中挑容量足夠者放置（同時遵守 `max_per_bm_by_role`）；非分群的單台 VM 直接擇一候選放置。
+6. **Assemble**：組出 `PlacementRequest`（`max_per_bm_by_role` 展開成逐 cluster 的 `max_per_bm_rules`；config 帶上 `auto_generate_anti_affinity`、`target_spread`），套用 `config_overrides`。`failover=true` 時**每個 cluster 各產一條** N-1 規則（primary=該 cluster 的 master、backup=同 cluster 的 learner、fault_domain=ag），確保 backup 不會跨 cluster 互相支援；缺 master 或 learner 則略過並記入診斷。
 7. **Verify**：選擇性跑 solver，產生 `feasibility`。
 
 ---
@@ -159,9 +159,9 @@ docs/mock-request-generator.md
 `/ui` 側欄新增 **Generate mock** 卡片，採**逐欄位表單**（非 raw JSON），對非開發者友善：
 - clusters/seed
 - **VM specs 動態列**（name + cpu/mem/storage/gpu）定義具名規格目錄
-- **Roles 表格**：每 role 的 count、ip_type 下拉、**spec 下拉**（指派該 role/ip_type 用哪個 VM spec）
+- **Roles 表格**：每 role 的 count、ip_type 下拉、**spec 下拉**（指派該 role/ip_type 用哪個 VM spec）、**max/BM**（該 role 每台 BM 上限，逐 cluster 套用）
 - **Baremetal profiles 動態列**（name + cpu/mem/storage/gpu + count；count 留白＝自動估數量），可增刪
-- topology（sites/phases/datacenters/rooms/racks/ags；預設 1 的維度留空，以灰底淡字「1」表示「沒設＝塌成單桶」）、規則（anti-affinity / failover 勾選、spread AG、max/BM、tightness）
+- topology（sites/phases/datacenters/rooms/racks/ags；預設 1 的維度留空，以灰底淡字「1」表示「沒設＝塌成單桶」）、規則（anti-affinity / failover 勾選、spread AG、tightness）
 - **Advanced overrides (JSON)** 摺疊區：放 `config_overrides`、加權 `ip_type`、`phases`/`datacenters` 等
   巢狀／少用進階項，**deep-merge 疊在表單值之上**（escape hatch，確保完整參數面不被欄位化限制）
 

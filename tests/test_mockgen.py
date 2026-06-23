@@ -177,15 +177,30 @@ def test_role_without_pool_rejected():
     assert "worker" in exc.value.detail
 
 
-def test_max_per_bm_sets_config():
+def test_max_per_bm_by_role_expands_per_cluster():
+    """Per-role cap → one MaxPerBaremetalRule per cluster, scoped to role + ip_type."""
     req = GenerateRequest(
-        roles={"worker": 4},
-        ip_type_by_role={"worker": "routable"},
-        max_per_bm=1,
+        clusters=2,
+        roles={"master": 3, "worker": 6},
+        ip_type_by_role={"master": "non-routable", "worker": "routable"},
+        racks=6, tightness=0.5,
+        max_per_bm_by_role={"master": 1},
     )
     resp = generate_mock_request(req)
-    assert resp.request.config.auto_generate_max_per_bm is True
-    assert resp.request.config.default_max_per_bm == 1
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 2  # one per cluster, master only
+    for rule in rules:
+        assert rule.max_per_bm == 1
+        assert rule.selector.node_role.value == "master"
+        assert rule.selector.ip_type == "non-routable"
+        assert rule.selector.cluster_id in {"cluster-1", "cluster-2"}
+    assert {r.selector.cluster_id for r in rules} == {"cluster-1", "cluster-2"}
+    assert resp.feasibility == "verified"
+
+
+def test_max_per_bm_by_role_rejects_unknown_role():
+    with pytest.raises(Exception):
+        GenerateRequest(roles={"worker": 1}, max_per_bm_by_role={"nope": 1})
 
 
 def test_failover_emits_per_cluster_rule():

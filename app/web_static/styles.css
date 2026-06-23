@@ -269,7 +269,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mock-grid .input::placeholder { color: var(--text-muted); opacity: 0.55; }
 .mock-grid .input:placeholder-shown { background: var(--bg-subtle); }
 
-.role-row { display: grid; grid-template-columns: 84px 64px 1fr 1fr; gap: 6px; align-items: center; }
+.role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 5px; align-items: center; }
 .role-row + .role-row { margin-top: 6px; }
 .role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role-row--head { margin-bottom: 2px; font-size: 11px; }
