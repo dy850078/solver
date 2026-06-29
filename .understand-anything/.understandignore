@@ -1,0 +1,30 @@
+# .understandignore — patterns for files/dirs to exclude from analysis
+# Syntax: same as .gitignore (globs, # comments, ! negation, trailing / for dirs)
+#
+# Built-in defaults (always excluded unless negated):
+#   node_modules/, .git/, dist/, build/, obj/, .venv/, __pycache__/, *.lock, *.min.js, etc.
+#
+
+# --- From .gitignore ---
+*.egg-info/
+.eggs/
+output/
+
+# --- Caches not covered by defaults ---
+.mypy_cache/
+.pytest_cache/
+vm_placement_solver.egg-info/
+
+# --- Binary / non-source files ---
+*.docx
+*.xlsx
+*.csv
+
+# --- Other commented suggestions (uncomment to exclude) ---
+# *.py[cod]
+# *.so
+# tests/
+# docs/
+# examples/
+# *.test.*
+# *.spec.*

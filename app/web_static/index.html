@@ -39,6 +39,46 @@
   <aside class="sidebar">
     <section class="card">
       <header class="card__header">
+        <h2 class="card__title">Generate mock</h2>
+        <span class="card__hint">Build a request from high-level knobs</span>
+      </header>
+      <div class="card__body">
+
+        <div class="field">
+          <label class="field-label" for="mock-preset">Preset</label>
+          <select id="mock-preset" class="select">
+            <option value="">— Choose a mock preset —</option>
+          </select>
+        </div>
+
+        <div id="mock-form"></div>
+
+        <details class="mock-advanced">
+          <summary>Advanced overrides (JSON)</summary>
+          <textarea id="mock-advanced" class="editor editor--short" spellcheck="false"
+            placeholder='Deep-merged over the form, e.g. { "config_overrides": {...}, "phases": 2 }'></textarea>
+        </details>
+
+        <div id="mock-error" class="alert alert--error hidden"></div>
+
+        <div class="mock-actions">
+          <button id="generate-btn" type="button" class="btn btn--ghost">
+            <span class="btn__label">Generate</span>
+          </button>
+          <button id="generate-run-btn" type="button" class="btn btn--primary">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+            </svg>
+            <span class="btn__label">Generate &amp; Run</span>
+          </button>
+        </div>
+        <div id="mock-status" class="alert hidden" style="margin-top:8px"></div>
+
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
         <h2 class="card__title">Input</h2>
       </header>
       <div class="card__body">

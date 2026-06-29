@@ -1,0 +1,20 @@
+{
+  "seed": 42,
+  "clusters": 3,
+  "roles": { "master": 3, "worker": 10, "infra": 2 },
+  "ip_type_by_role": {
+    "master": "routable",
+    "worker": { "routable": 0.5, "non-routable": 0.5 },
+    "infra": "non-routable"
+  },
+  "bm_profiles": [
+    { "name": "standard", "capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 } },
+    { "name": "gpu", "capacity": { "cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 8 } }
+  ],
+  "rooms": 2,
+  "racks": 6,
+  "ags": 3,
+  "tightness": 0.6,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 }
+}

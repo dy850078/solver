@@ -46,7 +46,7 @@
   --radius-full: 9999px;
 
   /* Layout */
-  --sidebar-w: 340px;
+  --sidebar-w: 420px;
   --header-h: 56px;
 }
 
@@ -249,6 +249,67 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 0 0 3px var(--brand-ring);
   background: var(--bg-surface);
 }
+.editor--short { min-height: 120px; }
+
+/* ─── Mock generator form ─── */
+#mock-form { display: flex; flex-direction: column; gap: 12px; }
+.field--inline { gap: 4px; }
+
+/* Hide number spinners inside the mock form so they don't obscure digits in
+   the narrow grid inputs. */
+#mock-form input[type=number]::-webkit-inner-spin-button,
+#mock-form input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#mock-form input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+.mock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mock-grid--3 { grid-template-columns: 1fr 1fr 1fr; }
+.mock-grid--4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.mock-grid .input, .mock-grid .select { height: 32px; font-size: 12px; }
+/* Empty number fields (e.g. topology dims that default to 1) read as a faint
+   greyed placeholder so it's clear "unset = 1". */
+.mock-grid .input::placeholder { color: var(--text-muted); opacity: 0.55; }
+.mock-grid .input:placeholder-shown { background: var(--bg-subtle); }
+
+.role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 5px; align-items: center; }
+.role-row + .role-row { margin-top: 6px; }
+.role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.role-row--head { margin-bottom: 2px; font-size: 11px; }
+.role-row--head span { padding-left: 2px; }
+.role-row .input, .role-row .select { height: 30px; font-size: 12px; min-width: 0; }
+/* Smaller dropdown chevron for the narrow Roles-table selects */
+.role-row .select { background-size: 9px; background-position: right 6px center; padding-right: 18px; }
+/* …and for the preset picker */
+#mock-preset { background-size: 9px; background-position: right 10px center; padding-right: 24px; }
+
+/* Capacity rows (VM specs, baremetal profiles): self-labeling fields that wrap
+   instead of cramming into one rigid row, so digits are always fully visible. */
+.spec-rows, .bm-rows { display: flex; flex-direction: column; gap: 10px; }
+.cap-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;
+  padding: 10px; border: 1px solid var(--border-base); border-radius: var(--radius-sm); background: var(--bg-subtle); }
+.mini { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mini__label { font-size: 10px; color: var(--text-muted); padding-left: 1px; white-space: nowrap; }
+.cap-row .input { height: 30px; font-size: 12px; padding: 0 8px; width: 100%; }
+/* name shares the first line with the remove button; numeric fields wrap below */
+.mini--name { flex: 1 1 140px; }
+.mini--roles { flex: 1 1 100%; }
+.mini--num { flex: 1 1 64px; }
+.mini--mem { flex: 1 1 92px; }
+.cap-remove { height: 30px; padding: 0 10px; align-self: flex-end; }
+
+/* Draggable sidebar resize handle (sits on the sidebar's right edge) */
+#sidebar-resizer { position: fixed; top: var(--header-h); height: calc(100vh - var(--header-h));
+  width: 11px; margin-left: -5px; cursor: col-resize; z-index: 50; }
+#sidebar-resizer::after { content: ""; position: absolute; left: 5px; top: 0; bottom: 0;
+  width: 1px; background: var(--border-base); transition: background 120ms, width 120ms; }
+#sidebar-resizer:hover::after, #sidebar-resizer.dragging::after { left: 4px; width: 3px; background: var(--brand); }
+
+.mock-checks { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-base); cursor: pointer; }
+.check input { width: 15px; height: 15px; accent-color: var(--brand); }
+
+.mock-advanced { border: 1px solid var(--border-base); border-radius: var(--radius-sm); padding: 8px 10px; }
+.mock-advanced summary { font-size: 12px; color: var(--text-muted); cursor: pointer; }
+.mock-advanced .editor { margin-top: 8px; }
+.mock-actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; margin-top: 4px; }
 
 /* ─────────────────────────────────────────────────────────────
    Buttons
@@ -338,6 +399,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 .alert--error { color: var(--error); background: var(--error-soft); border-color: #fecaca; }
+.alert--ok { color: var(--success); background: var(--success-soft); border-color: #a7f3d0; }
+.alert--warn { color: var(--warning); background: var(--warning-soft); border-color: #fde68a; }
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
 
@@ -930,11 +993,12 @@ details.diagnostics pre {
    Responsive
    ───────────────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
-  :root { --sidebar-w: 320px; }
+  :root { --sidebar-w: 380px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 880px) {
   .app-main { grid-template-columns: 1fr; padding: 20px; gap: 20px; }
   .sidebar { position: static; max-height: none; }
   .rack-grid { grid-template-columns: 1fr; }
+  #sidebar-resizer { display: none; }
 }

@@ -1,0 +1,28 @@
+{
+  "seed": 5,
+  "clusters": 1,
+  "roles": { "master": 5, "learner": 5, "infra": 2, "l4lb-storage": 2, "worker": 0, "bastion": 1 },
+  "vm_specs": {
+    "high-mem-1": { "cpu_cores": 8, "memory_mib": 65536, "storage_gb": 750 },
+    "xhigh-mem-1": { "cpu_cores": 32, "memory_mib": 393216, "storage_gb": 750 }
+  },
+  "ip_type_by_role": {
+    "master": "non-routable",
+    "learner": "non-routable",
+    "infra": "non-routable",
+    "l4lb-storage": "non-routable",
+    "worker": "non-routable"
+  },
+  "bm_profiles": [
+    {
+      "name": "control-plane",
+      "roles": ["master", "learner", "infra", "l4lb-storage", "bastion"],
+      "capacity": { "cpu_cores": 96, "memory_mib": 786432, "storage_gb": 3932 }
+    }
+  ],
+  "racks": 6,
+  "ags": 3,
+  "tightness": 0.6,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 }
+}

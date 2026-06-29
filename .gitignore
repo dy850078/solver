@@ -46,8 +46,9 @@ logs/
 *.xlsx
 output/
 
-# Keep example request files
+# Keep example request files (including nested dirs like examples/mock/)
 !examples/*.json
+!examples/**/*.json
 
 # Temporary files
 tmp/

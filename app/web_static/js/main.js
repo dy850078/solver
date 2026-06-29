@@ -1,10 +1,11 @@
-import { listExamples, getExample, solve, splitAndSolve } from "./api.js";
+import { listExamples, getExample, solve, splitAndSolve, generateMock } from "./api.js";
 import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
 import { rebuildColorScale, legendEntries } from "./colors.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
+import { renderMockForm, readMockParams, populateMockForm } from "./mockform.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -142,12 +143,18 @@ async function populateExamples() {
   try {
     const items = await listExamples();
 
-    // Group by parent directory so nested examples appear under <optgroup>
+    // Group by parent directory so nested examples appear under <optgroup>.
+    // mock/ presets are GenerateRequest payloads (not PlacementRequests), so
+    // they go to the mock-preset dropdown instead of the solver examples list.
     const groups = new Map();   // dir -> [{name, endpoint_hint, file}]
     for (const item of items) {
       const idx = item.name.lastIndexOf("/");
       const dir = idx >= 0 ? item.name.slice(0, idx) : "";
       const file = idx >= 0 ? item.name.slice(idx + 1) : item.name;
+      if (dir === "mock") {
+        populateMockPreset({ ...item, file });
+        continue;
+      }
       if (!groups.has(dir)) groups.set(dir, []);
       groups.get(dir).push({ ...item, file });
     }
@@ -187,6 +194,73 @@ async function loadExample(name) {
   } catch (err) {
     $("#json-error").classList.remove("hidden");
     $("#json-error").textContent = `Failed to load example: ${err.message}`;
+  }
+}
+
+function populateMockPreset(item) {
+  const sel = $("#mock-preset");
+  if (!sel) return;
+  const opt = document.createElement("option");
+  opt.value = item.name;                 // e.g. "mock/basic_single_cluster.json"
+  opt.textContent = item.file.replace(/\.json$/, "");
+  sel.appendChild(opt);
+}
+
+async function loadMockPreset(name) {
+  if (!name) return;
+  try {
+    const content = await getExample(name);
+    populateMockForm(content);
+    $("#mock-error").classList.add("hidden");
+  } catch (err) {
+    $("#mock-error").classList.remove("hidden");
+    $("#mock-error").textContent = `Failed to load preset: ${err.message}`;
+  }
+}
+
+function showMockStatus(kind, text) {
+  const el = $("#mock-status");
+  el.className = `alert alert--${kind}`;
+  el.textContent = text;
+  el.classList.remove("hidden");
+}
+
+// Generate a request from the form. When run=true, immediately solve it too.
+async function generateRequest({ run = false } = {}) {
+  let params;
+  try {
+    params = readMockParams();
+    $("#mock-error").classList.add("hidden");
+  } catch (err) {
+    $("#mock-error").classList.remove("hidden");
+    $("#mock-error").textContent = err.message;
+    return;
+  }
+
+  const ids = ["#generate-btn", "#generate-run-btn"];
+  ids.forEach((s) => { $(s).disabled = true; });
+  try {
+    const resp = await generateMock(params);
+    // Load the generated PlacementRequest into the solver editor.
+    $("#json-editor").value = JSON.stringify(resp.request, null, 2);
+    $("#json-error").classList.add("hidden");
+    setEndpoint("solve");
+
+    const d = resp.diagnostics || {};
+    const counts = `${d.num_vms ?? "?"} VMs · ${d.num_baremetals ?? "?"} BMs · ${d.num_ags ?? "?"} AGs`;
+    if (resp.feasibility === "verified") {
+      showMockStatus("ok", `✓ Generated & verified solvable (${counts}).`);
+    } else if (resp.feasibility === "infeasible") {
+      showMockStatus("warn", `⚠ Generated but NOT solvable: ${d.solver_status ?? "infeasible"} (${counts}). Loaded anyway.`);
+    } else {
+      showMockStatus("warn", `Generated (unverified, ${counts}).`);
+    }
+
+    if (run) await runSolver();
+  } catch (err) {
+    showMockStatus("error", `Generate failed — ${err.message}`);
+  } finally {
+    ids.forEach((s) => { $(s).disabled = false; });
   }
 }
 
@@ -242,6 +316,51 @@ function spinnerEl() {
   return d;
 }
 
+// Drag the right edge of the sidebar to resize it; width persists in localStorage.
+function initSidebarResize() {
+  const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
+  const root = document.documentElement;
+  const MIN = 300, MAX = 760;
+
+  const saved = parseInt(localStorage.getItem("sidebarW") || "", 10);
+  if (saved >= MIN && saved <= MAX) root.style.setProperty("--sidebar-w", saved + "px");
+
+  const handle = document.createElement("div");
+  handle.id = "sidebar-resizer";
+  document.body.appendChild(handle);
+
+  const place = () => { handle.style.left = sidebar.getBoundingClientRect().right + "px"; };
+  place();
+  window.addEventListener("resize", place);
+
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    handle.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    const startX = e.clientX;
+    const startW = sidebar.getBoundingClientRect().width;
+    const onMove = (ev) => {
+      const w = Math.min(MAX, Math.max(MIN, Math.round(startW + ev.clientX - startX)));
+      root.style.setProperty("--sidebar-w", w + "px");
+      place();
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      handle.classList.remove("dragging");
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      const cur = parseInt(getComputedStyle(root).getPropertyValue("--sidebar-w"), 10);
+      if (cur) localStorage.setItem("sidebarW", String(cur));
+      place();
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+
 async function runSolver() {
   const request = parseRequestText();
   if (!request) return;
@@ -271,9 +390,14 @@ async function runSolver() {
 }
 
 function init() {
+  initSidebarResize();
+  renderMockForm($("#mock-form"));
   populateExamples();
 
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
+  $("#mock-preset").addEventListener("change", (e) => loadMockPreset(e.target.value));
+  $("#generate-btn").addEventListener("click", () => generateRequest({ run: false }));
+  $("#generate-run-btn").addEventListener("click", () => generateRequest({ run: true }));
   $("#upload-btn").addEventListener("click", () => $("#upload-input").click());
   $("#upload-input").addEventListener("change", (e) => handleUpload(e.target.files[0]));
   $("#run-btn").addEventListener("click", runSolver);
