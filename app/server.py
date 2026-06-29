@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -45,14 +46,21 @@ api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), na
 api.include_router(examples_api.router)
 api.include_router(mockgen.router)
 
-# Serve the web UI (topology visualization) from app/web_static/
+# Serve the web UI (topology visualization) from app/web_static/.
+# Gated behind ENABLE_UI so it's only deployed where explicitly enabled
+# (e.g. set ENABLE_UI=enable in dev/test environments only).
+_UI_ENABLED = os.environ.get("ENABLE_UI", "").strip().lower() == "enable"
 _WEB_STATIC_DIR = Path(__file__).parent / "web_static"
-if _WEB_STATIC_DIR.is_dir():
+if _UI_ENABLED and _WEB_STATIC_DIR.is_dir():
     api.mount("/ui", StaticFiles(directory=str(_WEB_STATIC_DIR), html=True), name="ui")
+    logger.info("Web UI enabled (ENABLE_UI=enable); serving at /ui")
 
     @api.get("/", include_in_schema=False)
     def root_redirect() -> RedirectResponse:
         return RedirectResponse("/ui/")
+
+else:
+    logger.info("Web UI disabled (set ENABLE_UI=enable to serve it at /ui)")
 
 
 @api.get("/docs", include_in_schema=False)
