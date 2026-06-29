@@ -47,6 +47,7 @@ def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResul
             success=False,
             solver_status="NO_VMS: no synthetic or explicit VMs to place",
             solve_time_seconds=time.time() - start,
+            bm_total_count=len(request.baremetals),
         )
 
     logger.info(
@@ -85,5 +86,7 @@ def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResul
         solver_status=result.solver_status,
         solve_time_seconds=time.time() - start,
         unplaced_vms=result.unplaced_vms,
+        bm_used_count=result.bm_used_count,
+        bm_total_count=result.bm_total_count,
         diagnostics=result.diagnostics,
     )

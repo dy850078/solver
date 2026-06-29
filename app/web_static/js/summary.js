@@ -34,6 +34,12 @@ export function renderStats(container, result) {
     ? `${unplaced}<span class="unit"> / ${totals.unplaced}</span>`
     : String(unplaced);
 
+  // BM utilization (used / provided). Independent of VM filtering — always
+  // reflects the whole solve, so it does not change when a filter is active.
+  const bmUsed = result.bm_used_count ?? 0;
+  const bmTotal = result.bm_total_count ?? 0;
+  const bmUsedDisplay = `${bmUsed}<span class="unit"> / ${bmTotal}</span>`;
+
   container.innerHTML = `
     <div class="stat ${statusClass}">
       <span class="stat__label">Status</span>
@@ -44,12 +50,16 @@ export function renderStats(container, result) {
       <span class="stat__value">${time}<span class="unit">s</span></span>
     </div>
     <div class="stat stat--ok">
-      <span class="stat__label">Placed${filtered ? " (filtered)" : ""}</span>
+      <span class="stat__label">VMs placed${filtered ? " (filtered)" : ""}</span>
       <span class="stat__value">${placedDisplay}</span>
     </div>
     <div class="stat ${unplaced > 0 ? "stat--err" : ""}">
-      <span class="stat__label">Unplaced${filtered ? " (filtered)" : ""}</span>
+      <span class="stat__label">VMs unplaced${filtered ? " (filtered)" : ""}</span>
       <span class="stat__value">${unplacedDisplay}</span>
+    </div>
+    <div class="stat">
+      <span class="stat__label">BMs used</span>
+      <span class="stat__value">${bmUsedDisplay}</span>
     </div>
   `;
 }

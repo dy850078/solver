@@ -41,8 +41,8 @@ run: ## Start the HTTP server (PORT=$(PORT)); web UI at /ui, API docs at /docs
 	$(BIN)/python -m app.server --port $(PORT)
 
 .PHONY: dev
-dev: ## Start the HTTP server with autoreload (development)
-	$(BIN)/uvicorn app.server:api --host 0.0.0.0 --port $(PORT) --reload
+dev: ## Start the HTTP server with autoreload + web UI enabled (development)
+	ENABLE_UI=enable $(BIN)/uvicorn app.server:api --host 0.0.0.0 --port $(PORT) --reload
 
 .PHONY: cli
 cli: ## Run the solver in CLI mode (requires INPUT=path; optional OUTPUT=path)

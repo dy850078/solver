@@ -1041,6 +1041,7 @@ class VMPlacementSolver:
                 solver_status=f"INPUT_ERROR: {self._input_errors[0]}",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
+                bm_total_count=len(self.request.baremetals),
                 diagnostics=self._with_advisories({"input_errors": self._input_errors}),
             )
 
@@ -1090,6 +1091,7 @@ class VMPlacementSolver:
                     solver_status=status_name,
                     solve_time_seconds=time.time() - start,
                     unplaced_vms=[vm.id for vm in self.request.vms],
+                    bm_total_count=len(self.request.baremetals),
                     diagnostics=diagnostics,
                 )
 
@@ -1100,6 +1102,7 @@ class VMPlacementSolver:
                 solver_status=f"ERROR: {e}",
                 solve_time_seconds=time.time() - start,
                 unplaced_vms=[vm.id for vm in self.request.vms],
+                bm_total_count=len(self.request.baremetals),
                 diagnostics=self._with_advisories({}),
             )
 
@@ -1155,12 +1158,16 @@ class VMPlacementSolver:
             if not placed:
                 unplaced.append(vm.id)
 
+        bm_used_count = len({a.baremetal_id for a in assignments})
+
         return PlacementResult(
             success=len(unplaced) == 0,
             assignments=assignments,
             solver_status=status,
             solve_time_seconds=elapsed,
             unplaced_vms=unplaced,
+            bm_used_count=bm_used_count,
+            bm_total_count=len(self.request.baremetals),
             diagnostics=self._with_advisories({}),
         )
 

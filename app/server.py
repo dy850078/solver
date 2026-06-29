@@ -32,6 +32,23 @@ logger = logging.getLogger(__name__)
 
 _SWAGGER_STATIC_DIR = Path(swagger_ui_bundle.__file__).parent
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that tells the browser to revalidate every request.
+
+    The web UI is plain ES modules served without content-hashed filenames,
+    so a browser left to its own heuristics will happily serve a stale
+    summary.js after the file changes on disk. `Cache-Control: no-cache`
+    forces a conditional request; combined with the ETag/Last-Modified that
+    StaticFiles already sends, an unchanged file still returns a cheap 304.
+    Used only for the dev/test-gated /ui mount.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
 # Named `api` to avoid collision with the `app/` package name
 api = FastAPI(
     title="VM Placement Solver",
@@ -52,7 +69,7 @@ api.include_router(mockgen.router)
 _UI_ENABLED = os.environ.get("ENABLE_UI", "").strip().lower() == "enable"
 _WEB_STATIC_DIR = Path(__file__).parent / "web_static"
 if _UI_ENABLED and _WEB_STATIC_DIR.is_dir():
-    api.mount("/ui", StaticFiles(directory=str(_WEB_STATIC_DIR), html=True), name="ui")
+    api.mount("/ui", NoCacheStaticFiles(directory=str(_WEB_STATIC_DIR), html=True), name="ui")
     logger.info("Web UI enabled (ENABLE_UI=enable); serving at /ui")
 
     @api.get("/", include_in_schema=False)

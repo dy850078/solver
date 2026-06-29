@@ -52,6 +52,32 @@ class TestAssignment:
         assert not r.success
 
 
+class TestBmUsageCounts:
+    """bm_used_count / bm_total_count surfaced on PlacementResult."""
+
+    def test_total_is_provided_bm_count(self):
+        r = solve([make_vm("vm-1")], [make_bm("bm-1"), make_bm("bm-2"), make_bm("bm-3")])
+        assert r.bm_total_count == 3
+
+    def test_used_is_distinct_bms_in_assignments(self):
+        # Consolidation: 10 tiny VMs onto 1 BM → used == 1, even with spare BMs.
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        vms = [make_vm(f"vm-{i}", cpu=1, mem=1) for i in range(10)]
+        r = solve(vms, bms)
+        assert r.success
+        assert r.bm_used_count == len({a.baremetal_id for a in r.assignments})
+
+    def test_total_reported_on_failure(self):
+        # Over-capacity → failure, but the provided total is still reported.
+        r = solve(
+            [make_vm("vm-1", cpu=4, mem=16_000), make_vm("vm-2", cpu=4, mem=16_000)],
+            [make_bm("bm-1", cpu=4, mem=16_000)],
+        )
+        assert not r.success
+        assert r.bm_used_count == 0
+        assert r.bm_total_count == 1
+
+
 # ===========================================================================
 # 2. Capacity constraint: don't exceed BM resources
 # ===========================================================================

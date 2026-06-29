@@ -367,6 +367,10 @@ class PlacementResult(BaseModel):
     solver_status: str = ""
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = Field(default_factory=list)
+    # BM utilization for this solve: distinct BMs actually placed on, and the
+    # total number of BMs provided in the request (len(request.baremetals)).
+    bm_used_count: int = 0
+    bm_total_count: int = 0
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:
@@ -425,6 +429,10 @@ class SplitPlacementResult(BaseModel):
     solver_status: str = ""
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = Field(default_factory=list)
+    # BM utilization for this solve: distinct BMs actually placed on, and the
+    # total number of BMs provided in the request (len(request.baremetals)).
+    bm_used_count: int = 0
+    bm_total_count: int = 0
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:
