@@ -192,7 +192,7 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 
 ### 缺口 3a — 多期 roll-forward
 
-- `CapacityPlanRequest.periods`：有序的期別（**決議：月粒度，12 期**）。
+- **月粒度**；horizon = **`demand_book` 中出現的月份集合**（排序），不咬死 12 期（見缺口 3d）。
 - 多 fab × 多月一次算：因 per-fab 自給自足，各 (fab, period) 為獨立求解、天然可平行。
 - 每期帶**增量需求**（該期新增的 cluster 需求），不是累計值。
 - **庫存狀態逐期滾動**：第 N 期 placement 把 BM 的 `used_capacity` 推進，
@@ -324,11 +324,11 @@ cluster 現況。分工如下：
 需求單是 `ResourceRequirement` 的薄包裝，欄位一對一對映：
 
 ```python
-class DemandForm(BaseModel):              # user 填寫，編排層轉成 ResourceRequirement
+class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一個目標月
     cluster_id: str
-    period: str                           # 目標月份 "2026-07"
     node_role: NodeRole = NodeRole.WORKER
-    # 增量需求；填 0 / 省略 = 該維度不約束（但不代表 VM 該維度用量為 0）
+    period: str                           # 目標月份 "2026-07"
+    # 增量需求；維度層級填 0 = 該維度不約束（不代表 VM 該維度用量為 0）
     cpu_cores: int = 0
     memory_mib: int = 0
     storage_gb: int = 0
@@ -340,6 +340,31 @@ class DemandForm(BaseModel):              # user 填寫，編排層轉成 Resour
     fab: str | None = None                # 預設由 cluster 現有 footprint 推導（系統帶入）
     # 註：無 demand_mode（一律增量）；無 cluster 現況欄位（系統經 Go Scheduler 帶入）
 ```
+
+#### 需求帳本：稀疏、可修訂、月份驅動 horizon（決議）
+
+需求存成一本**帳本 = `list[DemandEntry]`**，每列 `(cluster, role, month)`：
+
+- **稀疏**：user 一次可只送某幾個月；沒送的月份就沒那列。
+- **修訂 = upsert**：再送同一 `(cluster, role, month)` 覆蓋舊列（last-write-wins），非疊加
+  （每列是「那個月加多少」，改就是改那個月）。
+- **狀態存呼叫端**：帳本持久化 / upsert 由 **Go Scheduler Service** 負責；solver 無狀態，
+  每次拿**當前完整帳本快照**重算。
+- **horizon = 帳本裡實際出現的月份集合**（排序後 roll-forward），**不咬死 12 期 / 日曆年**。
+  中間沒填的月份無需求、狀態原封帶過，不影響結果。
+
+**月份三態語意（避免沉默被誤讀為 0）**：
+
+| 帳本狀態 | 意義 | 報表呈現 |
+|---|---|---|
+| 沒有該列 | 未規劃（還不知道）| 標「未規劃」，不當 0 |
+| 有列、需求全 0 | 確定不長 | 標「無成長」|
+| 有列、某維度 > 0 | 有需求（0 的維度不約束）| 正常規劃 |
+
+> 兩層 0 不同源：**列層級**全 0＝該月不長；**維度層級**單一維度 0＝該維度不設下限。
+
+**重算永遠「從當下往未來」**：過去月份的 add 已執行、已 baked 進 in-stock（`used_capacity`），
+故重算時 horizon 只含**當下及未來**的已填月份，過去自然退出模擬，乾淨處理「年中更新後半年」。
 
 ### 缺口 3e — 新舊節點一起打散（整個 cluster 的 anti-affinity）
 
@@ -440,14 +465,9 @@ class BaremetalType(BaseModel):
     fab: str
     landing_zones: list[ProcurementLandingZone]   # 單台落點集合，solver 分配
 
-class PeriodDemand(BaseModel):
-    period: str                       # 月粒度，如 "2026-07"
-    fab: str
-    requirements: list[ResourceRequirement]   # 含 total_pods
-
 class CapacityPlanRequest(BaseModel):
-    periods: list[str]                # 有序期別（12 個月）
-    demands: list[PeriodDemand]       # 多 fab × 多月，逐 (fab, period) 獨立求解
+    demand_book: list[DemandEntry]    # 稀疏帳本；horizon = 其中出現的月份集合（排序）
+    # periods 不再是輸入 —— 由 demand_book 的 distinct period 推導
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
@@ -593,6 +613,9 @@ POST /v1/capacity/plan
 | 22 | 報表對象收斂成 **2 個**：Capacity 大臣（主，含編預算視圖）、長官 | 財務＝Capacity 大臣同一角色；採購不用管；工程師 rack 級 drill-down 移出規劃範圍 | — |
 | 23 | 分開 **node 台數** 與 **BM 台數** 兩欄 | node 給 owner 建 VM；BM 給財務編預算；N node 可能只需 K≤N BM | — |
 | 24 | 形式 **canonical JSON 優先**，Web UI 先做、Excel 後補 | UI/Excel 皆為 JSON 薄投影，不各寫一套；複用 `app/web_static/` | 趨勢圖可後補 |
+| 25 | 需求存成**稀疏帳本** `list[DemandEntry]`，每列 `(cluster,role,月)`，修訂=upsert | user 可任意送某幾月、可年中修訂 | 帳本持久化由 Go Scheduler 負責，solver 無狀態 |
+| 26 | 月份**三態**：無列=未規劃、全 0=不長、某維度>0=有需求 | 讓報表誠實區分「沉默」與「明確不長」 | 兩層 0（列層級 vs 維度層級）分開 |
+| 27 | horizon = **帳本出現的月份**，不咬死 12 期/日曆年 | user 填幾月就規劃幾月；重算永遠從當下往未來 | 過去月份已 baked 進 in-stock，自動退出模擬 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
