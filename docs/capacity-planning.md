@@ -167,8 +167,8 @@ class ProcurementCap(BaseModel):
 
 > **兩個 caveat**：
 > 1. `max_bm` 限的是**桶內容量**；**桶集合仍是現實 AG/DC** —— 不能憑空生不存在的 AG。故某 fab
->    只有 2 AG 卻要 3 副本打散時，採買**仍會卡**（`shortfall_cause=anti_affinity`）。
-> 2. 桶買滿 `max_bm` 仍放不下 → `shortfall_cause=space`，partial + advisory（見缺口 3c），
+>    只有 2 AG 卻要 3 副本打散時，採買**仍會卡**（`ShortfallDetail.cause=anti_affinity`）。
+> 2. 桶買滿 `max_bm` 仍放不下 → `cause=space`，partial + advisory（見缺口 3c），
 >    交由 DC Hardware Team 擴充機位；不硬性 INFEASIBLE。
 
 **多機型可選（決議 Q3-機型）**：每個 fab 可有多個 `BaremetalType`；採買 bin-pack 是
@@ -316,11 +316,11 @@ class ShortfallDetail(BaseModel):
 #### 「可落地可用量」為什麼不能 by-cluster 加總（正確性陷阱）
 
 不同 cluster 有不同 spec、不同候選 BM、不同 anti-affinity，且**搶同一個實體 BM 池**。
-各算各的 headroom 再相加會 double-count（A 說還能放 5 台、B 也說 5 台，指的是同一塊空間）。
+各算各的 `remaining_node_slots` 再相加會 double-count（A 說還能放 5 台、B 也說 5 台，指的是同一塊空間）。
 
 因此兩種用途分開：
 
-1. **算採買缺口** → **不要先算 headroom 再相減**。把該期**所有 cluster 的需求一起丟進
+1. **算採買缺口** → **不要先算 `remaining_node_slots` 再相減**。把該期**所有 cluster 的需求一起丟進
    該 fab 共用庫存做一次 joint placement**，殘量就是缺口。一次解，contention 自然處理。
 2. **健康度儀表 `remaining_node_slots`（純參考）** → 用「fab/桶層級 + 單一全域 `reference_vm_spec`」
    算粗略的「若全拿來長參考 VM 可長 N 台」，並**明講這是尺標值、不是各 cluster 加總**。
@@ -608,7 +608,7 @@ POST /v1/capacity/plan
 | 風險 | 類型 | 緩解 |
 |---|---|---|
 | 多期 × 多 fab × bin-pack 求解時間膨脹 | 技術 | 每期每 fab 獨立求解（天然可平行），單次規模小；採買 bin-pack 設 `max_solve_time` 並接受 FEASIBLE。 |
-| 採買 template 的 topology 落點假設不準 | 營運 | 報表標註成因；採買的 topology_template 由規劃方明確指定，不由 solver 臆測。 |
+| 採買機位假設不準（理想化桶或 `max_bm` 過時）| 營運 | 有 `max_bm` 的桶用精準值、缺的桶理想化；買滿仍缺標 `space` 成因交 DC Hardware Team；機位逐月 roll-forward。 |
 | roll-forward 與真實上線順序不符 | 營運 | 設計為「規劃輔助」非「執行真相」；輸出標明假設前提。 |
 | Pod 全域值未來變 per-spec | 技術 | 已預留升級路徑（替代方案 A），現有欄位語意不衝突。 |
 | 既有 `split-and-solve` 契約變動 | 技術/組織 | 新功能走新 endpoint `/v1/capacity/plan`，舊 endpoint 與行為不動；`max_pods_per_node` 預設 0 = 停用。 |
@@ -649,11 +649,11 @@ POST /v1/capacity/plan
 | # | Decision | Reason | Follow-ups |
 |---|---|---|---|
 | 1 | Pod 上限用**單一全域值** `max_pods_per_node` | 與 spec 無關，退化成節點數下限即可，對 placement 端零侵入 | 未來若 per-spec 再走替代方案 A |
-| 2 | 期別**月粒度**（12 期） | 規劃需要月級可見度；規模仍小 | — |
+| 2 | 期別**月粒度** | 規劃需要月級可見度；規模仍小 | 期數不固定 12，見 #27（帳本驅動 horizon）|
 | 3 | 每 fab **可多採買機型** | 反映真實採購選項 | Phase 2 bin-pack 做機型選擇 |
 | 4 | 現階段 **per-fab 自給自足**，不跨 fab 調撥 | 簡化、可平行；符合現況 | 未來跨 fab 調撥：編排層加跨 fab placement 選項（多 fab 候選池 + 調撥成本權重），列為 Phase 4 |
 | 5 | 報表頭條用**可落地可用量**，名目量降為證據欄 | 名目量會因碎片/拓撲高估，無法支撐採買論述 | — |
-| 6 | 缺口用**全 cluster joint placement** 算，不 by-cluster 加總 headroom | 各 cluster 搶同一 BM 池，加總會 double-count | — |
+| 6 | 缺口用**全 cluster joint placement** 算，不 by-cluster 加總 `remaining_node_slots` | 各 cluster 搶同一 BM 池，加總會 double-count | — |
 | 7 | 需求單可**忽略部分維度**（填 0 不約束） | splitter 既有行為（`splitter.py:171`） | 報表仍照實反映被忽略維度的真實佔用 |
 | 8 | 採買單位 = **單台 BM**（非整櫃） | 符合實際採購顆粒度 | 落點理想化後由 solver 在桶內分配（Q1；見 #28）|
 | 9 | 落點 = **L1：solver 在 fab 的 AG/DC 桶內分配** | 平衡「規劃可控」與「自動最佳化」 | 現階段理想化無機位上限（Q2；見 #28）|
