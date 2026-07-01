@@ -191,11 +191,19 @@ w_procurement_balance: int = 3               # 平衡「結果可用量」的軟
 ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各買一樣多。形式化：
 
 ```
-對每個桶 b（procurement_spread_dimension 的 bucket）:
-  resulting_available[b] = in_stock_available[b] + bought[b]×cap − demand_placed[b]
+added_resources[b] = Σ_t buy[t,b] × cap_t          # 採買替桶 b 新增的「資源量」(非台數)
+resulting_available[b] = in_stock_available[b] + added_resources[b] − demand_placed[b]
 
 軟目標: minimize (max_b resulting_available[b] − min_b resulting_available[b])
 ```
+
+> **`× cap_t` 的意義**：`buy[t,b]` 是**台數**，`cap_t` 是一台 type-t 的**資源**（如 64 vCore），
+> 相乘＝這些機器帶來的**資源**。平均比的是資源可用量（5 台大機 ≠ 5 台小機），故要換算成資源。
+> 單一機型時台數與資源成正比可省略。
+>
+> **同一個 `buy` 有兩種加總、勿混**：
+> - **max_bm 機位約束**比**台數**：`Σ_t buy[t,b] ≤ max_bm[b]`（一格一台）。
+> - **balance 目標**比**資源**：`Σ_t buy[t,b] × cap_t`（可用量看資源多寡）。
 
 這讓採買「考慮 in-stock 現況」自動補在最短的桶，達成真正的平均，而非帳面平均。
 
@@ -263,9 +271,30 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 | **Capacity 大臣**（主要消費者，含編預算）| 完整規劃：各 fab 各 AG/DC 各月 → 加幾台 node ＋ 買幾台 BM ＋ 成因；其中「各 fab 各 DC 各月買幾台 BM」即編預算視圖 | fab × AG/DC × 月 | node ＋ BM |
 | **長官** | 缺口 + 採買 + 成因（彙總）| fab × 季/年 | 主要 BM |
 
-成因標籤三類：`capacity`（買滿仍資源不足）/ `anti_affinity`（桶不夠打散）/ `space`（桶機位
-`max_bm` 用罄）。前兩類複用 `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）；
-`space` 由「理想化 vs 有 max_bm 兩次求解比對」判定（理想化 feasible、有上限不行 → space）。
+**成因要結構化 + 指到哪個桶/維度 + 一句人話**（只給三個字使用者會無所適從）：
+
+```python
+class ShortfallDetail(BaseModel):
+    cause: str                 # "capacity" | "anti_affinity" | "space"
+    bucket: str | None = None  # 哪個桶（AG/DC），如 "ag-0"
+    dimension: str | None = None   # capacity→"cpu_cores"/…；anti_affinity→"ag"/"datacenter"
+    needed: int | None = None
+    available: int | None = None
+    message: str               # 一句可讀說明
+```
+
+| 成因 | message 例 | 使用者行動 |
+|---|---|---|
+| `space` | 「ag-0 機位用罄：需 8 台、上限 5」| 找 DC Hardware Team 在 ag-0 擴機位 |
+| `anti_affinity` | 「需 3 個 AG 打散，此 fab 只有 2 個」| 開新 AG / 放寬打散 |
+| `capacity` | 「記憶體不足：缺 512 GiB（CPU/Storage 夠）」| 挑高記憶體機型 |
+
+- `anti_affinity` / `space` 的 bucket 與數字直接來自既有 `DiagnosticsBuilder`
+  （`diagnostics.py` 的 `_check_anti_affinity_feasibility` 已回傳 `reachable_buckets` /
+  `min_buckets_needed`）；`space` 另由「理想化 vs 有 max_bm 兩解比對」判定。
+- `capacity` 的綁死維度 = 哪個資源維度總需求超過總供給最多。
+- 一個缺口可能**同時多個成因**（沒機位 + 記憶體也不夠）→ 報表帶 `list[ShortfallDetail]`。
+
 編預算視圖（fab × DC × 月 → BM 台數）是 Capacity 大臣的一個投影，不是獨立角色。
 
 #### 兩種「台數」必須分開
@@ -497,7 +526,7 @@ class BucketMonthCell(BaseModel):
     period: str                       # 月
     node_adds: list[SplitDecision]    # 加幾台什麼 spec 的 node（給 owner/工程師）
     bm_procurement: list[dict]        # [{type_id, count}] 要買幾台 BM（給財務）
-    shortfall_cause: str              # "capacity" | "anti_affinity" | "space" | "none"
+    shortfalls: list[ShortfallDetail] = []   # 結構化成因（可多個），見缺口 3c
 
 class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
     fab: str
@@ -506,7 +535,7 @@ class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
     node_adds_total: int              # 本月本 fab 要加的 node 台數
     bm_procurement_total: int         # 本月本 fab 要買的 BM 台數
     shortfall_vms: int                # 缺幾台（需求 − 可落地）
-    shortfall_cause: str              # "capacity" | "anti_affinity" | "space" | "none"
+    shortfalls: list[ShortfallDetail] = []   # 彙總各 bucket 的結構化成因
     cells: list[BucketMonthCell]      # 下鑽到 AG/DC × month
     # 證據 / 健康度（支撐採買論述）
     nominal_available: Resources      # 名目可用量（會高估）
@@ -591,12 +620,11 @@ POST /v1/capacity/plan
 1. **參考 VM (`headroom_reference_spec`) 的選法**：可落地可用量要用哪個 spec 當量尺？
    建議在 config 指定一個全域 `headroom_reference_spec`（如 32c/256g）當「健康度儀表」的量尺；
    而採買缺口則一律用「該期實際需求」做 joint placement，不依賴參考 spec。reviewer 同意否？
-2. **成因標籤的細緻度**：目前只分 `capacity` / `anti_affinity` 兩類。是否需要再細分
-   （例如哪個拓撲維度、哪個 AG 卡住）？這會增加解釋負擔。
 
 > 已消解的 Open Questions：
 > - ~~drill-down 粒度到 Room/Rack~~ → 決議 #21：規劃報表最細到 AG/DC，不下 BM/rack。
-> - ~~採買 topology 落點誰決定~~ → 決議 #28：理想化，solver 在 fab 的 AG/DC 桶內分配。
+> - ~~採買 topology 落點誰決定~~ → 決議 #29：`max_bm` 掛桶層級，solver 在桶內分配。
+> - ~~成因標籤細緻度~~ → 決議 #33：結構化 `ShortfallDetail`（指到桶/維度 + 人話）。
 
 ---
 
@@ -636,6 +664,8 @@ POST /v1/capacity/plan
 | 30 | 機位**逐月 roll-forward**（採買消耗、遞減）| 避免多月超賣同一批機位 | — |
 | 31 | 新增第三種成因 **`space`**（桶機位用罄）| 讓報表能講「空位買滿仍缺 → 要擴機房」；partial+advisory 不硬 fail | `space` 由「理想化 vs 有 max_bm 兩解比對」判定 |
 | 32 | 機型佔位先當 **1U（1 台=1 格）** | 先簡化 | 未來 GPU 多 U 用 `rack_units` + 每型 U 數，結構不變 |
+| 33 | 成因**結構化** `ShortfallDetail`（cause + 桶 + 維度 + needed/available + 人話），可多筆 | 只給三個字使用者無所適從；需指到哪個桶/維度才知道要幹嘛 | 多數欄位既有 diagnostics 已算，只需外露 |
+| — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
