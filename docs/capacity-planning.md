@@ -372,19 +372,34 @@ class ExistingDistribution(BaseModel):
 | 跨 AG/DC 打散（3e）| 每桶聚合數 | 需 `ExistingDistribution` |
 | 同 BM 同 type 上限（max_per_bm）| 每台 BM 的 group 佔用數 | ❌ 需 `ExistingBmOccupancy` |
 
+**實際用途（決議）**：max_per_bm 主要用在 **master** —— group `(cluster_id, node_role=master)`、
+`max_per_bm=1`（一台 BM 最多 1 個同 cluster master）。故每台 BM 對此 group 的現有數只會是
+0/1，count-only 剛好且唯一必要。
+
 ```python
 class ExistingBmOccupancy(BaseModel):
     baremetal_id: str
     # group key = (cluster_id, ip_type, node_role) → 該 BM 上現有同組 VM 數
-    group_counts: dict[str, int]     # 例: {"clusterA|routable|master": 1}
+    group_counts: dict[str, int]     # 例: {"clusterA||master": 1}
 ```
 
 > **避免 double count**：資源面已由 `used_capacity` 蓋掉，故此資料**只帶 count、不帶資源**。
 > 它專供「計數型約束」（max_per_bm、打散），與容量無關。
 >
-> **subsume 3e**：per-BM count 依 BM 的 AG 加總即得 3e 的每 AG 聚合數 —— 若 Go Scheduler
-> 給得出 per-BM，一份資料同時餵飽打散與 max_per_bm；若只給得出 per-AG 聚合，則 max_per_bm
-> 對現有 VM 無法精準把關，列為已知限制。
+> **subsume 3e**：per-BM count 依 BM 的 AG 加總即得 3e 的每 AG 聚合數 —— 一份資料同時餵飽
+> 打散與 max_per_bm。
+
+**決議：solver 契約用「聚合 count」（Option A），不送完整 existing VM（Option B）。** 理由：
+
+1. **夠用** —— master 1/BM、跨 AG 打散等所有現有約束，count-only 都足夠。
+2. **與現有契約一致** —— Go scheduler 本來就送聚合 `used_capacity`（非每台 VM）；這份現況比照
+   送聚合 count。詳細 VM 資料**留在 Go Scheduler Service 那層**，在邊界 aggregate 成 count 再送，
+   solver 維持純函式、拿最小必要資訊。
+3. **無 double count** —— 完整 existing VM 會與 `used_capacity` 重複算資源，得改寫容量模型
+   （改用 `total_capacity` + pinned VM 消耗）；聚合 count 完全迴避。
+
+> Option B（完整 `existing_vms`，即 splitter 決策 E 的 deferred 能力）列為未來，僅當出現
+> 「需區分特定 VM 身分」的約束（指定 VM 的 failover 配對、逐 VM affinity）時才值得付代價。
 
 **solver 改動極小**：max_per_bm 約束（`diagnostics.py:283` / solver 對應處）由
 `Σ(新 VM) ≤ cap` 擴成 `existing_count[bm][group] + Σ(新 VM) ≤ cap`，加一個常數而已。
@@ -540,7 +555,9 @@ POST /v1/capacity/plan
 | 15 | anti-affinity 作用範圍 = **整個 cluster**（新舊一起打散）| 對齊實際 HA 心智；只平衡新批次會長出全域傾斜 | 補 splitter 未做的 existing-baseline（缺口 3e）|
 | 16 | **Role-aware**：master 硬（2/2/1）、worker 軟（advisory + balance）| master 是 quorum、worker 是容量；worker 靠 add-node 慢慢平衡 | — |
 | 17 | master 硬約束**容忍既有違規**（`new[b] ≤ max(0, cap−existing[b])` + advisory）| 歷史傾斜不該擋住加機器，但也不弄更糟 | **已定：用容忍版 (a)** |
-| 18 | 帶入**現有 VM 的 per-BM 佔用**（count-only）給 max_per_bm 用（缺口 3f）| 聚合到 AG 不夠；否則規劃 placement 會與真實 max_per_bm 打架 | 待 confirm：Go Scheduler 能否給 per-BM 佔用；若只給 per-AG 則 max_per_bm 對現有無法精準把關 |
+| 18 | 帶入**現有 VM 的 per-BM 佔用**（count-only）給 max_per_bm 用（缺口 3f）| 聚合到 AG 不夠；否則規劃 placement 會與真實 max_per_bm 打架 | **已定** |
+| 19 | max_per_bm 主要用在 **master**：`(cluster, master)` cap=1 | 一台 BM 最多 1 個同 cluster master；故 count 只 0/1，count-only 足夠 | — |
+| 20 | solver 契約用**聚合 count**（Option A），非完整 existing VM（Option B）| 夠用 + 與現有 `used_capacity` 聚合契約一致 + 迴避 double count；詳細留在 Go Scheduler 層邊界聚合 | Option B（完整 `existing_vms`）列未來，僅特定-VM 身分約束才需 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
