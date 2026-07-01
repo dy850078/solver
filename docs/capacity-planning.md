@@ -237,16 +237,38 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 > 不需為了拓撲再開一堆維度去解釋 —— solver 跑出 INFEASIBLE / partial 就是舉證。
 > 採買理由從「需求 vs 名目」改成 **「需求 vs 可落地」**，數字才誠實。
 
-#### 分層報表：頭條收斂成「結果 + 成因」，多維度下沉成 drill-down
+#### 報表對象與粒度（決議）
 
-解釋性的原則是**不論底下有幾個拓撲維度，講故事的人手上永遠只有 3 個數字 + 1 個原因**：
+**規劃 vs 執行是兩個階段** —— 規劃報表的最細粒度**停在 `(fab, AG/DC, month)` 的台數**，
+**不下到某台 BM / 某 rack**。個別 VM 落哪台 BM 是**執行階段** `solve` / splitter 的事，不是
+規劃報表的產物。這正好對齊「3 AG 平均」的思考語言，也砍掉大量複雜度。
 
-- **頭條（給長官 / sponsor）** — per (fab, period)：
-  「能再長 N 台 node ／ 本期需求 M 台 ／ 缺 M−N 台」＋ **成因標籤**
-  （`capacity` 容量不足 vs `anti_affinity` 拓撲打散不足）。成因標籤直接複用
-  `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`），它本來就能分這兩層。
-- **Drill-down（給工程師 / 採購落點）** — 才展開 by DC / Room / Rack 的資源貨幣、碎片分布。
-  採買最終要落到某個 room/rack，這層有用，但它是附錄、不是頭條。
+三個對象（採購不納入；工程師 rack 級 drill-down 移出規劃範圍）：
+
+| 對象 | 要看的 | 粒度 | 台數類型 |
+|---|---|---|---|
+| **Capacity 大臣**（主要消費者）| 完整規劃：各 fab 各 AG/DC 各月 → 加幾台 node ＋ 買幾台 BM ＋ 成因 | fab × AG/DC × 月 | node ＋ BM |
+| **長官** | 缺口 + 採買 + 成因（彙總）| fab × 季/年 | 主要 BM |
+| **財務大臣** | 各 fab 各 DC 各月要買幾台 BM（編預算）| fab × DC × 月 | **BM** |
+
+成因標籤（`capacity` vs `anti_affinity`）直接複用
+`DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）。
+
+#### 兩種「台數」必須分開
+
+- **Node/VM 台數**：某 AG 某月要「加幾台 K8s node」→ Capacity 大臣轉述 owner/工程師、
+  Cluster Owner 拿去建 VM（對映 `SplitDecision`）。
+- **BM 台數（採買）**：某 DC 某月要「買幾台實體機」→ 財務大臣編預算。
+
+兩者不同（N 台 node 可能共住、只需 K≤N 台 BM）。報表**兩欄分開**，避免財務/長官看錯。
+
+#### 形式：canonical JSON 優先，UI 與 Excel 都是薄投影
+
+先產出結構化的 `CapacityReport` JSON，**Web UI 和 Excel 都只是它的投影**，不各寫一套邏輯：
+
+- **Web UI**（先做）：複用既有 `app/web_static/`；規劃報表本質是 fab × AG/DC × 月 的表格
+  + 篩選 + 長官頭條。表格中等工作量，趨勢圖可後補。
+- **Excel**（後補）：資料本為表格狀，從同一份 JSON 匯出 xlsx/csv 很容易，加個 endpoint 即可。
 
 #### 「可落地可用量」為什麼不能 by-cluster 加總（正確性陷阱）
 
@@ -433,26 +455,35 @@ class CapacityPlanRequest(BaseModel):
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
                                       #    procurement_spread_dimension, w_procurement_balance
 
-class PeriodFabReport(BaseModel):
+# 規劃報表最細粒度 = (fab, bucket=AG/DC, month)；不下到個別 BM/rack
+class BucketMonthCell(BaseModel):
+    fab: str
+    bucket: str                       # AG 或 DC（依 procurement_spread_dimension）
+    period: str                       # 月
+    node_adds: list[SplitDecision]    # 加幾台什麼 spec 的 node（給 owner/工程師）
+    bm_procurement: list[dict]        # [{type_id, count}] 要買幾台 BM（給財務）
+    shortfall_cause: str              # "capacity" | "anti_affinity" | "none"
+
+class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
     fab: str
     period: str
-    # 頭條：結果 + 成因
-    placeable_headroom_vms: int       # 可落地：還能再長幾台參考 VM
-    demand_vms: int                   # 本期需求換算台數
-    shortfall_vms: int                # 缺幾台
+    # 頭條：結果 + 成因（兩種台數分開）
+    node_adds_total: int              # 本月本 fab 要加的 node 台數
+    bm_procurement_total: int         # 本月本 fab 要買的 BM 台數
+    shortfall_vms: int                # 缺幾台（需求 − 可落地）
     shortfall_cause: str              # "capacity" | "anti_affinity" | "none"
-    procurement: list[dict]           # [{type_id, zone(topology), count}]，含落點分佈
-    balance_after: dict               # 採買後各 spread bucket 的 resulting_available
-    # 證據 / 健康度
+    cells: list[BucketMonthCell]      # 下鑽到 AG/DC × month
+    # 證據 / 健康度（支撐採買論述）
     nominal_available: Resources      # 名目可用量（會高估）
     placeable_available: Resources    # 可落地可用量（真實）
     fragmentation_loss: Resources     # 名目 − 可落地
-    # drill-down（附錄）：by DC/Room/Rack 的資源貨幣與碎片
-    breakdown: list[dict] = []
+    balance_after: dict               # 採買後各 bucket 的 resulting_available
 
-class CapacityReport(BaseModel):
+class CapacityReport(BaseModel):      # canonical JSON；Web UI 與 Excel 皆為其投影
     by_fab_period: list[PeriodFabReport]
     totals: dict                      # 跨 fab/period 彙總
+    # 財務視圖：fab × DC × month → BM 台數（由 cells 投影）
+    finance_view: list[dict]          # [{fab, dc, month, bm_count}]
 ```
 
 ### 新增 API
@@ -558,6 +589,10 @@ POST /v1/capacity/plan
 | 18 | 帶入**現有 VM 的 per-BM 佔用**（count-only）給 max_per_bm 用（缺口 3f）| 聚合到 AG 不夠；否則規劃 placement 會與真實 max_per_bm 打架 | **已定** |
 | 19 | max_per_bm 主要用在 **master**：`(cluster, master)` cap=1 | 一台 BM 最多 1 個同 cluster master；故 count 只 0/1，count-only 足夠 | — |
 | 20 | solver 契約用**聚合 count**（Option A），非完整 existing VM（Option B）| 夠用 + 與現有 `used_capacity` 聚合契約一致 + 迴避 double count；詳細留在 Go Scheduler 層邊界聚合 | Option B（完整 `existing_vms`）列未來，僅特定-VM 身分約束才需 |
+| 21 | 報表最細粒度 = **`(fab, AG/DC, month)`**，不下到個別 BM/rack | 規劃 vs 執行分階段；BM 級擺放是執行時 `solve` 的事 | 大幅減複雜度；對齊「3 AG 平均」語言 |
+| 22 | 報表對象收斂成 **3 個**：Capacity 大臣（主）、長官、財務大臣 | 採購不用管；工程師 rack 級 drill-down 移出規劃範圍 | — |
+| 23 | 分開 **node 台數** 與 **BM 台數** 兩欄 | node 給 owner 建 VM；BM 給財務編預算；N node 可能只需 K≤N BM | — |
+| 24 | 形式 **canonical JSON 優先**，Web UI 先做、Excel 後補 | UI/Excel 皆為 JSON 薄投影，不各寫一套；複用 `app/web_static/` | 趨勢圖可後補 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
