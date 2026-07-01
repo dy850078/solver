@@ -269,7 +269,23 @@ by-cluster 的可見度，改用**結果導向**呈現（這個 cluster 需求�
 正是現有 `slot_score` 概念（`solver.py:864`），把它從 objective 內部指標**外露成報表欄位**。
 碎片率高 → 該整併或調 spec；碎片率低且可落地也低 → 該採買。
 
-### 缺口 3d — User 需求單 (Demand Form)
+### 缺口 3d — User 需求單 (Demand Form) 與資料來源分工 (Provenance)
+
+**核心原則：需求單只裝「User 意圖」，「現況」一律走系統。** User 不該、也難以從 UI 填
+cluster 現況。分工如下：
+
+| 誰提供 | 內容 | 來源 |
+|---|---|---|
+| **User（需求單）** | 哪個 cluster / 哪個月 / 什麼 role / 要多少 CPU/Mem/Storage/Pod / (可選) 指定 spec / min-max 台數 | UI 表單 |
+| **系統（不讓 User 填）** | in-stock BM 庫存、候選 BM、cluster 現有分佈（每 AG 聚合數）、HA policy | **中介 Go Scheduler Service**（整合 Inventory）|
+
+> **決議（岔路 A）：需求是「增量」語意** —— 「這個月幫我加 32 vCore」。因此 **sizing 不需要
+> cluster 現況**（32 vCore 就切 32 vCore），只有 placement / 採買需要 BM 現況。
+> 需求單因而不需 `demand_mode` 欄位。cluster 現況（Node 層聚合）只在**新舊一起打散**時才要
+> （見缺口 3e）。
+>
+> **資料流**：所有系統側資料由中介的 **Go Scheduler Service** 整合 Inventory 後填入請求契約，
+> Python solver 維持純函式（與既有 `candidate_baremetals` 由 scheduler 帶入的設計一致）。
 
 提供 user 一張需求單填寫資源量，大部分**現有資料模型已支援**：
 
@@ -288,19 +304,58 @@ by-cluster 的可見度，改用**結果導向**呈現（這個 cluster 需求�
 ```python
 class DemandForm(BaseModel):              # user 填寫，編排層轉成 ResourceRequirement
     cluster_id: str
-    fab: str
-    period: str                           # "2026-07"
-    # 填 0 / 省略 = 該維度不約束（但不代表 VM 該維度用量為 0）
+    period: str                           # 目標月份 "2026-07"
+    node_role: NodeRole = NodeRole.WORKER
+    # 增量需求；填 0 / 省略 = 該維度不約束（但不代表 VM 該維度用量為 0）
     cpu_cores: int = 0
     memory_mib: int = 0
     storage_gb: int = 0
     pod_count: int = 0
-    node_role: NodeRole = NodeRole.WORKER
     # 顯式指定希望的 VM 規格；省略則用 config.vm_specs 由 solver 選
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
+    fab: str | None = None                # 預設由 cluster 現有 footprint 推導（系統帶入）
+    # 註：無 demand_mode（一律增量）；無 cluster 現況欄位（系統經 Go Scheduler 帶入）
 ```
+
+### 缺口 3e — 新舊節點一起打散（整個 cluster 的 anti-affinity）
+
+**決議（岔路 B）：anti-affinity 作用範圍是「整個 cluster」，不是「這批新節點」。** 新長出來的
+節點要與**現有節點一起**滿足打散，否則會長出全域傾斜的 cluster（且報表假綠燈）。
+
+需要的資料：cluster 現有節點在每個 spread bucket 的**聚合數**（不需逐節點落點），
+由 Go Scheduler Service 從 Inventory 聚合後帶入：
+
+```python
+class ExistingDistribution(BaseModel):
+    cluster_id: str
+    node_role: NodeRole
+    spread_dimension: str                 # "ag" | "datacenter"
+    counts_per_bucket: dict[str, int]     # {"ag-0": 3, "ag-1": 1, "ag-2": 1}
+```
+
+**Role-aware 強度（決議）**：
+
+- **Master — 硬約束**：5 台 master 天然 `⌈5/3⌉=2` → **2/2/1**，正是既有 `AntiAffinityRule`
+  auto-cap 公式 `ceil(N/buckets)`（`models.py:180`），N 用「現有 + 新增」總數。add-master
+  時把現有 master 分佈當基線。
+- **Worker — 軟約束**：傾斜就靠 add-node 慢慢 balance，不擋 solve。沿用既有 `target_spread`
+  advisory 機制（`models.py:308`，達不到目標發 `spread_below_target` 而非失敗）+ 平衡目標
+  （把新 worker 推向較空的桶）。
+
+**優雅處理既有違規（master 硬約束的邊界）**：若現有分佈本身已違規（歷史遺留，如 ag-0 已 3 台
+> cap=2），不因此讓整個 solve INFEASIBLE。約束改為「不准把桶推得更爆，容忍既有的爆」：
+
+```
+新增在桶 b 的數量 ≤ max(0, cap − 現有數[b])
+  現有 ag-0=3、cap=2 → 新增 ≤ 0（不往 ag-0 加，但不 INFEASIBLE）
+  現有 ag-1=1、cap=2 → 新增 ≤ 1
+同時發 advisory：「ag-0 現有 master 超標，建議重排（超出本工具範圍）」
+```
+
+> ⚠️ 這是既有 splitter **刻意未做**的 topology-affinity-with-existing（`requirement-splitter.md`
+> 決策 E）。本設計以「聚合基線數」的輕量形式補上，避免引入完整 `existing_vms` 模型。
 
 ### 核心資料模型 (草案)
 
@@ -326,6 +381,7 @@ class CapacityPlanRequest(BaseModel):
     demands: list[PeriodDemand]       # 多 fab × 多月，逐 (fab, period) 獨立求解
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
+    existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
                                       #    procurement_spread_dimension, w_procurement_balance
 
@@ -446,6 +502,11 @@ POST /v1/capacity/plan
 | 10 | 平均維度**可選 `ag` 或 `datacenter`**，用 `procurement_spread_dimension` | 兩者皆在 `SPREAD_DIMENSIONS`；覆蓋 AG→實體 DC 轉換（3AG 結果可 1:1 對應實體 DC）| — |
 | 11 | 「平均」平衡的是**採買後結果可用量**，非採買台數 | 要考慮 in-stock 現況才精準，補在最短的桶 | 軟目標 `w_procurement_balance` |
 | 12 | 現階段**單一最佳建議**，不做 what-if 多情境 | 先求可用 | 未來 what-if：外層迴圈疊多情境比較報表（L2）|
+| 13 | 需求是**增量語意**（加多少），無 `demand_mode` | sizing 不需 cluster 現況，僅 placement/採買需 BM 現況 | — |
+| 14 | 需求單只裝 **User 意圖**；現況一律走系統（**Go Scheduler Service** 整合 Inventory）| provenance 分工；user 無法從 UI 填現況 | Inventory 只需回「每 AG 聚合數」即可，不需逐節點 |
+| 15 | anti-affinity 作用範圍 = **整個 cluster**（新舊一起打散）| 對齊實際 HA 心智；只平衡新批次會長出全域傾斜 | 補 splitter 未做的 existing-baseline（缺口 3e）|
+| 16 | **Role-aware**：master 硬（2/2/1）、worker 軟（advisory + balance）| master 是 quorum、worker 是容量；worker 靠 add-node 慢慢平衡 | — |
+| 17 | master 硬約束**容忍既有違規**（`new[b] ≤ max(0, cap−existing[b])` + advisory）| 歷史傾斜不該擋住加機器，但也不弄更糟 | 待 confirm：是否改「直接擋下逼重排」 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
