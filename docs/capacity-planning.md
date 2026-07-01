@@ -243,16 +243,16 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 **不下到某台 BM / 某 rack**。個別 VM 落哪台 BM 是**執行階段** `solve` / splitter 的事，不是
 規劃報表的產物。這正好對齊「3 AG 平均」的思考語言，也砍掉大量複雜度。
 
-三個對象（採購不納入；工程師 rack 級 drill-down 移出規劃範圍）：
+**兩個對象**（財務＝Capacity 大臣同一角色；採購不納入；工程師 rack 級 drill-down 移出規劃範圍）：
 
 | 對象 | 要看的 | 粒度 | 台數類型 |
 |---|---|---|---|
-| **Capacity 大臣**（主要消費者）| 完整規劃：各 fab 各 AG/DC 各月 → 加幾台 node ＋ 買幾台 BM ＋ 成因 | fab × AG/DC × 月 | node ＋ BM |
+| **Capacity 大臣**（主要消費者，含編預算）| 完整規劃：各 fab 各 AG/DC 各月 → 加幾台 node ＋ 買幾台 BM ＋ 成因；其中「各 fab 各 DC 各月買幾台 BM」即編預算視圖 | fab × AG/DC × 月 | node ＋ BM |
 | **長官** | 缺口 + 採買 + 成因（彙總）| fab × 季/年 | 主要 BM |
-| **財務大臣** | 各 fab 各 DC 各月要買幾台 BM（編預算）| fab × DC × 月 | **BM** |
 
 成因標籤（`capacity` vs `anti_affinity`）直接複用
-`DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）。
+`DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）。編預算視圖（fab × DC ×
+月 → BM 台數）是 Capacity 大臣的一個投影，不是獨立角色。
 
 #### 兩種「台數」必須分開
 
@@ -482,8 +482,8 @@ class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
 class CapacityReport(BaseModel):      # canonical JSON；Web UI 與 Excel 皆為其投影
     by_fab_period: list[PeriodFabReport]
     totals: dict                      # 跨 fab/period 彙總
-    # 財務視圖：fab × DC × month → BM 台數（由 cells 投影）
-    finance_view: list[dict]          # [{fab, dc, month, bm_count}]
+    # 編預算視圖（Capacity 大臣用）：fab × DC × month → BM 台數（由 cells 投影）
+    budget_view: list[dict]           # [{fab, dc, month, bm_count}]
 ```
 
 ### 新增 API
@@ -590,7 +590,7 @@ POST /v1/capacity/plan
 | 19 | max_per_bm 主要用在 **master**：`(cluster, master)` cap=1 | 一台 BM 最多 1 個同 cluster master；故 count 只 0/1，count-only 足夠 | — |
 | 20 | solver 契約用**聚合 count**（Option A），非完整 existing VM（Option B）| 夠用 + 與現有 `used_capacity` 聚合契約一致 + 迴避 double count；詳細留在 Go Scheduler 層邊界聚合 | Option B（完整 `existing_vms`）列未來，僅特定-VM 身分約束才需 |
 | 21 | 報表最細粒度 = **`(fab, AG/DC, month)`**，不下到個別 BM/rack | 規劃 vs 執行分階段；BM 級擺放是執行時 `solve` 的事 | 大幅減複雜度；對齊「3 AG 平均」語言 |
-| 22 | 報表對象收斂成 **3 個**：Capacity 大臣（主）、長官、財務大臣 | 採購不用管；工程師 rack 級 drill-down 移出規劃範圍 | — |
+| 22 | 報表對象收斂成 **2 個**：Capacity 大臣（主，含編預算視圖）、長官 | 財務＝Capacity 大臣同一角色；採購不用管；工程師 rack 級 drill-down 移出規劃範圍 | — |
 | 23 | 分開 **node 台數** 與 **BM 台數** 兩欄 | node 給 owner 建 VM；BM 給財務編預算；N node 可能只需 K≤N BM | — |
 | 24 | 形式 **canonical JSON 優先**，Web UI 先做、Excel 後補 | UI/Excel 皆為 JSON 薄投影，不各寫一套；複用 `app/web_static/` | 趨勢圖可後補 |
 
