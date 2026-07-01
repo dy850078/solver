@@ -141,8 +141,9 @@ min_nodes(req) = ⌈ req.total_pods / global_max_pods_per_node ⌉
 
 **採買單位 = 單台 BM（決議 Q1）**，落點由 solver 在 fab 的 AG/DC 桶內分配台數（**L1，決議 Q2**）。
 
-**決議：現階段採「理想化落點」—— 假定每個桶都有位置、機位無上限。** 這把「誰維護落點資料」
-的問題整個消掉：落點集合直接**推導**為「該 fab 現有的 AG/DC 桶」，不需外部維護。
+**決議：機位上限 `max_bm` 掛在「桶（AG/DC）」層級**，因為你們就是 by AG / by DC 看分散、
+不在意 ag-0 裡的哪個 rack（rack 級落點由 DC Hardware Team 張羅）。落點 = 打散桶本身，
+不需 zone→bucket 映射。
 
 ```python
 class BaremetalType(BaseModel):
@@ -150,21 +151,25 @@ class BaremetalType(BaseModel):
     type_id: str
     capacity: Resources
     fab: str                          # 歸屬廠區 (= topology.site 或 phase)
-    # 理想化：桶內台數無上限；目標桶集合 = fab 現有 AG/DC（None → 自動推導）
-    target_buckets: list[str] | None = None
+
+class ProcurementCap(BaseModel):
+    """某桶的採買機位上限；缺此桶 → 理想化無上限。"""
+    fab: str
+    bucket: str                       # AG 或 DC 的值，如 "ag-0"
+    max_bm: int                       # 該桶還能加幾台 BM（總數，不分 rack、不分機型）
 ```
 
 - **in-stock**：沿用既有 `Baremetal`（有 id / used_capacity / topology）。
-- **procurement**：規劃層先盡量放進 in-stock，殘量才在 fab 的桶內生成新 BM 算採買台數。
-- 規劃模式下 `candidate_baremetals` 由規劃層**依 fab/桶自動推導**（不要求呼叫方填），
-  維持 splitter 既有的「候選必填」契約不破壞 —— 編排層在呼叫 splitter 前補齊它。
+- **procurement**：規劃層先盡量放進 in-stock，殘量才在桶內生成新 BM，受 `max_bm[bucket]` 上限。
+- **理想化為 per-bucket fallback**：有給 `max_bm` 的桶受限、沒給的桶無限。故可混用
+  —— 假定機位夠的 fab 不給、盤點過的 fab 給精準值。
+- `candidate_baremetals` 由規劃層**依 fab/桶自動推導**，維持 splitter 契約不破壞。
 
-> **理想化的兩個 caveat**：
-> 1. 理想化的是**桶內容量（無限加機器）**，但**桶集合仍是現實 AG/DC** —— 憑空生一個不存在的
->    AG 不允許。故某 fab 只有 2 AG 卻要 3 副本打散時，採買**仍會卡**（`shortfall_cause=
->    anti_affinity`），這是正確且有用的訊號。
-> 2. 規劃出的採買數可能超出實體機位（假定無限位置）。規劃/編預算階段可接受 —— 它告訴你
->    「要買 N 台、並得喬空間」。**真實機位上限（`max_bm` + landing-zone 維護）列為未來 Phase**。
+> **兩個 caveat**：
+> 1. `max_bm` 限的是**桶內容量**；**桶集合仍是現實 AG/DC** —— 不能憑空生不存在的 AG。故某 fab
+>    只有 2 AG 卻要 3 副本打散時，採買**仍會卡**（`shortfall_cause=anti_affinity`）。
+> 2. 桶買滿 `max_bm` 仍放不下 → `shortfall_cause=space`，partial + advisory（見缺口 3c），
+>    交由 DC Hardware Team 擴充機位；不硬性 INFEASIBLE。
 
 **多機型可選（決議 Q3-機型）**：每個 fab 可有多個 `BaremetalType`；採買 bin-pack 是
 「機型選擇 + 落點 + 數量」的聯合問題，CP-SAT 天然能解（見缺口 3b）。
@@ -201,15 +206,19 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 - 每期帶**增量需求**（該期新增的 cluster 需求），不是累計值。
 - **庫存狀態逐期滾動**：第 N 期 placement 把 BM 的 `used_capacity` 推進，
   第 N+1 期在這個基礎上繼續放（節點黏住、不重排）。採買進來的 BM 變成下一期的 in-stock。
+- **機位也逐期滾動**：第 N 期採買消耗 `max_bm[bucket]`，第 N+1 期看到的是遞減後的值
+  （避免多月超賣同一批機位）。
 - 實作上每期就是一次既有 `solve_split_placement(allow_partial_placement=True)`，
-  期間用回傳的 assignments 更新 `used_capacity` 後傳入下一期。
+  期間用回傳的 assignments 更新 `used_capacity` 與 `max_bm` 後傳入下一期。
 
 ### 缺口 3b — 採買量算法
 
 殘量（這期 in-stock 放不下的 VM）連同「候選落點內的虛擬可採買 BM」一起丟進一次 CP-SAT solve：
 
-- **變數**：`bm_buy_used[t, b, k]` BoolVar — type `t` 在桶 `b` 的第 k 台是否採買
-  （理想化：k 上限由「殘量最多需要幾台」推導，非機位上限）；沿用既有 `assign[vm, bm]`。
+- **變數**：`bm_buy_used[t, b, k]` BoolVar — type `t` 在桶 `b` 的第 k 台是否採買。
+  k 上限 = `min(max_bm[b], 殘量最多需要幾台)`；桶無 `max_bm` 時只由後者封頂（理想化）。
+  展開成每台虛擬 BM 讓 `max_per_bm=1`（master 1/BM）自然成立。沿用既有 `assign[vm, bm]`。
+- **機位約束**：`Σ_{t,k} bm_buy_used[t,b,k] ≤ max_bm[b]`（有給的桶才加此約束）。
 - **約束**：殘量 VM 必須放進（in-stock ∪ 已啟用的採買 BM）；沿用既有 capacity /
   anti-affinity / failover（此時 spread 會作用在採買 BM 的落點拓撲上，逼採買去補足打散缺口）。
 - **目標（分層）**：
@@ -254,9 +263,10 @@ ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各�
 | **Capacity 大臣**（主要消費者，含編預算）| 完整規劃：各 fab 各 AG/DC 各月 → 加幾台 node ＋ 買幾台 BM ＋ 成因；其中「各 fab 各 DC 各月買幾台 BM」即編預算視圖 | fab × AG/DC × 月 | node ＋ BM |
 | **長官** | 缺口 + 採買 + 成因（彙總）| fab × 季/年 | 主要 BM |
 
-成因標籤（`capacity` vs `anti_affinity`）直接複用
-`DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）。編預算視圖（fab × DC ×
-月 → BM 台數）是 Capacity 大臣的一個投影，不是獨立角色。
+成因標籤三類：`capacity`（買滿仍資源不足）/ `anti_affinity`（桶不夠打散）/ `space`（桶機位
+`max_bm` 用罄）。前兩類複用 `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）；
+`space` 由「理想化 vs 有 max_bm 兩次求解比對」判定（理想化 feasible、有上限不行 → space）。
+編預算視圖（fab × DC × 月 → BM 台數）是 Capacity 大臣的一個投影，不是獨立角色。
 
 #### 兩種「台數」必須分開
 
@@ -462,16 +472,19 @@ class ExistingBmOccupancy(BaseModel):
 class BaremetalType(BaseModel):
     type_id: str
     capacity: Resources
+    fab: str                          # 1U 假設；未來 GPU 多 U 用 rack_units 擴充
+
+class ProcurementCap(BaseModel):      # 缺口 2：桶機位上限（缺此桶 → 理想化無上限）
     fab: str
-    # 理想化落點（決議 28）：桶內無上限；None → 自動推導 fab 現有 AG/DC
-    target_buckets: list[str] | None = None
-    # 未來：真實機位上限 ProcurementLandingZone(topology, max_bm) 於此擴充
+    bucket: str                       # AG 或 DC 的值
+    max_bm: int
 
 class CapacityPlanRequest(BaseModel):
     demand_book: list[DemandEntry]    # 稀疏帳本；horizon = 其中出現的月份集合（排序）
     # periods 不再是輸入 —— 由 demand_book 的 distinct period 推導
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
+    procurement_caps: list[ProcurementCap] = []  # 桶機位上限；缺 → 該桶理想化無上限（缺口 2）
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
     existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
@@ -484,7 +497,7 @@ class BucketMonthCell(BaseModel):
     period: str                       # 月
     node_adds: list[SplitDecision]    # 加幾台什麼 spec 的 node（給 owner/工程師）
     bm_procurement: list[dict]        # [{type_id, count}] 要買幾台 BM（給財務）
-    shortfall_cause: str              # "capacity" | "anti_affinity" | "none"
+    shortfall_cause: str              # "capacity" | "anti_affinity" | "space" | "none"
 
 class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
     fab: str
@@ -493,7 +506,7 @@ class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
     node_adds_total: int              # 本月本 fab 要加的 node 台數
     bm_procurement_total: int         # 本月本 fab 要買的 BM 台數
     shortfall_vms: int                # 缺幾台（需求 − 可落地）
-    shortfall_cause: str              # "capacity" | "anti_affinity" | "none"
+    shortfall_cause: str              # "capacity" | "anti_affinity" | "space" | "none"
     cells: list[BucketMonthCell]      # 下鑽到 AG/DC × month
     # 證據 / 健康度（支撐採買論述）
     nominal_available: Resources      # 名目可用量（會高估）
@@ -618,7 +631,11 @@ POST /v1/capacity/plan
 | 25 | 需求存成**稀疏帳本** `list[DemandEntry]`，每列 `(cluster,role,月)`，修訂=upsert | user 可任意送某幾月、可年中修訂 | 帳本持久化由 Go Scheduler 負責，solver 無狀態 |
 | 26 | 月份**三態**：無列=未規劃、全 0=不長、某維度>0=有需求 | 讓報表誠實區分「沉默」與「明確不長」 | 兩層 0（列層級 vs 維度層級）分開 |
 | 27 | horizon = **帳本出現的月份**，不咬死 12 期/日曆年 | user 填幾月就規劃幾月；重算永遠從當下往未來 | 過去月份已 baked 進 in-stock，自動退出模擬 |
-| 28 | 採買落點採**理想化**：桶內機位無上限、桶集合=fab 現有 AG/DC | 消掉「誰維護落點資料」；規劃/編預算階段夠用 | 真實機位上限（`max_bm`＋landing-zone 維護）列未來；桶集合仍受現實限制（不能憑空生 AG）|
+| 28 | ~~一律理想化無上限~~ → **改為：理想化是 per-bucket fallback，`max_bm` 是精準模式** | 理想化會產出虛胖/不符現況的採買數（user 修正）| 見 #29–#32 |
+| 29 | `max_bm` 掛在**桶（AG/DC）層級**，非 rack | 你們 by AG/DC 看分散，不在意桶內哪個 rack；rack 級由 DC Hardware Team 張羅 | `ProcurementCap{fab, bucket, max_bm}` |
+| 30 | 機位**逐月 roll-forward**（採買消耗、遞減）| 避免多月超賣同一批機位 | — |
+| 31 | 新增第三種成因 **`space`**（桶機位用罄）| 讓報表能講「空位買滿仍缺 → 要擴機房」；partial+advisory 不硬 fail | `space` 由「理想化 vs 有 max_bm 兩解比對」判定 |
+| 32 | 機型佔位先當 **1U（1 台=1 格）** | 先簡化 | 未來 GPU 多 U 用 `rack_units` + 每型 U 數，結構不變 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
