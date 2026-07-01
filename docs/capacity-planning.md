@@ -137,27 +137,58 @@ min_nodes(req) = ⌈ req.total_pods / global_max_pods_per_node ⌉
 > 好處：不需在 `Resources` 加非對稱欄位，不需區分 `COVERAGE_FIELDS` / `PLACEMENT_FIELDS`，
 > 對既有 solver 零侵入。若未來 Pod 上限改為 per-spec，再升級成資源欄位（見 Alternatives）。
 
-### 缺口 2 — 規劃模式：用「BM 機型 template」描述供給
+### 缺口 2 — 規劃模式：用「BM 機型 template + 候選落點」描述供給
 
-新增供給的兩種來源：
+**採買單位 = 單台 BM（決議 Q1）**，落點由規劃方給候選集合、solver 在其中分配台數
+（**L1，決議 Q2**）。因此 `BaremetalType` 不再是「單一固定 topology」，而是帶
+**候選落點集合**：
 
 ```python
+class ProcurementLandingZone(BaseModel):
+    """一個候選落點：新 BM 可以擺進來的拓撲桶。"""
+    topology: Topology             # 該落點的 site/phase/dc/room/rack/ag
+    max_bm: int | None = None      # 該落點還能塞幾台（機位/電力/網路上限；None=不限）
+
 class BaremetalType(BaseModel):
-    """可採買的 BM 機型 (無固定 id，數量無上限)。"""
+    """可採買的 BM 機型 (無固定 id)。"""
     type_id: str
     capacity: Resources
-    fab: str                       # 歸屬廠區 (= topology.site 或 phase)
-    topology_template: Topology    # 採買後落在哪個 room/rack/ag 的策略
+    fab: str                                  # 歸屬廠區 (= topology.site 或 phase)
+    landing_zones: list[ProcurementLandingZone]   # 可落點集合（solver 分配台數）
 ```
 
 - **in-stock**：沿用既有 `Baremetal`（有 id / used_capacity / topology）。
-- **procurement template**：`BaremetalType`，規劃層先盡量放進 in-stock，殘量才用 template 算採買台數。
-- 規劃模式下 `candidate_baremetals` 由規劃層**依 fab/topology 自動推導**（不再要求呼叫方填），
+- **procurement**：規劃層先盡量放進 in-stock，殘量才在 `landing_zones` 內生成新 BM 算採買台數。
+- 規劃模式下 `candidate_baremetals` 由規劃層**依 fab/落點自動推導**（不要求呼叫方填），
   維持 splitter 既有的「候選必填」契約不破壞 —— 編排層在呼叫 splitter 前補齊它。
 
-**決議：每個 fab 可有多個採買機型可選。** 採買 bin-pack 因此是「機型選擇 + 數量」的聯合問題
-（見缺口 3b）。CP-SAT 天然能解：對每個 type 各開一組虛擬可採買 BM，由目標函數挑出總台數
-（或未來加權成本）最小的組合。搜尋空間變大但每次規劃的規模仍小（單 fab × 單月）。
+**多機型可選（決議 Q3-機型）**：每個 fab 可有多個 `BaremetalType`；採買 bin-pack 是
+「機型選擇 + 落點 + 數量」的聯合問題，CP-SAT 天然能解（見缺口 3b）。
+
+#### 平均擺放策略：跨 AG / 實體 DC，且考慮 in-stock 現況
+
+實務採買是**跨 3 個桶平均擺放**（目前是 3 AG，正轉向 3 實體 DC）。兩者引擎都天生支援：
+`ag` 與 `datacenter` **都已在 `SPREAD_DIMENSIONS`**（`models.py:18`）。所以只需一個參數
+指定要平衡哪個維度，數學完全一致 —— 這正好覆蓋「先用 3 AG 算、之後 1 AG 對應 1 實體 DC」
+的轉換：
+
+```python
+# SolverConfig 新增
+procurement_spread_dimension: str = "ag"     # "ag" | "datacenter"（或其他 SPREAD_DIMENSIONS）
+w_procurement_balance: int = 3               # 平衡「結果可用量」的軟目標權重
+```
+
+**關鍵：平均的是「採買後的結果可用量」，不是「採買台數」。** 若 ag-0 現有 in-stock 還很多、
+ag-1 很少，正確做法是**多買到 ag-1 去補平**，而不是每桶各買一樣多。形式化：
+
+```
+對每個桶 b（procurement_spread_dimension 的 bucket）:
+  resulting_available[b] = in_stock_available[b] + bought[b]×cap − demand_placed[b]
+
+軟目標: minimize (max_b resulting_available[b] − min_b resulting_available[b])
+```
+
+這讓採買「考慮 in-stock 現況」自動補在最短的桶，達成真正的平均，而非帳面平均。
 
 ### 缺口 3a — 多期 roll-forward
 
@@ -171,16 +202,22 @@ class BaremetalType(BaseModel):
 
 ### 缺口 3b — 採買量算法
 
-殘量（這期 in-stock 放不下的 VM）丟進一個小 bin-packing：
-以標準採買機型為箱子，**minimize 啟用箱數** → 即「這個 fab 這季要買幾台 BM」。
+殘量（這期 in-stock 放不下的 VM）連同「候選落點內的虛擬可採買 BM」一起丟進一次 CP-SAT solve：
 
-這等同把 solver 反過來用：建立 `bm_buy_used[t, k]` BoolVar（第 k 台 type-t 機型是否採買），
-demand 固定、目標 `minimize Σ bm_buy_used`，並沿用既有 capacity / anti-affinity 約束。
-可直接在 `solver.py` 的 CP-SAT 模型上加一組「虛擬可採買 BM」實現，復用 `bm_used` 機制
-（`solver.py:770`）。
+- **變數**：`bm_buy_used[t, z, k]` BoolVar — type `t` 在落點 `z` 的第 k 台是否採買
+  （k 上限 = `landing_zones[z].max_bm`）；沿用既有 `assign[vm, bm]`。
+- **約束**：殘量 VM 必須放進（in-stock ∪ 已啟用的採買 BM）；沿用既有 capacity /
+  anti-affinity / failover（此時 spread 會作用在採買 BM 的落點拓撲上，逼採買去補足打散缺口）。
+- **目標（分層）**：
+  1. 主：`minimize Σ bm_buy_used`（總採買台數最少；未來可換成加權成本）。
+  2. 軟：`minimize (max−min) resulting_available[b]`（平衡結果可用量，權重 `w_procurement_balance`）。
+
+實作上直接在 `solver.py` 的 CP-SAT 模型加一組「虛擬可採買 BM」，復用 `bm_used` 機制
+（`solver.py:770`）—— 採買 BM 就是「可選啟用、啟用要計數」的 BM。
 
 缺口成因標註複用 `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）：
-能區分缺口是 `capacity`（純資源不足）還是 `anti_affinity`（拓撲/AG 打散不足）造成。
+能區分缺口是 `capacity`（純資源不足）還是 `anti_affinity`（拓撲/AG 打散不足）造成 ——
+後者正是「單台自由落點」若沒有跨桶候選就會卡住的情形，也是本設計要 L1 的原因。
 
 ### 缺口 3c — 報表維度與解釋性（回答「該用什麼維度看資源長相」「怎麼說服採買」）
 
@@ -269,11 +306,15 @@ class DemandForm(BaseModel):              # user 填寫，編排層轉成 Resour
 
 ```python
 # models.py 新增
+class ProcurementLandingZone(BaseModel):
+    topology: Topology                # 落點的 site/phase/dc/room/rack/ag
+    max_bm: int | None = None         # 該落點機位上限（None=不限）
+
 class BaremetalType(BaseModel):
     type_id: str
     capacity: Resources
     fab: str
-    topology_template: Topology = Topology()
+    landing_zones: list[ProcurementLandingZone]   # 單台落點集合，solver 分配
 
 class PeriodDemand(BaseModel):
     period: str                       # 月粒度，如 "2026-07"
@@ -285,7 +326,8 @@ class CapacityPlanRequest(BaseModel):
     demands: list[PeriodDemand]       # 多 fab × 多月，逐 (fab, period) 獨立求解
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
-    config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec
+    config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
+                                      #    procurement_spread_dimension, w_procurement_balance
 
 class PeriodFabReport(BaseModel):
     fab: str
@@ -295,7 +337,8 @@ class PeriodFabReport(BaseModel):
     demand_vms: int                   # 本期需求換算台數
     shortfall_vms: int                # 缺幾台
     shortfall_cause: str              # "capacity" | "anti_affinity" | "none"
-    procurement: dict                 # {type_id: count}，可多機型
+    procurement: list[dict]           # [{type_id, zone(topology), count}]，含落點分佈
+    balance_after: dict               # 採買後各 spread bucket 的 resulting_available
     # 證據 / 健康度
     nominal_available: Resources      # 名目可用量（會高估）
     placeable_available: Resources    # 可落地可用量（真實）
@@ -398,6 +441,11 @@ POST /v1/capacity/plan
 | 5 | 報表頭條用**可落地可用量**，名目量降為證據欄 | 名目量會因碎片/拓撲高估，無法支撐採買論述 | — |
 | 6 | 缺口用**全 cluster joint placement** 算，不 by-cluster 加總 headroom | 各 cluster 搶同一 BM 池，加總會 double-count | — |
 | 7 | 需求單可**忽略部分維度**（填 0 不約束） | splitter 既有行為（`splitter.py:171`） | 報表仍照實反映被忽略維度的真實佔用 |
+| 8 | 採買單位 = **單台 BM**（非整櫃） | 符合實際採購顆粒度 | 需 `landing_zones` 落點約束避免不切實際（Q1）|
+| 9 | 落點 = **L1：規劃方給候選集合，solver 分配** | 平衡「規劃可控」與「自動最佳化」 | `BaremetalType.landing_zones` + `max_bm`（Q2）|
+| 10 | 平均維度**可選 `ag` 或 `datacenter`**，用 `procurement_spread_dimension` | 兩者皆在 `SPREAD_DIMENSIONS`；覆蓋 AG→實體 DC 轉換（3AG 結果可 1:1 對應實體 DC）| — |
+| 11 | 「平均」平衡的是**採買後結果可用量**，非採買台數 | 要考慮 in-stock 現況才精準，補在最短的桶 | 軟目標 `w_procurement_balance` |
+| 12 | 現階段**單一最佳建議**，不做 what-if 多情境 | 先求可用 | 未來 what-if：外層迴圈疊多情境比較報表（L2）|
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
