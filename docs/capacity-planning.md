@@ -112,7 +112,7 @@ CapacityPlanRequest
  CapacityReport:
    per (fab, period):
      resource_currency  { vCore/Mem/Storage/Pods: total/used/available }
-     effective_headroom { 還能再長幾台標準 VM }
+     remaining_node_slots { 還能再長幾台參考 VM }
      fragmentation      { stranded 容量, 碎片率 }
      demand             { 本期需求 }
      shortfall          { 缺口資源量 }
@@ -322,16 +322,34 @@ class ShortfallDetail(BaseModel):
 
 1. **算採買缺口** → **不要先算 headroom 再相減**。把該期**所有 cluster 的需求一起丟進
    該 fab 共用庫存做一次 joint placement**，殘量就是缺口。一次解，contention 自然處理。
-2. **健康度儀表（純參考）** → 才用「fab 層級、單一參考 spec」算粗略的「若全拿來長標準 VM
-   可長 N 台」，並**明講這是參考值、不是各 cluster 加總**。
+2. **健康度儀表 `remaining_node_slots`（純參考）** → 用「fab/桶層級 + 單一全域 `reference_vm_spec`」
+   算粗略的「若全拿來長參考 VM 可長 N 台」，並**明講這是尺標值、不是各 cluster 加總**。
 
 by-cluster 的可見度，改用**結果導向**呈現（這個 cluster 需求滿足了沒／缺幾台），
-而不是發明一個能相加的 headroom。
+而不是發明一個能相加的 slot 數。
+
+**參考 spec 選 A（單一全域），不 per-role（決議 #34）**：因為 spec 不只 role 不同、連同 role 跨
+cluster 都不同，per-role 尺標也不「真」。既然都不可能真，就用一個**清楚一致的共同尺標**。精準度
+落在該精準處 —— **實際 sizing/placement/採買用需求自帶的真實 per-role spec**（既有能力，見下），
+`reference_vm_spec` 只是儀表的尺，刻意不追求 per-cluster 精準。
+
+> **各 role 不同 spec 的支援性（設計檢視）**：**現有即支援**。`ResourceRequirement.vm_specs`
+> （`models.py:400`）每個 role 可帶自己的 spec pool，splitter `_resolve_specs`（`splitter.py:99`）
+> 「有就用、沒有 fallback config.vm_specs」（splitter 決策 C）。`SplitDecision` 本就 by role 分開。
+> `DemandEntry.vm_specs` 沿用此機制。故 master 用一組、worker 用另一組是既有能力，不需新增設計。
 
 #### 碎片率（健康度副指標）
 
-`stranded = Σ_bm (裝不下參考 VM 的剩餘空間)`，即「名目 − 可落地」的細分，
+`stranded = Σ_bm (裝不下 min_useful_spec 的剩餘空間)`，即「名目 − 可落地」的細分，
 正是現有 `slot_score` 概念（`solver.py:864`），把它從 objective 內部指標**外露成報表欄位**。
+
+> **用 `min_useful_spec`（最小可用 spec）而非 `reference_vm_spec`（決議 #34）**：碎片是「連最小的
+> 都塞不下」才算真浪費；若用代表性 spec 會把「塞不下 32c 但塞得下 8c」的可用空間誤判為浪費。
+>
+> **命名切開撞名**：現有 `w_headroom`/`headroom_upper_bound_pct`（`models.py:311`）是「單台 BM 別
+> 塞超過 90%」的利用率餘裕，與此處「還能長幾台」無關。故本儀表用 `remaining_node_slots` /
+> `reference_vm_spec`，不沿用 `headroom` 字樣。
+
 碎片率高 → 該整併或調 spec；碎片率低且可落地也低 → 該採買。
 
 ### 缺口 3d — User 需求單 (Demand Form) 與資料來源分工 (Provenance)
@@ -516,8 +534,9 @@ class CapacityPlanRequest(BaseModel):
     procurement_caps: list[ProcurementCap] = []  # 桶機位上限；缺 → 該桶理想化無上限（缺口 2）
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
     existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
-    config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
-                                      #    procurement_spread_dimension, w_procurement_balance
+    config: SolverConfig              # 含 max_pods_per_node, vm_specs, reference_vm_spec,
+                                      #    min_useful_spec, procurement_spread_dimension,
+                                      #    w_procurement_balance
 
 # 規劃報表最細粒度 = (fab, bucket=AG/DC, month)；不下到個別 BM/rack
 class BucketMonthCell(BaseModel):
@@ -615,16 +634,13 @@ POST /v1/capacity/plan
 
 ## Open Question
 
-仍待 reviewer 給意見的點（已決議者見 Decision Log）：
-
-1. **參考 VM (`headroom_reference_spec`) 的選法**：可落地可用量要用哪個 spec 當量尺？
-   建議在 config 指定一個全域 `headroom_reference_spec`（如 32c/256g）當「健康度儀表」的量尺；
-   而採買缺口則一律用「該期實際需求」做 joint placement，不依賴參考 spec。reviewer 同意否？
+**目前無未決 Open Question** —— 需求輸入、供給/採買、報表三條線均已定案（見 Decision Log）。
 
 > 已消解的 Open Questions：
 > - ~~drill-down 粒度到 Room/Rack~~ → 決議 #21：規劃報表最細到 AG/DC，不下 BM/rack。
 > - ~~採買 topology 落點誰決定~~ → 決議 #29：`max_bm` 掛桶層級，solver 在桶內分配。
 > - ~~成因標籤細緻度~~ → 決議 #33：結構化 `ShortfallDetail`（指到桶/維度 + 人話）。
+> - ~~參考 spec 選法~~ → 決議 #34：單一全域 `reference_vm_spec`；碎片用 `min_useful_spec`。
 
 ---
 
@@ -665,6 +681,8 @@ POST /v1/capacity/plan
 | 31 | 新增第三種成因 **`space`**（桶機位用罄）| 讓報表能講「空位買滿仍缺 → 要擴機房」；partial+advisory 不硬 fail | `space` 由「理想化 vs 有 max_bm 兩解比對」判定 |
 | 32 | 機型佔位先當 **1U（1 台=1 格）** | 先簡化 | 未來 GPU 多 U 用 `rack_units` + 每型 U 數，結構不變 |
 | 33 | 成因**結構化** `ShortfallDetail`（cause + 桶 + 維度 + needed/available + 人話），可多筆 | 只給三個字使用者無所適從；需指到哪個桶/維度才知道要幹嘛 | 多數欄位既有 diagnostics 已算，只需外露 |
+| 34 | 健康儀表用**單一全域 `reference_vm_spec`**（非 per-role）；碎片用**獨立 `min_useful_spec`** | spec 連同 role 跨 cluster 都不同，per-role 也不真；實際數字已用需求真實 spec，儀表只是共同尺 | 各 role 不同 spec 為既有能力（`ResourceRequirement.vm_specs`）|
+| 35 | 儀表**改名切開撞名**：`remaining_node_slots` / `reference_vm_spec` / `min_useful_spec` | 與既有 `w_headroom`（單台 BM 利用率餘裕）語意不同，避免混淆 | `w_headroom` 維持原名 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
