@@ -357,6 +357,38 @@ class ExistingDistribution(BaseModel):
 > ⚠️ 這是既有 splitter **刻意未做**的 topology-affinity-with-existing（`requirement-splitter.md`
 > 決策 E）。本設計以「聚合基線數」的輕量形式補上，避免引入完整 `existing_vms` 模型。
 
+### 缺口 3f — 現有 BM 上的 VM 佔用（per-BM，給 max_per_bm 用）
+
+缺口 3e 的「每 AG 聚合數」只夠**跨 AG 打散**。但「**同一台 BM 上同 type VM 的數量上限**」
+（`MaxPerBaremetalRule` / `auto_generate_max_per_bm`，`models.py:271`）是 **per-BM 粒度**，
+聚合到 AG 就不夠 —— 必須知道「具體哪台 BM 已有幾台某 group 的現有 VM」。否則 solver 會把新
+節點排到「資源夠、但 max_per_bm 已滿」的 BM 上，與 Go scheduler 真實放置打架。
+
+不同約束對「現有 VM」的資料粒度需求：
+
+| 約束 | 需要粒度 | 是否已涵蓋 |
+|---|---|---|
+| BM 容量 | 資源量 | ✅ `Baremetal.used_capacity` 已反映 |
+| 跨 AG/DC 打散（3e）| 每桶聚合數 | 需 `ExistingDistribution` |
+| 同 BM 同 type 上限（max_per_bm）| 每台 BM 的 group 佔用數 | ❌ 需 `ExistingBmOccupancy` |
+
+```python
+class ExistingBmOccupancy(BaseModel):
+    baremetal_id: str
+    # group key = (cluster_id, ip_type, node_role) → 該 BM 上現有同組 VM 數
+    group_counts: dict[str, int]     # 例: {"clusterA|routable|master": 1}
+```
+
+> **避免 double count**：資源面已由 `used_capacity` 蓋掉，故此資料**只帶 count、不帶資源**。
+> 它專供「計數型約束」（max_per_bm、打散），與容量無關。
+>
+> **subsume 3e**：per-BM count 依 BM 的 AG 加總即得 3e 的每 AG 聚合數 —— 若 Go Scheduler
+> 給得出 per-BM，一份資料同時餵飽打散與 max_per_bm；若只給得出 per-AG 聚合，則 max_per_bm
+> 對現有 VM 無法精準把關，列為已知限制。
+
+**solver 改動極小**：max_per_bm 約束（`diagnostics.py:283` / solver 對應處）由
+`Σ(新 VM) ≤ cap` 擴成 `existing_count[bm][group] + Σ(新 VM) ≤ cap`，加一個常數而已。
+
 ### 核心資料模型 (草案)
 
 ```python
@@ -382,6 +414,7 @@ class CapacityPlanRequest(BaseModel):
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
+    existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, headroom_reference_spec,
                                       #    procurement_spread_dimension, w_procurement_balance
 
@@ -506,7 +539,8 @@ POST /v1/capacity/plan
 | 14 | 需求單只裝 **User 意圖**；現況一律走系統（**Go Scheduler Service** 整合 Inventory）| provenance 分工；user 無法從 UI 填現況 | Inventory 只需回「每 AG 聚合數」即可，不需逐節點 |
 | 15 | anti-affinity 作用範圍 = **整個 cluster**（新舊一起打散）| 對齊實際 HA 心智；只平衡新批次會長出全域傾斜 | 補 splitter 未做的 existing-baseline（缺口 3e）|
 | 16 | **Role-aware**：master 硬（2/2/1）、worker 軟（advisory + balance）| master 是 quorum、worker 是容量；worker 靠 add-node 慢慢平衡 | — |
-| 17 | master 硬約束**容忍既有違規**（`new[b] ≤ max(0, cap−existing[b])` + advisory）| 歷史傾斜不該擋住加機器，但也不弄更糟 | 待 confirm：是否改「直接擋下逼重排」 |
+| 17 | master 硬約束**容忍既有違規**（`new[b] ≤ max(0, cap−existing[b])` + advisory）| 歷史傾斜不該擋住加機器，但也不弄更糟 | **已定：用容忍版 (a)** |
+| 18 | 帶入**現有 VM 的 per-BM 佔用**（count-only）給 max_per_bm 用（缺口 3f）| 聚合到 AG 不夠；否則規劃 placement 會與真實 max_per_bm 打架 | 待 confirm：Go Scheduler 能否給 per-BM 佔用；若只給 per-AG 則 max_per_bm 對現有無法精準把關 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
