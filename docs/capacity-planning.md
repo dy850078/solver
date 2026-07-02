@@ -153,7 +153,7 @@ class BaremetalType(BaseModel):
     fab: str                          # 歸屬廠區 (= topology.site 或 phase)
 
 class ProcurementCap(BaseModel):
-    """某桶的採買機位上限；缺此桶 → 理想化無上限。"""
+    """某桶的採買機位上限；缺此桶 → 理想化無上限。（缺口 3g 另補 network 欄位）"""
     fab: str
     bucket: str                       # AG 或 DC 的值，如 "ag-0"
     max_bm: int                       # 該桶還能加幾台 BM（總數，不分 rack、不分機型）
@@ -399,7 +399,7 @@ class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一
     min_total_vms: int | None = None
     max_total_vms: int | None = None
     fab: str | None = None                # 預設由 cluster 現有 footprint 推導（系統帶入）
-    allowed_bm_types: list[str] | None = None  # 缺口 3g：per-cluster 限採買機型；None=fab 內任何機型
+    allowed_bm_types: list[str] | None = None  # 決議 #38：per-cluster 限採買機型；None=fab 內任何機型
     # 註：無 demand_mode（一律增量）；無 cluster 現況欄位（系統經 Go Scheduler 帶入）
 ```
 
@@ -545,7 +545,7 @@ class ProcurementCap(BaseModel):
 > 打散仍在 AG（cluster 在自己 BGP 內跨 AG 打散），但**容量帳 / 採買 / 報表以 `(bucket, network)`
 > 為單位**（見缺口 3c 報表加 network 維度）。
 
-### 缺口 3h — 已採購庫存 (pre-committed stock)｜選用
+### 缺口 3h — 已採購庫存 (pre-committed stock)｜已納入（effort 低）
 
 情境：某廠已買好兩種機型各 100 台，想確認「夠不夠、不夠各再買多少」。這是既有採買模型的
 自然延伸 —— **把已購庫存當成「零成本的採買層」**：
@@ -555,7 +555,7 @@ class ProcurementCap(BaseModel):
 - 報表直接回答：**「用掉 100 台裡的 X 台、還缺 → 各機型再買 Y 台」**（`bm_procurement.from_committed`）。
 
 ```python
-class CommittedStock(BaseModel):      # 選用；已採購但待分配的庫存
+class CommittedStock(BaseModel):      # 選填輸入（空=不啟用）；已採購但待分配的庫存
     fab: str
     type_id: str
     count: int                        # 已買幾台
@@ -564,7 +564,7 @@ class CommittedStock(BaseModel):      # 選用；已採購但待分配的庫存
 ```
 
 兩種擺法：已上架（知道 AG/BGP）→ 直接當 `in_stock`；未上架（浮動）→ 當已購池，solver 決定落點
-（受 cluster BGP 限制）。成本低，建議列為**選用能力**，要用才填。
+（受 cluster BGP 限制）。**effort 低，已納入範圍**（`committed_stock` 為空時等同不啟用）。
 
 ### 核心資料模型 (草案)
 
@@ -587,7 +587,7 @@ class CapacityPlanRequest(BaseModel):
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
     procurement_caps: list[ProcurementCap] = []  # 桶機位上限；缺 → 該桶理想化無上限（缺口 2）
-    committed_stock: list[CommittedStock] = []   # 已採購待分配庫存（缺口 3h，選用）
+    committed_stock: list[CommittedStock] = []   # 已採購待分配庫存（缺口 3h，選填）
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
     existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, reference_vm_spec,
@@ -745,7 +745,7 @@ POST /v1/capacity/plan
 | 36 | **BGP 網路域隔離**：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤 | cluster 統一住一 BGP＝per-cluster filter；BGP 是 filter 非 spread 維度 | 見 #37 |
 | 37 | AG 與 BGP **交錯** → `network` **必需**；容量/採買/報表計量單位＝**`(AG/DC, BGP)`** | 一 AG 混多 BGP，cluster 只看得到自己 BGP 那部分 | 報表 cell 加 `network` 維度 + `(AG,BGP)` in-stock/used/available |
 | 38 | **per-cluster 限採買機型** `DemandEntry.allowed_bm_types` | 不同 cluster 可買不同機型；in-stock 端已由候選過濾，採買端需機型允許清單 | 小改動：殘量只生成 allowed 機型的虛擬 BM |
-| 39 | **已採購庫存**（缺口 3h，選用）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」；成本低 | `CommittedStock`；已上架→in_stock、浮動→已購池 |
+| 39 | **已採購庫存**（缺口 3h，effort 低已納入）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」 | `CommittedStock`；已上架→in_stock、浮動→已購池；空＝不啟用 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）

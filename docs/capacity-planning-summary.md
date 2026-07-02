@@ -36,7 +36,7 @@ K8s Capacity 大臣接 User 的 CPU/Mem/Storage/**Pod** 需求（per cluster、�
 - 多機型可選；1U 假設（GPU 多 U 未來）。
 - **BGP 網路域隔離**（cluster 統一住一 BGP）：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；BGP 是 filter 非 spread 維度。**AG 與 BGP 交錯 → 計量單位＝`(AG, BGP)`**，採買加 `ProcurementCap.network`、報表 by `(AG, BGP)`。
 - **per-cluster 限採買機型**：`DemandEntry.allowed_bm_types`。
-- **已採購庫存（選用）**：`committed_stock` 當「零成本採買層」，回答「已買 N 台夠不夠、各再買多少」。
+- **已採購庫存（已納入，effort 低）**：`committed_stock` 當「零成本採買層」，回答「已買 N 台夠不夠、各再買多少」；空＝不啟用。
 
 **新舊一起打散（整個 cluster）**
 - anti-affinity 作用範圍＝整個 cluster；帶入現有節點**每桶聚合數**（`ExistingDistribution`）。
