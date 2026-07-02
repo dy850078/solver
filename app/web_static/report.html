@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -67,7 +67,7 @@
     <section class="card">
       <header class="card__header">
         <h2 class="card__title">Plan input</h2>
-        <span class="card__hint">填表單，JSON 在 Advanced</span>
+        <span class="card__hint">Fill the form · raw JSON under Advanced</span>
       </header>
       <div class="card__body">
 
@@ -78,24 +78,28 @@
           </select>
         </div>
 
-        <p class="subhead" style="margin-top:4px">Demand — 每列一個 (cluster, 月) 的增量需求</p>
+        <p class="subhead" style="margin-top:4px">VM Specs — sizes demand entries pick from</p>
+        <div id="spec-rows" class="form-rows"></div>
+        <button id="add-spec" type="button" class="btn btn--add">+ Add VM spec</button>
+
+        <p class="subhead" style="margin-top:16px">BM Models — machines for stock &amp; purchase</p>
+        <div id="model-rows" class="form-rows"></div>
+        <button id="add-model" type="button" class="btn btn--add">+ Add BM model</button>
+
+        <p class="subhead" style="margin-top:16px">Demand — one row per (cluster, month) increment</p>
         <div id="demand-rows" class="form-rows"></div>
         <button id="add-entry" type="button" class="btn btn--add">+ Add demand entry</button>
 
-        <p class="subhead" style="margin-top:16px">In-stock — 現有機器（群組）</p>
+        <p class="subhead" style="margin-top:16px">In-stock — existing machines (grouped)</p>
         <div id="stock-rows" class="form-rows"></div>
         <button id="add-stock" type="button" class="btn btn--add">+ Add machine group</button>
 
-        <p class="subhead" style="margin-top:16px">Buyable types — 可採買機型</p>
-        <div id="type-rows" class="form-rows"></div>
-        <button id="add-type" type="button" class="btn btn--add">+ Add machine type</button>
-
         <details class="adv" id="supply-adv">
-          <summary>Slot caps ＆ committed stock（選填）</summary>
-          <p class="subhead" style="margin-top:10px">Slot caps — 桶機位上限（缺 = 無上限）</p>
+          <summary>Slot caps &amp; committed stock (optional)</summary>
+          <p class="subhead" style="margin-top:10px">Slot caps — max BMs per bucket (absent = unlimited)</p>
           <div id="cap-rows" class="form-rows"></div>
           <button id="add-cap" type="button" class="btn btn--add">+ Add cap</button>
-          <p class="subhead" style="margin-top:14px">Committed — 已採購待分配</p>
+          <p class="subhead" style="margin-top:14px">Committed — purchased, awaiting placement</p>
           <div id="committed-rows" class="form-rows"></div>
           <button id="add-committed" type="button" class="btn btn--add">+ Add committed</button>
         </details>
@@ -103,11 +107,11 @@
         <p class="subhead" style="margin-top:16px">Config</p>
         <div class="frow frow--config">
           <label class="mini">
-            <span class="mini__label">Max pods / node（0=off）</span>
+            <span class="mini__label">Max pods / node (0 = off)</span>
             <input class="input" type="number" min="0" id="cfg-maxpods" value="0">
           </label>
           <label class="mini">
-            <span class="mini__label">Spread / 平均維度</span>
+            <span class="mini__label">Spread dimension</span>
             <select class="select" id="cfg-spread">
               <option value="ag">AG</option>
               <option value="datacenter">Datacenter</option>
@@ -122,11 +126,11 @@
         <details class="adv" id="json-adv">
           <summary>Advanced — Request JSON</summary>
           <p class="muted" style="font-size:11.5px; margin:8px 0 6px">
-            Run 一律以表單為準。要用 JSON：貼上後按「JSON → 表單」。
+            Run always uses the form. To start from JSON, paste it and click “JSON → Form”.
           </p>
           <div class="frow" style="grid-template-columns:1fr 1fr; margin-bottom:8px">
-            <button id="form-to-json" type="button" class="btn btn--add">表單 → JSON</button>
-            <button id="json-to-form" type="button" class="btn btn--add">JSON → 表單</button>
+            <button id="form-to-json" type="button" class="btn btn--add">Form → JSON</button>
+            <button id="json-to-form" type="button" class="btn btn--add">JSON → Form</button>
           </div>
           <textarea id="json-editor" class="editor" spellcheck="false"
             placeholder="CapacityPlanRequest JSON…"></textarea>

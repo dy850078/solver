@@ -1,33 +1,40 @@
 /* Structured form for building a CapacityPlanRequest.
  *
- * The form is the source of truth for Run; the Advanced JSON editor syncs
- * both ways via explicit buttons. Memory is entered in GiB (users think in
- * GiB) and converted to memory_mib on build. In-stock machines are entered
- * as GROUPS (count × capacity @ fab/dc/ag/network) and expanded to
- * individual Baremetals on build; loading JSON re-groups them (machine ids
- * are regenerated — they are opaque to the planner).
+ * Catalog-first UX: VM Specs and BM Models are defined once as named
+ * catalogs; demand entries, in-stock groups and committed stock then just
+ * SELECT from them instead of retyping sizes. The form is the source of
+ * truth for Run; the Advanced JSON editor syncs both ways via explicit
+ * buttons.
+ *
+ * Memory is entered in GiB and converted to memory_mib on build. In-stock
+ * machines are entered as GROUPS (count × model @ fab/dc/ag/network) and
+ * expanded to individual Baremetals on build; loading JSON re-groups them
+ * (machine ids are regenerated — they are opaque to the planner).
+ *
+ * Terminology note: the UI says "BM Model"; the wire contract keeps the
+ * existing field names (procurement_types / type_id).
  */
 
 const $ = (id) => document.getElementById(id);
 const GiB = 1024; // MiB per GiB
 
 const state = {
-  entries: [],
-  stock: [],
-  types: [],
+  specs: [],     // {name, cpu, memGiB, disk}
+  models: [],    // {model_id, cpu, memGiB, disk, fab, buyable}
+  entries: [],   // {..., specIdx: -1 = any spec from the catalog}
+  stock: [],     // {count, modelIdx, fab, dc, ag, network}
   caps: [],
-  committed: [],
+  committed: [], // {modelIdx, count, fab, bucket}
 };
 
 const blank = {
+  specs: () => ({ name: "", cpu: 8, memGiB: 16, disk: 100 }),
+  models: () => ({ model_id: "", cpu: 64, memGiB: 256, disk: 2000, fab: "", buyable: true }),
   entries: () => ({ cluster_id: "cluster-1", fab: "", period: "", node_role: "worker",
-                    cpu: 0, memGiB: 0, disk: 0, pods: 0,
-                    specCpu: 8, specMemGiB: 16, specDisk: 100, network: "" }),
-  stock: () => ({ count: 1, cpu: 64, memGiB: 256, disk: 2000, fab: "", dc: "dc-1",
-                  ag: "ag-1", network: "" }),
-  types: () => ({ type_id: "", cpu: 64, memGiB: 256, disk: 2000, fab: "" }),
+                    cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: 0, network: "" }),
+  stock: () => ({ count: 1, modelIdx: 0, fab: "", dc: "dc-1", ag: "ag-1", network: "" }),
   caps: () => ({ fab: "", bucket: "ag-1", network: "", max_bm: 1 }),
-  committed: () => ({ type_id: "", count: 1, fab: "", bucket: "" }),
+  committed: () => ({ modelIdx: 0, count: 1, fab: "", bucket: "" }),
 };
 
 /* ── Row templates ── */
@@ -51,7 +58,64 @@ function delBtn(section, i) {
     data-del="${section}" data-i="${i}">✕</button>`;
 }
 
+function specSelect(section, i, field, value, label, { withAny = false } = {}) {
+  const opts = [];
+  if (withAny) {
+    opts.push(`<option value="-1"${value === -1 ? " selected" : ""}>Any (solver picks)</option>`);
+  }
+  state.specs.forEach((s, si) => {
+    opts.push(`<option value="${si}"${value === si ? " selected" : ""}>${esc(specLabel(s))}</option>`);
+  });
+  return `<label class="mini"><span class="mini__label">${label}</span>
+    <select class="select" data-s="${section}" data-i="${i}" data-f="${field}">${opts.join("")}</select></label>`;
+}
+
+function modelSelect(section, i, field, value, label) {
+  const opts = state.models.map((m, mi) =>
+    `<option value="${mi}"${value === mi ? " selected" : ""}>${esc(modelLabel(m))}</option>`);
+  if (!opts.length) opts.push(`<option value="-1">— no models —</option>`);
+  return `<label class="mini"><span class="mini__label">${label}</span>
+    <select class="select" data-s="${section}" data-i="${i}" data-f="${field}">${opts.join("")}</select></label>`;
+}
+
+const specLabel = (s) =>
+  `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb`;
+const modelLabel = (m) =>
+  `${m.model_id || "model"} · ${m.cpu}c/${m.memGiB}g/${m.disk}gb`;
+
 const ROLES = ["worker", "master", "learner", "infra", "l4lb-storage", "bastion"];
+
+function specRow(s, i) {
+  return `<div class="frow-card">
+    <div class="frow frow--spec">
+      ${txt("specs", i, "name", s.name, "Name", "e.g. M-8c16g")}
+      ${num("specs", i, "cpu", s.cpu, "vCore")}
+      ${num("specs", i, "memGiB", s.memGiB, "Mem GiB")}
+      ${num("specs", i, "disk", s.disk, "Disk GB")}
+      ${delBtn("specs", i)}
+    </div>
+  </div>`;
+}
+
+function modelRow(m, i) {
+  return `<div class="frow-card">
+    <div class="frow frow--spec">
+      ${txt("models", i, "model_id", m.model_id, "Model id", "e.g. big-64c")}
+      ${num("models", i, "cpu", m.cpu, "vCore")}
+      ${num("models", i, "memGiB", m.memGiB, "Mem GiB")}
+      ${num("models", i, "disk", m.disk, "Disk GB")}
+      ${delBtn("models", i)}
+    </div>
+    <div class="frow frow--model">
+      ${txt("models", i, "fab", m.fab, "Fab", "blank = all fabs")}
+      <label class="mini mini--check" title="Can be purchased">
+        <input type="checkbox" ${m.buyable ? "checked" : ""}
+          data-s="models" data-i="${i}" data-f="buyable">
+        <span class="mini__label">Buyable</span>
+      </label>
+    </div>
+  </div>`;
+}
 
 function entryRow(e, i) {
   const roleOpts = ROLES.map((r) =>
@@ -66,7 +130,7 @@ function entryRow(e, i) {
         <input class="input" type="month" value="${esc(e.period)}"
           data-s="entries" data-i="${i}" data-f="period"></label>
       ${txt("entries", i, "cluster_id", e.cluster_id, "Cluster")}
-      ${txt("entries", i, "fab", e.fab, "Fab", "single-fab 留空")}
+      ${txt("entries", i, "fab", e.fab, "Fab", "blank = single-fab")}
     </div>
     <div class="frow frow--4">
       ${num("entries", i, "cpu", e.cpu, "vCore")}
@@ -74,57 +138,37 @@ function entryRow(e, i) {
       ${num("entries", i, "disk", e.disk, "Disk GB")}
       ${num("entries", i, "pods", e.pods, "Pods ≥")}
     </div>
-    <div class="frow frow--4">
+    <div class="frow frow--2">
       <label class="mini"><span class="mini__label">Role</span>
         <select class="select" data-s="entries" data-i="${i}" data-f="node_role">${roleOpts}</select></label>
-      ${num("entries", i, "specCpu", e.specCpu, "VM spec c")}
-      ${num("entries", i, "specMemGiB", e.specMemGiB, "spec GiB")}
-      ${num("entries", i, "specDisk", e.specDisk, "spec GB")}
+      ${specSelect("entries", i, "specIdx", e.specIdx, "VM spec", { withAny: true })}
     </div>
   </div>`;
 }
 
 function stockRow(g, i) {
   return `<div class="frow-card">
-    <div class="frow-card__head">
-      <span class="frow-card__title">×<b>${g.count}</b> @ ${esc(g.fab) || "—"}/${esc(g.ag)}</span>
+    <div class="frow frow--stock">
+      ${num("stock", i, "count", g.count, "Machines", { min: 1, step: 1 })}
+      ${modelSelect("stock", i, "modelIdx", g.modelIdx, "BM model")}
       ${delBtn("stock", i)}
     </div>
     <div class="frow frow--4">
-      ${num("stock", i, "count", g.count, "台數", { min: 1 })}
-      ${num("stock", i, "cpu", g.cpu, "vCore/台")}
-      ${num("stock", i, "memGiB", g.memGiB, "Mem GiB")}
-      ${num("stock", i, "disk", g.disk, "Disk GB")}
-    </div>
-    <div class="frow frow--4">
-      ${txt("stock", i, "fab", g.fab, "Fab (site)", "留空")}
+      ${txt("stock", i, "fab", g.fab, "Fab (site)", "blank")}
       ${txt("stock", i, "dc", g.dc, "DC")}
       ${txt("stock", i, "ag", g.ag, "AG")}
-      ${txt("stock", i, "network", g.network, "Network", "如 bgp1")}
-    </div>
-  </div>`;
-}
-
-function typeRow(t, i) {
-  return `<div class="frow-card">
-    <div class="frow frow--type">
-      ${txt("types", i, "type_id", t.type_id, "Type id", "如 big-64c")}
-      ${num("types", i, "cpu", t.cpu, "vCore")}
-      ${num("types", i, "memGiB", t.memGiB, "GiB")}
-      ${num("types", i, "disk", t.disk, "GB")}
-      ${txt("types", i, "fab", t.fab, "Fab", "全域留空")}
-      ${delBtn("types", i)}
+      ${txt("stock", i, "network", g.network, "Network", "e.g. bgp1")}
     </div>
   </div>`;
 }
 
 function capRow(c, i) {
   return `<div class="frow-card">
-    <div class="frow frow--type">
+    <div class="frow frow--cap">
       ${txt("caps", i, "fab", c.fab, "Fab")}
       ${txt("caps", i, "bucket", c.bucket, "Bucket (AG/DC)")}
-      ${txt("caps", i, "network", c.network, "Network", "全桶留空")}
-      ${num("caps", i, "max_bm", c.max_bm, "Max BM")}
+      ${txt("caps", i, "network", c.network, "Network", "blank = whole bucket")}
+      ${num("caps", i, "max_bm", c.max_bm, "Max BM", { step: 1 })}
       ${delBtn("caps", i)}
     </div>
   </div>`;
@@ -132,139 +176,187 @@ function capRow(c, i) {
 
 function committedRow(c, i) {
   return `<div class="frow-card">
-    <div class="frow frow--type">
-      ${txt("committed", i, "type_id", c.type_id, "Type id")}
-      ${num("committed", i, "count", c.count, "台數", { min: 1 })}
+    <div class="frow frow--committed">
+      ${modelSelect("committed", i, "modelIdx", c.modelIdx, "BM model")}
+      ${num("committed", i, "count", c.count, "Count", { min: 1, step: 1 })}
       ${txt("committed", i, "fab", c.fab, "Fab")}
-      ${txt("committed", i, "bucket", c.bucket, "Bucket", "浮動留空")}
+      ${txt("committed", i, "bucket", c.bucket, "Bucket", "blank = floating")}
       ${delBtn("committed", i)}
     </div>
   </div>`;
 }
 
 const SECTIONS = {
-  entries: { el: "demand-rows", row: entryRow },
-  stock: { el: "stock-rows", row: stockRow },
-  types: { el: "type-rows", row: typeRow },
-  caps: { el: "cap-rows", row: capRow },
-  committed: { el: "committed-rows", row: committedRow },
+  specs: { el: "spec-rows", row: specRow, deps: ["entries"] },
+  models: { el: "model-rows", row: modelRow, deps: ["stock", "committed"] },
+  entries: { el: "demand-rows", row: entryRow, deps: [] },
+  stock: { el: "stock-rows", row: stockRow, deps: [] },
+  caps: { el: "cap-rows", row: capRow, deps: [] },
+  committed: { el: "committed-rows", row: committedRow, deps: [] },
 };
 
 function renderSection(name) {
   const sec = SECTIONS[name];
   const host = $(sec.el);
   host.innerHTML = state[name].map((item, i) => sec.row(item, i)).join("")
-    || `<p class="muted form-empty">（無）</p>`;
+    || `<p class="muted form-empty">(none)</p>`;
 }
 
 function renderAll() {
   for (const name of Object.keys(SECTIONS)) renderSection(name);
 }
 
+/* Catalog row removed → fix up references in dependents. */
+function fixupIndexes(field, removed) {
+  const fix = (v) => (v === removed ? -1 : v > removed ? v - 1 : v);
+  if (field === "specIdx") for (const e of state.entries) e.specIdx = fix(e.specIdx);
+  if (field === "modelIdx") {
+    for (const g of state.stock) g.modelIdx = Math.max(0, fix(g.modelIdx));
+    for (const c of state.committed) c.modelIdx = Math.max(0, fix(c.modelIdx));
+  }
+}
+
 /* ── Build a CapacityPlanRequest from the form ── */
 
+const toResources = (o) => ({
+  cpu_cores: +o.cpu || 0,
+  memory_mib: Math.round((+o.memGiB || 0) * GiB),
+  storage_gb: +o.disk || 0,
+});
+
 export function buildRequest() {
-  const demand_book = state.entries.map((e) => ({
-    cluster_id: e.cluster_id || "cluster-1",
-    node_role: e.node_role,
-    period: e.period,
-    cpu_cores: +e.cpu || 0,
-    memory_mib: Math.round((+e.memGiB || 0) * GiB),
-    storage_gb: +e.disk || 0,
-    pod_count: +e.pods || 0,
-    vm_specs: (+e.specCpu || +e.specMemGiB || +e.specDisk) ? [{
-      cpu_cores: +e.specCpu || 0,
-      memory_mib: Math.round((+e.specMemGiB || 0) * GiB),
-      storage_gb: +e.specDisk || 0,
-    }] : null,
-    fab: e.fab || "",
-    network: e.network || "",
-  }));
+  const demand_book = state.entries.map((e) => {
+    const spec = state.specs[e.specIdx];
+    return {
+      cluster_id: e.cluster_id || "cluster-1",
+      node_role: e.node_role,
+      period: e.period,
+      cpu_cores: +e.cpu || 0,
+      memory_mib: Math.round((+e.memGiB || 0) * GiB),
+      storage_gb: +e.disk || 0,
+      pod_count: +e.pods || 0,
+      // A specific spec pins the entry; "Any" (null) falls back to
+      // config.vm_specs — the whole catalog — so the solver chooses.
+      vm_specs: spec ? [toResources(spec)] : null,
+      fab: e.fab || "",
+      network: e.network || "",
+    };
+  });
 
   let bmSeq = 0;
-  const in_stock = state.stock.flatMap((g) =>
-    Array.from({ length: +g.count || 0 }, () => {
+  const in_stock = state.stock.flatMap((g) => {
+    const model = state.models[g.modelIdx];
+    if (!model) return [];
+    return Array.from({ length: +g.count || 0 }, () => {
       bmSeq += 1;
       return {
         id: `bm-${bmSeq}`,
-        total_capacity: {
-          cpu_cores: +g.cpu || 0,
-          memory_mib: Math.round((+g.memGiB || 0) * GiB),
-          storage_gb: +g.disk || 0,
-        },
+        total_capacity: toResources(model),
         topology: {
           site: g.fab || "", phase: "p1", datacenter: g.dc || "",
           room: "room-1", rack: `rack-${bmSeq}`, ag: g.ag || "",
         },
         network: g.network || "",
       };
-    }));
+    });
+  });
 
-  const req = {
+  return {
     demand_book,
     in_stock,
-    procurement_types: state.types
-      .filter((t) => t.type_id)
-      .map((t) => ({
-        type_id: t.type_id,
-        capacity: {
-          cpu_cores: +t.cpu || 0,
-          memory_mib: Math.round((+t.memGiB || 0) * GiB),
-          storage_gb: +t.disk || 0,
-        },
-        fab: t.fab || "",
-      })),
+    procurement_types: state.models
+      .filter((m) => m.buyable && m.model_id)
+      .map((m) => ({ type_id: m.model_id, capacity: toResources(m), fab: m.fab || "" })),
     procurement_caps: state.caps
       .filter((c) => c.bucket)
       .map((c) => ({ fab: c.fab || "", bucket: c.bucket,
                      network: c.network || "", max_bm: +c.max_bm || 0 })),
     committed_stock: state.committed
-      .filter((c) => c.type_id)
-      .map((c) => ({ type_id: c.type_id, count: +c.count || 0,
-                     fab: c.fab || "", bucket: c.bucket || null })),
+      .filter((c) => state.models[c.modelIdx]?.model_id)
+      .map((c) => ({ type_id: state.models[c.modelIdx].model_id,
+                     count: +c.count || 0, fab: c.fab || "",
+                     bucket: c.bucket || null })),
     config: {
       auto_generate_anti_affinity: $("cfg-autoaa").checked,
       max_pods_per_node: +$("cfg-maxpods").value || 0,
       procurement_spread_dimension: $("cfg-spread").value,
       fab_topology_dimension: "site",
+      // The whole spec catalog: the pool "Any" entries draw from.
+      vm_specs: state.specs.map(toResources),
     },
   };
-  return req;
 }
 
 /* ── Populate the form from a CapacityPlanRequest JSON ── */
 
+const fromMib = (mib) => +((mib || 0) / GiB).toFixed(2);
+const resKey = (r) => `${r?.cpu_cores || 0}|${r?.memory_mib || 0}|${r?.storage_gb || 0}`;
+const autoName = (r, suffix = "") =>
+  `${r.cpu_cores || 0}c-${fromMib(r.memory_mib)}g${suffix}`;
+
 export function loadIntoForm(json) {
+  // 1. VM spec catalog: config.vm_specs first, then any per-entry specs.
+  state.specs = [];
+  const specIdxByKey = new Map();
+  const addSpec = (r, name) => {
+    const key = resKey(r);
+    if (specIdxByKey.has(key)) return specIdxByKey.get(key);
+    state.specs.push({
+      name: name || autoName(r),
+      cpu: r.cpu_cores || 0, memGiB: fromMib(r.memory_mib), disk: r.storage_gb || 0,
+    });
+    specIdxByKey.set(key, state.specs.length - 1);
+    return state.specs.length - 1;
+  };
+  for (const r of json.config?.vm_specs || []) addSpec(r);
+
   state.entries = (json.demand_book || []).map((e) => {
     const spec = e.vm_specs?.[0];
     return {
       cluster_id: e.cluster_id || "", fab: e.fab || "", period: e.period || "",
       node_role: e.node_role || "worker",
       cpu: e.cpu_cores || 0,
-      memGiB: +((e.memory_mib || 0) / GiB).toFixed(2),
+      memGiB: fromMib(e.memory_mib),
       disk: e.storage_gb || 0,
       pods: e.pod_count || 0,
-      specCpu: spec?.cpu_cores || 0,
-      specMemGiB: +((spec?.memory_mib || 0) / GiB).toFixed(2),
-      specDisk: spec?.storage_gb || 0,
+      specIdx: spec ? addSpec(spec) : -1,
       network: e.network || "",
     };
   });
 
-  // Group individual BMs by (capacity, site, dc, ag, network); ids are
-  // regenerated on build.
+  // 2. BM model catalog: buyable models from procurement_types; in-stock
+  //    capacities that match none become non-buyable legacy models.
+  state.models = [];
+  const modelIdxByKey = new Map();
+  const addModel = (cap, { model_id = "", fab = "", buyable = false } = {}) => {
+    const key = resKey(cap);
+    if (modelIdxByKey.has(key)) {
+      const idx = modelIdxByKey.get(key);
+      if (buyable) state.models[idx].buyable = true;
+      if (model_id) state.models[idx].model_id = model_id;
+      return idx;
+    }
+    state.models.push({
+      model_id: model_id || autoName(cap, "-bm"),
+      cpu: cap.cpu_cores || 0, memGiB: fromMib(cap.memory_mib),
+      disk: cap.storage_gb || 0, fab, buyable,
+    });
+    modelIdxByKey.set(key, state.models.length - 1);
+    return state.models.length - 1;
+  };
+  for (const t of json.procurement_types || []) {
+    addModel(t.capacity || {}, { model_id: t.type_id, fab: t.fab || "", buyable: true });
+  }
+
+  // 3. In-stock: group by (capacity, site, dc, ag, network); ids regenerate.
   const groups = new Map();
   for (const bm of json.in_stock || []) {
     const cap = bm.total_capacity || {};
     const topo = bm.topology || {};
-    const key = [cap.cpu_cores, cap.memory_mib, cap.storage_gb,
-                 topo.site, topo.datacenter, topo.ag, bm.network].join("|");
+    const key = [resKey(cap), topo.site, topo.datacenter, topo.ag, bm.network].join("|");
     if (!groups.has(key)) {
       groups.set(key, {
-        count: 0,
-        cpu: cap.cpu_cores || 0,
-        memGiB: +((cap.memory_mib || 0) / GiB).toFixed(2),
-        disk: cap.storage_gb || 0,
+        count: 0, modelIdx: addModel(cap),
         fab: topo.site || "", dc: topo.datacenter || "",
         ag: topo.ag || "", network: bm.network || "",
       });
@@ -273,22 +365,15 @@ export function loadIntoForm(json) {
   }
   state.stock = [...groups.values()];
 
-  state.types = (json.procurement_types || []).map((t) => ({
-    type_id: t.type_id || "",
-    cpu: t.capacity?.cpu_cores || 0,
-    memGiB: +((t.capacity?.memory_mib || 0) / GiB).toFixed(2),
-    disk: t.capacity?.storage_gb || 0,
-    fab: t.fab || "",
-  }));
-
   state.caps = (json.procurement_caps || []).map((c) => ({
     fab: c.fab || "", bucket: c.bucket || "",
     network: c.network || "", max_bm: c.max_bm ?? 1,
   }));
 
+  const modelIdxById = new Map(state.models.map((m, i) => [m.model_id, i]));
   state.committed = (json.committed_stock || []).map((c) => ({
-    type_id: c.type_id || "", count: c.count ?? 1,
-    fab: c.fab || "", bucket: c.bucket || "",
+    modelIdx: modelIdxById.get(c.type_id) ?? 0,
+    count: c.count ?? 1, fab: c.fab || "", bucket: c.bucket || "",
   }));
 
   const cfg = json.config || {};
@@ -303,40 +388,61 @@ export function loadIntoForm(json) {
 /* ── Wiring ── */
 
 export function initForm() {
-  // Field edits → state (delegated; numbers stay strings until build).
-  document.querySelector(".sidebar").addEventListener("input", (ev) => {
+  const sidebar = document.querySelector(".sidebar");
+
+  // Field edits → state.
+  sidebar.addEventListener("input", (ev) => {
     const t = ev.target;
     const { s, i, f } = t.dataset;
     if (!s || !SECTIONS[s]) return;
-    state[s][+i][f] = t.type === "number" ? +t.value : t.value;
+    let v;
+    if (t.type === "checkbox") v = t.checked;
+    else if (f.endsWith("Idx")) v = parseInt(t.value, 10);
+    else if (t.type === "number") v = +t.value;
+    else v = t.value;
+    state[s][+i][f] = v;
   });
 
-  // Row remove (re-render the section).
-  document.querySelector(".sidebar").addEventListener("click", (ev) => {
+  // Catalog edits refresh the selects that reference them (on blur/commit,
+  // so typing a name doesn't lose focus).
+  sidebar.addEventListener("change", (ev) => {
+    const { s } = ev.target.dataset;
+    if (!s || !SECTIONS[s]?.deps?.length) return;
+    for (const dep of SECTIONS[s].deps) renderSection(dep);
+  });
+
+  // Row remove.
+  sidebar.addEventListener("click", (ev) => {
     const btn = ev.target.closest("[data-del]");
     if (!btn) return;
     const s = btn.dataset.del;
-    state[s].splice(+btn.dataset.i, 1);
+    const i = +btn.dataset.i;
+    state[s].splice(i, 1);
+    if (s === "specs") fixupIndexes("specIdx", i);
+    if (s === "models") fixupIndexes("modelIdx", i);
     renderSection(s);
+    for (const dep of SECTIONS[s].deps || []) renderSection(dep);
   });
 
-  const adders = { "add-entry": "entries", "add-stock": "stock",
-                   "add-type": "types", "add-cap": "caps",
-                   "add-committed": "committed" };
+  const adders = { "add-spec": "specs", "add-model": "models",
+                   "add-entry": "entries", "add-stock": "stock",
+                   "add-cap": "caps", "add-committed": "committed" };
   for (const [btnId, s] of Object.entries(adders)) {
     $(btnId).addEventListener("click", () => {
       const item = blank[s]();
-      // New demand entries copy the previous row's context for fast entry.
+      // New demand entries copy the previous row for fast month-over-month
+      // entry.
       if (s === "entries" && state.entries.length) {
         Object.assign(item, structuredClone(
           state.entries[state.entries.length - 1]));
       }
       state[s].push(item);
       renderSection(s);
+      for (const dep of SECTIONS[s].deps || []) renderSection(dep);
     });
   }
 
-  // Form ⇄ JSON sync buttons.
+  // Form ⇄ JSON sync.
   $("form-to-json").addEventListener("click", () => {
     $("json-editor").value = JSON.stringify(buildRequest(), null, 2);
   });
@@ -351,9 +457,16 @@ export function initForm() {
     }
   });
 
-  // Sensible starting point: one demand entry + one machine group + one type.
-  state.entries = [blank.entries()];
+  // Sensible starting point.
+  state.specs = [
+    { name: "S-4c8g", cpu: 4, memGiB: 8, disk: 100 },
+    { name: "M-8c16g", cpu: 8, memGiB: 16, disk: 200 },
+    { name: "L-16c32g", cpu: 16, memGiB: 32, disk: 400 },
+  ];
+  state.models = [
+    { model_id: "std-64c", cpu: 64, memGiB: 256, disk: 2000, fab: "", buyable: true },
+  ];
+  state.entries = [{ ...blank.entries(), specIdx: 1 }];
   state.stock = [blank.stock()];
-  state.types = [{ ...blank.types(), type_id: "big-64c" }];
   renderAll();
 }
