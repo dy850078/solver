@@ -27,6 +27,7 @@ _DIR_HINTS = {
     "split": "split-and-solve",
     "placement": "solve",
     "solve": "solve",
+    "capacity": "capacity-plan",
 }
 
 

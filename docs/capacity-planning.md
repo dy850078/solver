@@ -311,6 +311,11 @@ class ShortfallDetail(BaseModel):
 
 - **Web UI**（先做）：複用既有 `app/web_static/`；規劃報表本質是 fab × AG/DC × 月 的表格
   + 篩選 + 長官頭條。表格中等工作量，趨勢圖可後補。
+  ✅ **已實作**（`/ui/report.html`，深色 shadcn-minimal 風格，與 Topology Visualizer 互相導覽）：
+  頭條 stat tiles（狀態/node 台數/BM 買數/committed/求解時間）、Fab × Month 表格（狀態 chips：
+  OK/SPACE/CAPACITY/ANTI-AFFINITY/BLOCKED，點列下鑽）、月明細（採買 tags、split decisions、
+  結構化 shortfalls、健康指標、(bucket, network) cells + CPU 利用率 meter）、Budget view
+  （逐月 bar strip + 明細表）。範例 `examples/capacity/plan_two_fabs.json`。
 - **Excel**（後補）：資料本為表格狀，從同一份 JSON 匯出 xlsx/csv 很容易，加個 endpoint 即可。
 
 #### 「可落地可用量」為什麼不能 by-cluster 加總（正確性陷阱）

@@ -1,0 +1,77 @@
+{
+  "demand_book": [
+    {
+      "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-01",
+      "cpu_cores": 64, "memory_mib": 128000, "storage_gb": 800, "pod_count": 200,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-a"
+    },
+    {
+      "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-02",
+      "cpu_cores": 192, "memory_mib": 384000, "storage_gb": 2400,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-a"
+    },
+    {
+      "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-03",
+      "fab": "fab-a"
+    },
+    {
+      "cluster_id": "cluster-ml", "node_role": "worker", "period": "2026-01",
+      "cpu_cores": 16, "memory_mib": 32000, "storage_gb": 200,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-b"
+    },
+    {
+      "cluster_id": "cluster-ml", "node_role": "worker", "period": "2026-02",
+      "cpu_cores": 64, "memory_mib": 128000, "storage_gb": 800,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-b"
+    },
+    {
+      "cluster_id": "cluster-ml", "node_role": "worker", "period": "2026-03",
+      "cpu_cores": 64, "memory_mib": 128000, "storage_gb": 800,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-b"
+    },
+    {
+      "cluster_id": "cluster-ml", "node_role": "worker", "period": "2026-04",
+      "cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100,
+      "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+      "fab": "fab-b"
+    }
+  ],
+  "in_stock": [
+    {
+      "id": "bm-a1", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "fab-a", "phase": "p1", "datacenter": "dc-1", "room": "room-1", "rack": "rack-a1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-a2", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "topology": {"site": "fab-a", "phase": "p1", "datacenter": "dc-1", "room": "room-1", "rack": "rack-a2", "ag": "ag-2"}
+    },
+    {
+      "id": "bm-b1", "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000},
+      "topology": {"site": "fab-b", "phase": "p1", "datacenter": "dc-2", "room": "room-1", "rack": "rack-b1", "ag": "ag-1"}
+    }
+  ],
+  "procurement_types": [
+    {"type_id": "big-64c", "capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}},
+    {"type_id": "mid-32c", "capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000}}
+  ],
+  "procurement_caps": [
+    {"fab": "fab-b", "bucket": "ag-1", "max_bm": 1}
+  ],
+  "committed_stock": [
+    {"type_id": "big-64c", "count": 1, "fab": "fab-a"}
+  ],
+  "config": {
+    "auto_generate_anti_affinity": false,
+    "max_solve_time_seconds": 10,
+    "max_pods_per_node": 110,
+    "fab_topology_dimension": "site",
+    "procurement_spread_dimension": "ag",
+    "reference_vm_spec": {"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100},
+    "min_useful_spec": {"cpu_cores": 4, "memory_mib": 8000, "storage_gb": 50}
+  }
+}
