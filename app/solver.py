@@ -169,6 +169,17 @@ class VMPlacementSolver:
         # solver fills in-stock first and buys the minimum. (Phase 2)
         self.procurement_bm_ids: set[str] = set()
 
+        # Cardinality caps over groups of BMs, injected by capacity_planner:
+        # for each (bm_ids, cap), at most `cap` of those BMs may be used.
+        # Carries the per-bucket max_bm slot limit across machine types, and
+        # the "at most `count` of a floating committed-stock pool" bound.
+        self.bm_group_caps: list[tuple[set[str], int]] = []
+
+        # Committed-stock BM ids (already purchased, awaiting allocation).
+        # Penalized by w_committed_stock — far below w_procurement — so the
+        # preference order is: in-stock, then committed, then buy new.
+        self.committed_bm_ids: set[str] = set()
+
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
@@ -772,6 +783,20 @@ class VMPlacementSolver:
     # Step C (cont.): Objective function helpers
     # ------------------------------------------------------------------
 
+    def _add_bm_group_cap_constraints(self):
+        """
+        For each injected (bm_ids, cap): at most `cap` of those BMs may host
+        any VM. Enforced on the bm_used indicators so it counts machines, not
+        placements — one BM hosting five VMs consumes one slot.
+        """
+        if not self.bm_group_caps:
+            return
+        self._ensure_bm_used_vars()
+        for bm_ids, cap in self.bm_group_caps:
+            used = [self.bm_used[bid] for bid in bm_ids if bid in self.bm_used]
+            if used and cap < len(used):
+                self.model.add(sum(used) <= cap)
+
     def _build_bm_used_vars(self):
         """
         Create bm_used[bm_id] indicator: 1 if any VM is placed on this BM.
@@ -1033,8 +1058,70 @@ class VMPlacementSolver:
             if proc_terms:
                 terms.append(self.config.w_procurement * sum(proc_terms))
 
+        # Committed stock: cheaper than buying, dearer than in-stock.
+        if self.committed_bm_ids and self.config.w_committed_stock > 0:
+            self._ensure_bm_used_vars()
+            own_terms = [
+                self.bm_used[bid] for bid in self.committed_bm_ids
+                if bid in self.bm_used
+            ]
+            if own_terms:
+                terms.append(self.config.w_committed_stock * sum(own_terms))
+
+        # Balance resulting per-bucket available capacity (decision #11).
+        terms.extend(self._compute_procurement_balance_terms())
+
         if terms:
             self.model.minimize(sum(terms))
+
+    def _compute_procurement_balance_terms(self) -> list:
+        """
+        Soft-minimize (max − min) of post-placement available CPU cores across
+        the procurement_spread_dimension buckets, so procurement tops up the
+        emptiest bucket rather than splitting buy counts evenly.
+
+        CPU cores is the balance currency. A virtual BM's (buyable/committed)
+        capacity only counts when it is actually used: bm_used × capacity.
+        """
+        w = self.config.w_procurement_balance
+        if w <= 0:
+            return []
+        dim = self.config.procurement_spread_dimension
+        buckets: dict[str, list] = {}
+        for bm in self.request.baremetals:
+            buckets.setdefault(getattr(bm.topology, dim), []).append(bm)
+        if len(buckets) < 2:
+            return []
+
+        self._ensure_bm_used_vars()
+        conditional = self.procurement_bm_ids | self.committed_bm_ids
+
+        # Group assignment vars by BM once (self.assign is keyed by (vm, bm)).
+        placed_on: dict[str, list] = {}
+        for (vm_id, bm_id), var in self.assign.items():
+            placed_on.setdefault(bm_id, []).append(
+                self.vm_map[vm_id].demand.cpu_cores * var
+            )
+
+        hi = sum(bm.total_capacity.cpu_cores for bm in self.request.baremetals)
+        avail_vars = []
+        for bucket, bms in buckets.items():
+            expr = 0
+            for bm in bms:
+                if bm.id in conditional:
+                    expr += bm.total_capacity.cpu_cores * self.bm_used[bm.id]
+                else:
+                    expr += bm.available_capacity.cpu_cores
+                expr -= sum(placed_on.get(bm.id, []))
+            v = self.model.new_int_var(0, hi, f"bal_avail_{bucket}")
+            self.model.add(v == expr)
+            avail_vars.append(v)
+
+        max_v = self.model.new_int_var(0, hi, "bal_max")
+        min_v = self.model.new_int_var(0, hi, "bal_min")
+        self.model.add_max_equality(max_v, avail_vars)
+        self.model.add_min_equality(min_v, avail_vars)
+        return [w * (max_v - min_v)]
 
     # ------------------------------------------------------------------
     # Step D: Solve and extract results
@@ -1069,6 +1156,7 @@ class VMPlacementSolver:
             self._add_anti_affinity_constraints()
             self._add_failover_constraints()
             self._add_max_per_bm_constraints()
+            self._add_bm_group_cap_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
             self._add_objective()

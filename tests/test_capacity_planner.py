@@ -5,6 +5,7 @@ Run: pytest tests/test_capacity_planner.py -v
 
 from app.models import (
     BaremetalType,
+    CommittedStock,
     NodeRole,
     ProcurementCap,
     ProcurementRequest,
@@ -21,12 +22,14 @@ from .conftest import make_bm
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_req(cpu=0, mem=0, disk=0, pods=0, spec=None, role=NodeRole.WORKER):
+def make_req(cpu=0, mem=0, disk=0, pods=0, spec=None, role=NodeRole.WORKER,
+             network=""):
     return ResourceRequirement(
         total_resources=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
         node_role=role,
         vm_specs=[spec] if spec else None,
         total_pods=pods,
+        network=network,
     )
 
 
@@ -37,7 +40,7 @@ def make_type(type_id, cpu, mem, disk):
     )
 
 
-def procure(requirements, in_stock, types, caps=None, **cfg):
+def procure(requirements, in_stock, types, caps=None, committed=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     reqs = requirements if isinstance(requirements, list) else [requirements]
@@ -46,6 +49,7 @@ def procure(requirements, in_stock, types, caps=None, **cfg):
         in_stock=in_stock,
         procurement_types=types,
         procurement_caps=caps or [],
+        committed_stock=committed or [],
         config=SolverConfig(**defaults),
     ))
 
@@ -170,6 +174,203 @@ class TestProcurement:
         nodes = sum(d.count for d in r.split_decisions)
         assert nodes == 3
         assert r.procured_bm_total >= 1
+
+
+# ===========================================================================
+# max_bm across machine types (bm_group_caps)
+# ===========================================================================
+
+class TestSlotCapAcrossTypes:
+
+    def test_cap_counts_all_types_together(self):
+        """
+        Bucket cap max_bm=1 with two types. Demand (80c) is only coverable by
+        big(64)+small(16) = 2 machines — which the 1-slot cap forbids. A
+        per-type cap (the old bug) would wrongly allow 1+1. Expect `space`.
+        """
+        types = [make_type("small", 16, 64_000, 400),
+                 make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        req = make_req(cpu=80, spec=SPEC_8)
+
+        r = procure(req, [], types, caps=caps)
+
+        assert not r.success
+        assert r.shortfall_cause == "space"
+
+    def test_cap_shared_by_committed_and_buys(self):
+        """Committed machines occupy slots too: cap=1 + 1 committed used → no buy fits."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        committed = [CommittedStock(type_id="big", count=1, bucket="ag-1")]
+        req = make_req(cpu=128, spec=SPEC_8)  # needs 2 machines
+
+        r = procure(req, [], types, caps=caps, committed=committed)
+
+        assert not r.success
+        assert r.shortfall_cause == "space"
+
+
+# ===========================================================================
+# Committed stock (缺口 3h)
+# ===========================================================================
+
+class TestCommittedStock:
+
+    def test_committed_drained_before_buying(self):
+        """Owned machines cover the residual → draw from them, buy nothing."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=2)]  # floating
+        req = make_req(cpu=72, spec=SPEC_8)  # 9 VMs: 1 in-stock + 8 on big
+
+        r = procure(req, in_stock, types, committed=committed)
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total == 0
+        assert r.committed_bm_used >= 1
+        assert sum(d.count for d in r.committed_used) == r.committed_bm_used
+
+    def test_committed_insufficient_buys_the_rest(self):
+        """1 owned big + demand for 2 bigs → use the owned one, buy 1 more."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1)]
+        req = make_req(cpu=128, spec=SPEC_8)
+
+        r = procure(req, [], types, committed=committed)
+
+        assert r.success, r.solver_status
+        assert r.committed_bm_used == 1
+        assert r.procured_bm_total == 1
+
+    def test_floating_pool_not_double_counted(self):
+        """
+        A floating pool of 1 is copied into both buckets, but at most 1 total
+        may be used across buckets.
+        """
+        in_stock = [
+            make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1"),
+            make_bm("bm-2", cpu=8, mem=16_000, disk=100, ag="ag-2"),
+        ]
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1)]
+        req = make_req(cpu=144, spec=SPEC_8)  # 18 VMs: 2 in-stock + 16 → 2 bigs
+
+        r = procure(req, in_stock, types, committed=committed)
+
+        assert r.success, r.solver_status
+        assert r.committed_bm_used == 1  # pool cap respected
+        assert r.procured_bm_total == 1  # the second big is bought
+
+    def test_committed_unknown_type_is_input_error(self):
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="nonexistent", count=1)]
+        req = make_req(cpu=8, spec=SPEC_8)
+
+        r = procure(req, [make_bm("bm-1")], types, committed=committed)
+
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+
+# ===========================================================================
+# Network (BGP) scoping (缺口 3g)
+# ===========================================================================
+
+class TestNetworkScoping:
+
+    def test_requirement_confined_to_its_network(self):
+        """
+        A bgp1 cluster must not land on the roomy bgp2 in-stock BM; it buys
+        into the bgp1 cell instead.
+        """
+        in_stock = [make_bm("bm-2", cpu=64, mem=256_000, disk=2000, ag="ag-1")]
+        in_stock[0].network = "bgp2"
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", network="bgp1", max_bm=2)]
+        req = make_req(cpu=32, spec=SPEC_8, network="bgp1")
+
+        r = procure(req, in_stock, types, caps=caps)
+
+        assert r.success, r.solver_status
+        assert r.in_stock_bm_used == 0  # bgp2 BM untouched
+        assert r.procured_bm_total == 1
+
+    def test_no_network_uses_anything(self):
+        """A requirement without a network uses any in-stock BM."""
+        in_stock = [make_bm("bm-2", cpu=64, mem=256_000, disk=2000)]
+        in_stock[0].network = "bgp2"
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8)
+
+        r = procure(req, in_stock, types)
+
+        assert r.success
+        assert r.in_stock_bm_used == 1
+        assert r.procured_bm_total == 0
+
+
+# ===========================================================================
+# Balance objective (決議 #11) and health gauges (缺口 3c)
+# ===========================================================================
+
+class TestBalanceAndGauges:
+
+    def test_balance_buys_into_emptier_bucket(self):
+        """
+        ag-1 has a free 64c BM, ag-2's BM is fully used. Buying is needed for
+        96c of demand; with the balance term on, the bought BM lands in ag-2
+        (topping up the emptier bucket) rather than ag-1.
+        """
+        in_stock = [
+            make_bm("bm-1", cpu=64, mem=256_000, disk=2000, ag="ag-1"),
+            make_bm("bm-2", cpu=64, mem=256_000, disk=2000, ag="ag-2",
+                    used_cpu=64, used_mem=256_000, used_disk=2000),
+        ]
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=96, spec=SPEC_8)
+
+        r = procure(req, in_stock, types,
+                    w_procurement_balance=5, w_headroom=0)
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total == 1
+        bought = [a.baremetal_id for a in r.assignments
+                  if a.baremetal_id.startswith("buy-")]
+        assert bought and all("ag-2" in b for b in bought)
+
+    def test_health_gauges(self):
+        """
+        4×8c VMs on a 64c/256G/2T BM → 32c/192G/1.6T left. With an
+        8c/16G/100G reference spec that is 4 more slots; nothing is stranded.
+        """
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8)
+
+        r = procure(
+            req, in_stock, types,
+            reference_vm_spec=Resources(cpu_cores=8, memory_mib=16_000, storage_gb=100),
+            min_useful_spec=Resources(cpu_cores=8, memory_mib=16_000, storage_gb=100),
+        )
+
+        assert r.success
+        assert r.nominal_available.cpu_cores == 32
+        assert r.remaining_node_slots == 4
+        assert r.stranded_available is not None
+        assert r.stranded_available.cpu_cores == 0
+        assert r.balance_after.get("ag-1") == 32
+
+    def test_gauges_absent_when_unconfigured(self):
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8)
+
+        r = procure(req, in_stock, types)
+
+        assert r.success
+        assert r.remaining_node_slots is None
+        assert r.stranded_available is None
 
 
 # ===========================================================================

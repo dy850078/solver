@@ -93,6 +93,10 @@ class Baremetal(BaseModel):
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
+    # Network domain (e.g. BGP zone) this host's rack belongs to. A filter
+    # attribute, not a spread dimension — clusters live entirely inside one
+    # domain and never spread across domains. "" = untagged.
+    network: str = ""
 
     @property
     def available_capacity(self) -> Resources:
@@ -334,6 +338,21 @@ class SolverConfig(BaseModel):
     # the topology dimension buyable BMs bucket on (must be a spread dimension).
     w_procurement: int = 10_000
     procurement_spread_dimension: str = "ag"
+    # Committed stock (already purchased, 缺口 3h) costs less than buying new
+    # but more than in-stock, giving the order: in-stock → committed → buy.
+    w_committed_stock: int = 100
+    # Balance the *resulting* per-bucket available capacity (decision #11):
+    # soft-minimize (max − min) of post-placement available CPU cores across
+    # the procurement_spread_dimension buckets, so buying tops up the emptiest
+    # bucket instead of splitting counts evenly. CPU cores is the balance
+    # currency. 0 (default) disables the term.
+    w_procurement_balance: int = 0
+    # Health-gauge yardsticks (decision #34/#35, both optional):
+    # reference_vm_spec — "how many more reference VMs still fit" gauge
+    # (remaining_node_slots); min_useful_spec — remaining space that cannot
+    # fit even this spec counts as stranded (fragmentation).
+    reference_vm_spec: Resources | None = None
+    min_useful_spec: Resources | None = None
 
     @field_validator("procurement_spread_dimension")
     @classmethod
@@ -430,6 +449,10 @@ class ResourceRequirement(BaseModel):
     # so provisioned_capacity = node_count * max_pods_per_node >= total_pods.
     # It is a lower bound, never an exact target or a cap. 0 = no pod demand.
     total_pods: int = Field(default=0, ge=0)
+    # Network domain (BGP zone) this cluster lives in. "" = no restriction.
+    # Used by the capacity planner to scope in-stock backfill and buyable-BM
+    # candidates to the matching domain (whole-cluster filter, 缺口 3g).
+    network: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
 
 
@@ -495,9 +518,24 @@ class ProcurementCap(BaseModel):
 
 
 class ProcurementDecision(BaseModel):
-    """How many BMs of a given type to buy."""
+    """How many BMs of a given type to buy (or draw from committed stock)."""
     type_id: str
     count: int
+
+
+class CommittedStock(BaseModel):
+    """
+    Already-purchased machines awaiting allocation (缺口 3h). Modeled as a
+    zero-cost procurement tier: the solver drains these before buying new.
+    type_id must reference one of the request's procurement_types.
+    bucket set → the machines land in that bucket; None → floating, the
+    solver picks landing buckets (at most `count` used across all buckets).
+    """
+    type_id: str
+    count: int = Field(ge=0)
+    bucket: str | None = None
+    network: str = ""
+    fab: str = ""
 
 
 class ProcurementRequest(BaseModel):
@@ -507,6 +545,7 @@ class ProcurementRequest(BaseModel):
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]
     procurement_caps: list[ProcurementCap] = Field(default_factory=list)
+    committed_stock: list[CommittedStock] = Field(default_factory=list)
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
@@ -517,6 +556,8 @@ class ProcurementResult(BaseModel):
     """Output for the procurement endpoint."""
     success: bool
     procurement: list[ProcurementDecision] = Field(default_factory=list)
+    # Draws from committed_stock (already-owned machines put to use).
+    committed_used: list[ProcurementDecision] = Field(default_factory=list)
     split_decisions: list[SplitDecision] = Field(default_factory=list)
     assignments: list[PlacementAssignment] = Field(default_factory=list)
     # "none" | "space" (bucket max_bm exhausted) | "capacity" | "anti_affinity"
@@ -525,4 +566,16 @@ class ProcurementResult(BaseModel):
     solve_time_seconds: float = 0.0
     in_stock_bm_used: int = 0
     procured_bm_total: int = 0
+    committed_bm_used: int = 0
+    # Health gauges (缺口 3c), computed over the post-placement state
+    # (in-stock ∪ used committed ∪ bought). nominal_available is the naive
+    # sum of leftover capacity (overstates usable space). remaining_node_slots
+    # counts how many more config.reference_vm_spec VMs still fit (None when
+    # no reference spec configured). stranded_available sums leftovers on BMs
+    # that cannot fit even config.min_useful_spec (None when unconfigured).
+    nominal_available: Resources = Field(default_factory=Resources)
+    remaining_node_slots: int | None = None
+    stranded_available: Resources | None = None
+    # Post-solve available CPU cores per spread bucket (balance evidence).
+    balance_after: dict[str, int] = Field(default_factory=dict)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
