@@ -182,6 +182,9 @@ class ResourceSplitter:
         total_vms = sum(count_vars_for_req)
         if req.min_total_vms is not None:
             self.model.add(total_vms >= req.min_total_vms)
+        pod_floor = self._pod_node_floor(req)
+        if pod_floor > 0:
+            self.model.add(total_vms >= pod_floor)
         if req.max_total_vms is not None:
             self.model.add(total_vms <= req.max_total_vms)
 
@@ -199,11 +202,33 @@ class ResourceSplitter:
                 needed = (total_val + spec_val - 1) // spec_val  # ceil division
                 upper = max(upper, needed)
 
+        # Fold the pod-count floor (and min_total_vms) into the upper bound so
+        # the count can actually reach it; the hard constraints live in
+        # _build_requirement.
+        floor = self._pod_node_floor(req)
         if req.min_total_vms is not None:
-            upper = max(upper, req.min_total_vms)
+            floor = max(floor, req.min_total_vms)
+        if floor > 0:
+            upper = max(upper, floor)
         if req.max_total_vms is not None and upper > 0:
             upper = min(upper, req.max_total_vms)
         return upper
+
+    def _pod_node_floor(self, req: ResourceRequirement) -> int:
+        """
+        Minimum node count implied by the pod-count demand.
+
+        Pods-per-node is a single global cap (config.max_pods_per_node), so a
+        pod-count requirement reduces to a floor on the number of nodes,
+        independent of VM spec:  ceil(total_pods / max_pods_per_node).
+
+        Returns 0 when the constraint is disabled (cap <= 0) or the requirement
+        carries no pod demand — i.e. no effect on the split.
+        """
+        max_pods = self.config.max_pods_per_node
+        if max_pods <= 0 or req.total_pods <= 0:
+            return 0
+        return (req.total_pods + max_pods - 1) // max_pods  # ceil division
 
     def build_waste_objective_terms(self) -> list:
         """

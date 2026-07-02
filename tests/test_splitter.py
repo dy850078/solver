@@ -23,7 +23,7 @@ from .conftest import make_bm
 # ---------------------------------------------------------------------------
 
 def make_req(
-    cpu=0, mem=0, disk=0, gpu=0,
+    cpu=0, mem=0, disk=0, gpu=0, pods=0,
     role=NodeRole.WORKER, cluster="cluster-1", ip_type="routable",
     vm_specs=None, min_vms=None, max_vms=None, candidate_bms=None,
 ) -> ResourceRequirement:
@@ -35,6 +35,7 @@ def make_req(
         vm_specs=vm_specs,
         min_total_vms=min_vms,
         max_total_vms=max_vms,
+        total_pods=pods,
         candidate_baremetals=candidate_bms or [],
     )
 
@@ -606,3 +607,74 @@ class TestSplitWithMaxPerBaremetal:
         # which fall below the len>=2 threshold and produce no rule.
         bm_ids = {a.baremetal_id for a in r.assignments}
         assert bm_ids == {"bm-1"}
+
+
+# ===========================================================================
+# Pod-count dimension (capacity planning Phase 1)
+# ===========================================================================
+
+class TestPodDimension:
+
+    def test_pod_floor_forces_more_nodes(self):
+        """
+        Resources alone fit in 1 VM (8 CPU need, 8 CPU spec), but 300 pods at
+        110 pods/node force ceil(300/110)=3 nodes.
+        """
+        bms = [make_bm(f"bm-{i}", cpu=64, mem=256_000, disk=2000) for i in range(2)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(cpu=8, mem=32_000, disk=200, pods=300, vm_specs=[spec])
+
+        r = split_solve(req, bms, max_pods_per_node=110)
+
+        assert r.success, r.solver_status
+        assert sum(d.count for d in r.split_decisions) == 3
+
+    def test_pod_exact_division(self):
+        """220 pods / 110 per node → exactly 2 nodes."""
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(cpu=4, mem=16_000, disk=100, pods=220, vm_specs=[spec])
+
+        r = split_solve(req, bms, max_pods_per_node=110)
+
+        assert r.success
+        assert sum(d.count for d in r.split_decisions) == 2
+
+    def test_pod_constraint_disabled_by_default(self):
+        """
+        max_pods_per_node defaults to 0 (disabled): a large total_pods must be
+        ignored, so the split is driven purely by resources (1 VM here).
+        """
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(cpu=8, mem=32_000, disk=200, pods=300, vm_specs=[spec])
+
+        r = split_solve(req, bms)  # no max_pods_per_node override → 0
+
+        assert r.success
+        assert sum(d.count for d in r.split_decisions) == 1
+
+    def test_pod_floor_below_resource_need_has_no_effect(self):
+        """
+        When resources already need more nodes than the pod floor, the pod
+        constraint is slack: 64 CPU / 8 CPU = 8 nodes dominates the 2-node
+        pod floor (200 pods / 110).
+        """
+        bms = [make_bm(f"bm-{i}", cpu=64, mem=256_000, disk=2000) for i in range(2)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(cpu=64, mem=256_000, disk=1600, pods=200, vm_specs=[spec])
+
+        r = split_solve(req, bms, max_pods_per_node=110)
+
+        assert r.success
+        assert sum(d.count for d in r.split_decisions) == 8
+
+    def test_pod_floor_exceeds_max_vms_infeasible(self):
+        """300 pods / 110 → floor 3 nodes, but max_vms=2 → INFEASIBLE."""
+        bms = [make_bm("bm-1", cpu=128, mem=512_000, disk=4000)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(cpu=8, mem=32_000, disk=200, pods=300, vm_specs=[spec], max_vms=2)
+
+        r = split_solve(req, bms, max_pods_per_node=110)
+
+        assert not r.success

@@ -678,7 +678,9 @@ POST /v1/capacity/plan
 分階段、各自可獨立交付：
 
 1. **Phase 1 — Pod 維度**：`SolverConfig.max_pods_per_node` + `ResourceRequirement.total_pods`
-   + splitter 節點數下限。小、獨立、向後相容（預設停用）。
+   + splitter 節點數下限。小、獨立、向後相容（預設停用）。✅ **已實作**
+   （`models.py` 兩欄位、`splitter.py::_pod_node_floor` + 併入 count 下限、
+   `tests/test_splitter.py::TestPodDimension` 5 測試；placement 端零改動）。
 2. **Phase 2 — 採買量（單 fab、單期）**：殘量 bin-pack 成採買台數（**多機型選擇**）
    + 可落地可用量 / 破碎損耗 / 碎片率報表外露。先解決「該買幾台、怎麼證明」。
 3. **Phase 3 — 多月 roll-forward + 多 fab 聚合**：完整 `CapacityPlanRequest/Report`、月級時間滾動、

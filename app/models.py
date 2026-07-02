@@ -315,6 +315,13 @@ class SolverConfig(BaseModel):
     vm_specs: list[Resources] = Field(default_factory=list)
     # Requirement splitter: penalize over-allocation waste
     w_resource_waste: int = 5
+    # Pod-count dimension (capacity planning Phase 1): a single global cap on
+    # how many pods one VM-as-K8s-node can hold. Because the cap is global and
+    # spec-independent, a pod-count requirement reduces to a floor on the node
+    # count (ceil(total_pods / max_pods_per_node)) rather than a placement
+    # resource dimension — BMs have no pod capacity, so the solver's placement
+    # path is untouched. 0 (default) disables the constraint.
+    max_pods_per_node: int = Field(default=0, ge=0)
     # Per-baremetal cap (C4): limit how many VMs sharing the same
     # (cluster_id, ip_type, node_role) can land on a single BM.
     # When auto_generate_max_per_bm=True, default_max_per_bm MUST be set
@@ -400,6 +407,10 @@ class ResourceRequirement(BaseModel):
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
+    # Total pod-count demand for this role. Combined with
+    # SolverConfig.max_pods_per_node it imposes a floor on the number of
+    # nodes the splitter must create. 0 = no pod demand.
+    total_pods: int = Field(default=0, ge=0)
     candidate_baremetals: list[str] = Field(default_factory=list)
 
 
