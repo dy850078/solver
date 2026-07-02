@@ -683,6 +683,11 @@ POST /v1/capacity/plan
    `tests/test_splitter.py::TestPodDimension` 5 測試；placement 端零改動）。
 2. **Phase 2 — 採買量（單 fab、單期）**：殘量 bin-pack 成採買台數（**多機型選擇**）
    + 可落地可用量 / 破碎損耗 / 碎片率報表外露。先解決「該買幾台、怎麼證明」。
+   ✅ **核心已實作**（`app/capacity_planner.py::solve_capacity_plan`、`/v1/capacity/procure`、
+   solver `procurement_bm_ids` + `w_procurement` 目標、`tests/test_capacity_planner.py` 9 測試）：
+   多機型 + 每桶 `max_bm` + 優先 in-stock + 最小化採買 + `space` 成因（capped vs uncapped 比對）。
+   **本增量延後**：平衡目標 `w_procurement_balance`、committed stock（3h）、BGP network（3g）、
+   可落地/碎片報表指標（3c）、graceful partial（現以兩解比對報 `space`，非 soft coverage）。
 3. **Phase 3 — 多月 roll-forward + 多 fab 聚合**：完整 `CapacityPlanRequest/Report`、月級時間滾動、
    分層報表（頭條 + drill-down），新增 `/v1/capacity/plan`。
 4. **Phase 4（未來，超出本提案）— 跨 fab 調撥**：見 Decision Log 末。

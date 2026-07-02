@@ -328,6 +328,22 @@ class SolverConfig(BaseModel):
     # to a positive integer or the request is rejected with INPUT_ERROR.
     auto_generate_max_per_bm: bool = False
     default_max_per_bm: int | None = None
+    # Procurement (capacity planning Phase 2): weight for minimizing how many
+    # buyable BMs are used. Set high so in-stock BMs are always filled before
+    # buying and the buy count is minimized. procurement_spread_dimension is
+    # the topology dimension buyable BMs bucket on (must be a spread dimension).
+    w_procurement: int = 10_000
+    procurement_spread_dimension: str = "ag"
+
+    @field_validator("procurement_spread_dimension")
+    @classmethod
+    def _validate_procurement_spread_dimension(cls, v: str) -> str:
+        if v not in SPREAD_DIMENSIONS:
+            raise ValueError(
+                f"procurement_spread_dimension {v!r} is not a valid dimension; "
+                f"valid: {sorted(SPREAD_DIMENSIONS)}"
+            )
+        return v
 
     @field_validator("target_spread")
     @classmethod
@@ -451,3 +467,62 @@ class SplitPlacementResult(BaseModel):
 
     def to_assignment_map(self) -> dict[str, str]:
         return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Procurement I/O (capacity planning Phase 2): single fab/period —
+# "given demand + in-stock, how many BMs of each type must we buy?"
+# ---------------------------------------------------------------------------
+
+class BaremetalType(BaseModel):
+    """A buyable BM machine type (no fixed id). 1U assumed (1 BM = 1 slot)."""
+    type_id: str
+    capacity: Resources
+    fab: str = ""
+
+
+class ProcurementCap(BaseModel):
+    """
+    Per-bucket procurement slot limit. bucket is a value of the config's
+    procurement_spread_dimension (e.g. an AG). A bucket with no cap is treated
+    as unlimited (idealized). network is the BGP domain (reserved; unused in
+    the single-fab Phase 2 core).
+    """
+    bucket: str
+    max_bm: int = Field(ge=0)
+    fab: str = ""
+    network: str = ""
+
+
+class ProcurementDecision(BaseModel):
+    """How many BMs of a given type to buy."""
+    type_id: str
+    count: int
+
+
+class ProcurementRequest(BaseModel):
+    """Input for the procurement endpoint (single fab/period)."""
+    requirements: list[ResourceRequirement] = Field(default_factory=list)
+    vms: list[VM] = Field(default_factory=list)
+    in_stock: list[Baremetal]
+    procurement_types: list[BaremetalType]
+    procurement_caps: list[ProcurementCap] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class ProcurementResult(BaseModel):
+    """Output for the procurement endpoint."""
+    success: bool
+    procurement: list[ProcurementDecision] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
+    # "none" | "space" (bucket max_bm exhausted) | "capacity" | "anti_affinity"
+    shortfall_cause: str = "none"
+    solver_status: str = ""
+    solve_time_seconds: float = 0.0
+    in_stock_bm_used: int = 0
+    procured_bm_total: int = 0
+    diagnostics: dict[str, Any] = Field(default_factory=dict)

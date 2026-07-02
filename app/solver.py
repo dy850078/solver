@@ -164,6 +164,11 @@ class VMPlacementSolver:
         # Waste penalty terms injected by split_solver (splitter integration)
         self.splitter_waste_terms: list[cp_model.LinearExprT] = []
 
+        # Buyable BM ids injected by capacity_planner (procurement integration).
+        # Using any of these BMs is penalized by config.w_procurement so the
+        # solver fills in-stock first and buys the minimum. (Phase 2)
+        self.procurement_bm_ids: set[str] = set()
+
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
@@ -1016,6 +1021,17 @@ class VMPlacementSolver:
         waste_terms = self.splitter_waste_terms
         if waste_terms and self.config.w_resource_waste > 0:
             terms.append(self.config.w_resource_waste * sum(waste_terms))
+
+        # Procurement: minimize how many buyable BMs are used (Phase 2). The
+        # high weight ensures in-stock BMs are preferred and buying is minimal.
+        if self.procurement_bm_ids and self.config.w_procurement > 0:
+            self._ensure_bm_used_vars()
+            proc_terms = [
+                self.bm_used[bid] for bid in self.procurement_bm_ids
+                if bid in self.bm_used
+            ]
+            if proc_terms:
+                terms.append(self.config.w_procurement * sum(proc_terms))
 
         if terms:
             self.model.minimize(sum(terms))
