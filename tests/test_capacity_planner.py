@@ -4,18 +4,25 @@ Run: pytest tests/test_capacity_planner.py -v
 """
 
 from app.models import (
+    AntiAffinityRule,
     BaremetalType,
     CommittedStock,
+    GroupSelector,
     NodeRole,
+    PlacementRequest,
     ProcurementCap,
     ProcurementRequest,
     ResourceRequirement,
     Resources,
     SolverConfig,
+    SplitPlacementRequest,
+    VM,
 )
 from app.capacity_planner import solve_capacity_plan
+from app.solver import VMPlacementSolver
+from app.split_solver import solve_split_placement
 
-from .conftest import make_bm
+from .conftest import make_bm, make_vm
 
 
 # ---------------------------------------------------------------------------
@@ -40,16 +47,19 @@ def make_type(type_id, cpu, mem, disk):
     )
 
 
-def procure(requirements, in_stock, types, caps=None, committed=None, **cfg):
+def procure(requirements, in_stock, types, caps=None, committed=None,
+            vms=None, rules=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     reqs = requirements if isinstance(requirements, list) else [requirements]
     return solve_capacity_plan(ProcurementRequest(
         requirements=reqs,
+        vms=vms or [],
         in_stock=in_stock,
         procurement_types=types,
         procurement_caps=caps or [],
         committed_stock=committed or [],
+        anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
     ))
 
@@ -371,6 +381,242 @@ class TestBalanceAndGauges:
         assert r.success
         assert r.remaining_node_slots is None
         assert r.stranded_available is None
+
+
+# ===========================================================================
+# Code-review regressions (findings #1–#10)
+# ===========================================================================
+
+class TestReviewFixes:
+
+    def test_pod_floor_included_in_buyable_generation(self):
+        """(#1) Pod floor forces 3 nodes; enough buyable BMs must be generated
+        even though raw resources need only 1."""
+        types = [make_type("small", 8, 16_000, 100)]
+        req = make_req(cpu=8, spec=SPEC_8, pods=300)
+
+        r = procure(req, [], types, max_pods_per_node=110)
+
+        assert r.success, r.solver_status
+        assert sum(d.count for d in r.split_decisions) == 3
+        assert r.procured_bm_total == 3
+
+    def test_fragmentation_included_in_buyable_generation(self):
+        """(#1) 3×40c VMs need 3×64c BMs (one VM per BM); a naive
+        ceil(120/64)=2 bound would under-generate → false shortfall."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        spec40 = Resources(cpu_cores=40, memory_mib=64_000, storage_gb=500)
+        req = make_req(cpu=120, spec=spec40)
+
+        r = procure(req, [], types)
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total == 3
+
+    def test_unhostable_requirement_is_input_error(self):
+        """(#2) A spec that fits no in-stock BM and no buyable type must be an
+        INPUT_ERROR, not success-with-no-purchase."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        huge = Resources(cpu_cores=128, memory_mib=512_000, storage_gb=4000)
+        req = make_req(cpu=128, spec=huge)
+
+        r = procure(req, [make_bm("bm-1")], types)
+
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_network_without_cell_is_input_error(self):
+        """(#2) A network with no matching in-stock BM or cell must be an
+        INPUT_ERROR, not a silent 'inventory sufficient'."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=64, spec=SPEC_8, network="bgp1")
+
+        r = procure(req, [make_bm("bm-1")], types)  # untagged in-stock only
+
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_explicit_vm_candidates_are_authoritative(self):
+        """(#3) A pinned VM must not be diluted onto virtual BMs — pinning to
+        a full host fails instead of triggering a buy."""
+        full = make_bm("bm-1", cpu=8, mem=16_000, disk=100,
+                       used_cpu=8, used_mem=16_000, used_disk=100)
+        types = [make_type("big", 64, 256_000, 2000)]
+        vm = make_vm("vm-1", cpu=8, candidates=["bm-1"])
+
+        r = procure([], [full], types, vms=[vm])
+
+        assert not r.success
+        assert all(not a.baremetal_id.startswith(("buy-", "own"))
+                   for a in r.assignments)
+
+    def test_anti_affinity_shortfall_classified(self):
+        """(#4) A structurally anti-affinity-blocked plan (3 masters, cap 1
+        per AG, only 2 AGs anywhere) must not be reported as 'capacity'."""
+        in_stock = [make_bm("bm-1", ag="ag-1"), make_bm("bm-2", ag="ag-2")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=24, spec=SPEC_8, role=NodeRole.MASTER)
+        rule = AntiAffinityRule(
+            group_id="masters",
+            selector=GroupSelector(node_role=NodeRole.MASTER),
+            spread_on=["ag"],
+            cap_per_bucket={"ag": 1},
+        )
+
+        r = procure(req, in_stock, types, rules=[rule])
+
+        assert not r.success
+        assert r.shortfall_cause == "anti_affinity"
+
+    def test_unknown_status_not_classified_as_space(self, monkeypatch):
+        """(#5) A capped pass failing without proven INFEASIBLE (e.g. time
+        limit → UNKNOWN) yields cause 'unknown' and skips the uncapped
+        re-solve."""
+        from app import capacity_planner as cp
+
+        calls = []
+
+        class FakeResult:
+            success = False
+            solver_status = "UNKNOWN"
+            assignments = []
+            diagnostics = {}
+
+        class FakePass:
+            result = FakeResult()
+            buyable_type_of = {}
+            committed_type_of = {}
+            vm_demand = {}
+            virtual_bms = {}
+            splitter = None
+            cp_solver = None
+            dropped = []
+
+        def fake_solve_once(request, *, use_caps):
+            calls.append(use_caps)
+            return FakePass()
+
+        monkeypatch.setattr(cp, "_solve_once", fake_solve_once)
+        r = cp.solve_capacity_plan(ProcurementRequest(
+            requirements=[make_req(cpu=64, spec=SPEC_8)],
+            in_stock=[make_bm("bm-1")],
+            procurement_types=[make_type("big", 64, 256_000, 2000)],
+            procurement_caps=[ProcurementCap(bucket="ag-1", max_bm=1)],
+            config=SolverConfig(),
+        ))
+
+        assert not r.success
+        assert r.shortfall_cause == "unknown"
+        assert calls == [True]  # no second (uncapped) solve
+
+    def test_bought_bms_get_unique_racks(self):
+        """(#6) Rack-spread anti-affinity must not treat bought machines as
+        colocated with the cell representative's rack."""
+        in_stock = [make_bm("bm-1", ag="ag-1", rack="rack-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=24, spec=SPEC_8, role=NodeRole.MASTER)
+        rule = AntiAffinityRule(
+            group_id="masters",
+            selector=GroupSelector(node_role=NodeRole.MASTER),
+            spread_on=["rack"],
+            cap_per_bucket={"rack": 1},
+        )
+
+        r = procure(req, in_stock, types, rules=[rule])
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total == 2  # 1 on in-stock rack + 2 new racks
+
+    def test_committed_copies_bounded_by_cell_cap(self):
+        """(#7) Floating committed copies per cell are bounded by the cell's
+        slot cap instead of materializing count× per cell."""
+        from app import capacity_planner as cp
+
+        request = ProcurementRequest(
+            requirements=[make_req(cpu=16, spec=SPEC_8)],
+            in_stock=[make_bm("bm-1", ag="ag-1"), make_bm("bm-2", ag="ag-2")],
+            procurement_types=[make_type("big", 64, 256_000, 2000)],
+            procurement_caps=[ProcurementCap(bucket="ag-1", max_bm=1),
+                              ProcurementCap(bucket="ag-2", max_bm=1)],
+            committed_stock=[CommittedStock(type_id="big", count=100)],
+            config=SolverConfig(auto_generate_anti_affinity=False),
+        )
+
+        p = cp._solve_once(request, use_caps=True)
+
+        assert len(p.committed_type_of) <= 2  # 100 owned, 1 slot per cell
+
+    def test_balance_ignores_virtual_only_buckets(self):
+        """(#8) Buckets containing only virtual BMs must not join the balance
+        objective (they would pin min to 0 and degenerate max−min)."""
+        bms = [make_bm("real-1", ag="ag-1"), make_bm("real-2", ag="ag-2"),
+               make_bm("virt-1", ag="ag-9")]
+        vm = VM(id="vm-1",
+                demand=Resources(cpu_cores=4, memory_mib=8_000, storage_gb=50),
+                candidate_baremetals=["real-1", "real-2", "virt-1"])
+        request = PlacementRequest(
+            vms=[vm], baremetals=bms,
+            config=SolverConfig(w_procurement_balance=5,
+                                auto_generate_anti_affinity=False),
+        )
+
+        s = VMPlacementSolver(request)
+        s.procurement_bm_ids = {"virt-1"}
+        s._build_variables()
+        assert s._compute_procurement_balance_terms()  # 2 real buckets → on
+
+        s2 = VMPlacementSolver(request)
+        s2.procurement_bm_ids = {"virt-1", "real-2"}
+        s2._build_variables()
+        assert s2._compute_procurement_balance_terms() == []  # 1 real bucket
+
+    def test_pod_floor_with_zero_max_vms_is_infeasible(self):
+        """(#9) max_total_vms=0 contradicting the pod floor must fail, not
+        silently drop the requirement (sibling VM keeps the request non-empty
+        so the NO_VMS guard doesn't mask the path)."""
+        bm = make_bm("bm-1")
+        bad = ResourceRequirement(
+            total_resources=Resources(),
+            vm_specs=[SPEC_8],
+            total_pods=300,
+            max_total_vms=0,
+            candidate_baremetals=["bm-1"],
+        )
+        vm = make_vm("vm-1", candidates=["bm-1"])
+
+        r = solve_split_placement(SplitPlacementRequest(
+            requirements=[bad], vms=[vm], baremetals=[bm],
+            config=SolverConfig(max_pods_per_node=110,
+                                auto_generate_anti_affinity=False),
+        ))
+
+        assert not r.success
+
+    def test_split_and_solve_honors_network(self):
+        """(#10) The split-and-solve path narrows candidates to the
+        requirement's network domain."""
+        bm = make_bm("bm-x")
+        bm.network = "bgp2"
+        req = ResourceRequirement(
+            total_resources=Resources(cpu_cores=8),
+            vm_specs=[SPEC_8],
+            network="bgp1",
+            candidate_baremetals=["bm-x"],
+        )
+        r = solve_split_placement(SplitPlacementRequest(
+            requirements=[req], baremetals=[bm],
+            config=SolverConfig(auto_generate_anti_affinity=False),
+        ))
+        assert not r.success  # bgp2 host is not eligible for a bgp1 cluster
+
+        bm2 = make_bm("bm-y")
+        bm2.network = "bgp1"
+        req2 = req.model_copy(update={"candidate_baremetals": ["bm-y"]})
+        r2 = solve_split_placement(SplitPlacementRequest(
+            requirements=[req2], baremetals=[bm2],
+            config=SolverConfig(auto_generate_anti_affinity=False),
+        ))
+        assert r2.success  # matching network places normally
 
 
 # ===========================================================================

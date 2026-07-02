@@ -450,8 +450,10 @@ class ResourceRequirement(BaseModel):
     # It is a lower bound, never an exact target or a cap. 0 = no pod demand.
     total_pods: int = Field(default=0, ge=0)
     # Network domain (BGP zone) this cluster lives in. "" = no restriction.
-    # Used by the capacity planner to scope in-stock backfill and buyable-BM
-    # candidates to the matching domain (whole-cluster filter, 缺口 3g).
+    # Honored by the splitter on every path (split-and-solve and the capacity
+    # planner): candidate_baremetals is narrowed to BMs whose network matches,
+    # and the planner additionally scopes in-stock backfill and buyable-BM
+    # candidates to the domain (whole-cluster filter, 缺口 3g).
     network: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
 
@@ -539,7 +541,14 @@ class CommittedStock(BaseModel):
 
 
 class ProcurementRequest(BaseModel):
-    """Input for the procurement endpoint (single fab/period)."""
+    """
+    Input for the procurement endpoint (single fab/period).
+
+    vms: explicit VMs pass through with their candidate_baremetals untouched
+    (the scheduler's step-3 filter is authoritative) — they are placed on
+    in-stock BMs only and never on virtual (buyable/committed) ones. Demand
+    that should drive procurement belongs in `requirements`.
+    """
     requirements: list[ResourceRequirement] = Field(default_factory=list)
     vms: list[VM] = Field(default_factory=list)
     in_stock: list[Baremetal]
@@ -561,6 +570,8 @@ class ProcurementResult(BaseModel):
     split_decisions: list[SplitDecision] = Field(default_factory=list)
     assignments: list[PlacementAssignment] = Field(default_factory=list)
     # "none" | "space" (bucket max_bm exhausted) | "capacity" | "anti_affinity"
+    # | "unknown" (solve not proven INFEASIBLE — e.g. time limit — so no cause
+    #   can be honestly attributed; see solver_status for the raw status)
     shortfall_cause: str = "none"
     solver_status: str = ""
     solve_time_seconds: float = 0.0

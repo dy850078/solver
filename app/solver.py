@@ -1087,14 +1087,26 @@ class VMPlacementSolver:
         if w <= 0:
             return []
         dim = self.config.procurement_spread_dimension
+        conditional = self.procurement_bm_ids | self.committed_bm_ids
+
+        # Buckets are seeded from REAL (in-stock) BMs only: a bucket whose
+        # members are all unused virtual BMs would contribute avail=0, pinning
+        # min to 0 and degenerating (max−min) into "minimize max leftover".
+        # Virtual BMs still contribute conditionally to the real buckets they
+        # land in.
         buckets: dict[str, list] = {}
         for bm in self.request.baremetals:
-            buckets.setdefault(getattr(bm.topology, dim), []).append(bm)
+            if bm.id not in conditional:
+                buckets.setdefault(getattr(bm.topology, dim), []).append(bm)
         if len(buckets) < 2:
             return []
+        for bm in self.request.baremetals:
+            if bm.id in conditional:
+                b = getattr(bm.topology, dim)
+                if b in buckets:
+                    buckets[b].append(bm)
 
         self._ensure_bm_used_vars()
-        conditional = self.procurement_bm_ids | self.committed_bm_ids
 
         # Group assignment vars by BM once (self.assign is keyed by (vm, bm)).
         placed_on: dict[str, list] = {}

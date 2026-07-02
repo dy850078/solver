@@ -26,7 +26,6 @@ Covered here:
 from __future__ import annotations
 
 import logging
-import math
 import time
 from collections import Counter
 
@@ -35,13 +34,14 @@ from ortools.sat.python import cp_model
 from .models import (
     Baremetal,
     PlacementRequest,
+    PlacementResult,
     ProcurementDecision,
     ProcurementRequest,
     ProcurementResult,
     Resources,
     Topology,
 )
-from .splitter import RESOURCE_FIELDS, ResourceSplitter
+from .splitter import RESOURCE_FIELDS, ResourceSplitter, spec_count_upper_bound
 from .solver import VMPlacementSolver
 
 logger = logging.getLogger(__name__)
@@ -69,9 +69,32 @@ def solve_capacity_plan(request: ProcurementRequest) -> ProcurementResult:
 
     # Pass 1: honor the per-bucket max_bm slot caps.
     capped = _solve_once(request, use_caps=True)
+
+    # Requirements the splitter could not represent (no usable spec/candidate,
+    # collapsed count bounds) must fail loudly — silently succeeding would
+    # report "inventory sufficient" for demand that was never placed.
+    if capped.dropped:
+        detail = "; ".join(
+            f"requirement {d['requirement_index']} "
+            f"(cluster={d['cluster_id']!r}, role={d['node_role']}): {d['reason']}"
+            for d in capped.dropped
+        )
+        return ProcurementResult(
+            success=False,
+            solver_status=f"INPUT_ERROR: unsatisfiable requirement(s) — {detail}",
+            solve_time_seconds=time.time() - start,
+        )
+
     if capped.result.success:
         return _to_result(request, capped, success=True,
                           shortfall_cause="none", start=start)
+
+    # Only a proven INFEASIBLE can be attributed to a cause. UNKNOWN (time
+    # limit) or other statuses must not be classified — re-solving without
+    # caps would misreport a merely-unsolved model as a `space` shortfall.
+    if capped.result.solver_status != "INFEASIBLE":
+        return _to_result(request, capped, success=False,
+                          shortfall_cause="unknown", start=start)
 
     # Pass 2 (cause classification): if caps were limiting, re-solve without
     # them. If that succeeds, the caps (physical slots) were the blocker.
@@ -97,7 +120,7 @@ class _Pass:
     """Bundle of one solve pass's artifacts."""
 
     def __init__(self, result, buyable_type_of, committed_type_of,
-                 vm_demand, virtual_bms, splitter, cp_solver):
+                 vm_demand, virtual_bms, splitter, cp_solver, dropped):
         self.result = result
         self.buyable_type_of = buyable_type_of      # buyable bm_id -> type_id
         self.committed_type_of = committed_type_of  # committed bm_id -> type_id
@@ -105,6 +128,7 @@ class _Pass:
         self.virtual_bms = virtual_bms              # bm_id -> Baremetal (buy+own)
         self.splitter = splitter
         self.cp_solver = cp_solver
+        self.dropped = dropped                      # splitter.dropped_requirements
 
 
 def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
@@ -134,11 +158,19 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
 
     def add_virtual(bm_id: str, capacity: Resources, bucket: str,
                     network: str, rep: Topology) -> None:
+        # Each virtual BM gets a unique synthetic rack: a newly purchased
+        # machine can always be racked apart (rack placement is the DC
+        # hardware team's call, 決議 #29), so rack-level anti-affinity must
+        # not treat bought machines as colocated with the cell representative.
+        # Dimensions above rack inherit the representative (conservative).
+        updates: dict = {dim: bucket}
+        if dim != "rack":
+            updates["rack"] = f"vrack-{bm_id}"
         virtual_bms[bm_id] = Baremetal(
             id=bm_id,
             total_capacity=capacity,
             used_capacity=Resources(),
-            topology=rep.model_copy(update={dim: bucket}),
+            topology=rep.model_copy(update=updates),
             network=network,
         )
         cell_members.setdefault((bucket, network), []).append(bm_id)
@@ -157,12 +189,17 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
                 committed_type_of[bm_id] = cs.type_id
         else:
             # Floating: copies in every network-compatible cell; a pool-wide
-            # cardinality cap keeps total usage within the owned count.
+            # cardinality cap keeps total usage within the owned count. Per
+            # cell, never more copies than the cell's slot cap allows.
             pool: set[str] = set()
             for (bucket, network), rep in cells.items():
                 if cs.network and network != cs.network:
                     continue
-                for k in range(cs.count):
+                copies = cs.count
+                bound = cell_gen_bound(bucket, network)
+                if bound is not None:
+                    copies = min(copies, bound)
+                for k in range(copies):
                     bm_id = f"own{idx}-{cs.type_id}-{bucket}|{network}-{k}"
                     add_virtual(bm_id, capacity, bucket, network, rep)
                     committed_type_of[bm_id] = cs.type_id
@@ -200,33 +237,55 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     # Candidate scoping: a requirement reaches network-matching in-stock BMs
     # (unless the caller already filtered via candidate_baremetals) plus
     # network-matching virtual BMs. network == "" on the requirement means no
-    # restriction (缺口 3g).
+    # restriction (缺口 3g). Candidate lists are cached per distinct network so
+    # they aren't rebuilt per requirement.
     def net_ok(req_net: str, item_net: str) -> bool:
         return req_net == "" or item_net == req_net
 
+    in_stock_ids_by_net: dict[str, list[str]] = {}
+    virtual_ids_by_net: dict[str, list[str]] = {}
+
+    def candidates_for(net: str) -> tuple[list[str], list[str]]:
+        if net not in virtual_ids_by_net:
+            in_stock_ids_by_net[net] = [
+                bm.id for bm in request.in_stock if net_ok(net, bm.network)
+            ]
+            virtual_ids_by_net[net] = [
+                bm_id for bm_id, bm in virtual_bms.items()
+                if net_ok(net, bm.network)
+            ]
+        return in_stock_ids_by_net[net], virtual_ids_by_net[net]
+
     reqs = []
     for r in request.requirements:
-        in_stock_ids = r.candidate_baremetals or [
-            bm.id for bm in request.in_stock if net_ok(r.network, bm.network)
-        ]
-        virtual_ids = [
-            bm_id for bm_id, bm in virtual_bms.items() if net_ok(r.network, bm.network)
-        ]
-        reqs.append(r.model_copy(
-            update={"candidate_baremetals": in_stock_ids + virtual_ids}
-        ))
-    all_in_stock_ids = [bm.id for bm in request.in_stock]
-    vms = [
-        vm.model_copy(update={
+        in_stock_ids, virtual_ids = candidates_for(r.network)
+        reqs.append(r.model_copy(update={
             "candidate_baremetals":
-                (vm.candidate_baremetals or all_in_stock_ids) + list(virtual_bms)
-        })
-        for vm in request.vms
-    ]
+                (r.candidate_baremetals or in_stock_ids) + virtual_ids
+        }))
+
+    # Explicit VMs pass through with their candidate lists untouched: the
+    # scheduler's step-3 filter is authoritative, so an explicit VM never
+    # lands on a virtual (buyable/committed) BM and an empty candidate list
+    # surfaces as the solver's documented INPUT_ERROR. Demand that should
+    # drive procurement belongs in `requirements`.
+    vms = list(request.vms)
 
     model = cp_model.CpModel()
     splitter = ResourceSplitter(model, reqs, all_bms, config)
     synthetic_vms = splitter.build()
+
+    if splitter.dropped_requirements:
+        # Unrepresentable demand — don't waste a solve (and its failure
+        # diagnostics); the caller turns this into an INPUT_ERROR.
+        result = PlacementResult(
+            success=False,
+            solver_status="INPUT_ERROR: unsatisfiable requirement(s)",
+            bm_total_count=len(all_bms),
+        )
+        return _Pass(result, buyable_type_of, committed_type_of,
+                     {}, virtual_bms, splitter, None,
+                     splitter.dropped_requirements)
 
     placement_request = PlacementRequest(
         vms=list(vms) + synthetic_vms,
@@ -247,7 +306,8 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     cp_solver = getattr(solver, "_last_cp_solver", None)
     vm_demand = {vm.id: vm.demand for vm in placement_request.vms}
     return _Pass(result, buyable_type_of, committed_type_of,
-                 vm_demand, virtual_bms, splitter, cp_solver)
+                 vm_demand, virtual_bms, splitter, cp_solver,
+                 splitter.dropped_requirements)
 
 
 # ---------------------------------------------------------------------------
@@ -278,32 +338,95 @@ def _derive_cells(request: ProcurementRequest,
 
 def _worst_case_counts(request: ProcurementRequest) -> dict[str, int]:
     """
-    Upper bound on how many of each type could be needed = enough of that type
-    alone to cover all demand. Bounds the number of buyable slots generated.
-    """
-    total = Resources()
-    for r in request.requirements:
-        total = total + r.total_resources
-    for vm in request.vms:
-        total = total + vm.demand
+    Sound upper bound on how many BMs of each type could be needed if that
+    type alone hosted all synthetic demand.
 
+    Per requirement and spec: the splitter may create up to
+    spec_count_upper_bound(...) VMs of that spec (which already folds in the
+    pod-node floor and min/max_total_vms), and one type-t BM hosts at most
+    _fits_count(type, spec) of them — further tightened by any max_per_bm
+    rule or rack-spread anti-affinity cap matching the requirement's group
+    (each bought BM occupies its own synthetic rack, so a per-rack cap acts
+    as a per-BM cap on bought machines). Summing ceil(upper / per_bm) per
+    spec is sound because each spec's count var is bounded by its upper.
+
+    A naive ceil(total_demand / type_capacity) is NOT sound: it ignores the
+    floors and per-BM packing (e.g. a 64c BM fits only one 40c VM), which
+    under-generates slots and turns feasible plans into false shortfalls.
+
+    Explicit VMs contribute nothing: their candidate lists are authoritative,
+    so they never land on virtual BMs.
+    """
+    mpn = request.config.max_pods_per_node
     counts: dict[str, int] = {}
     for bt in request.procurement_types:
         need = 0
-        for field in RESOURCE_FIELDS:
-            demand = getattr(total, field)
-            cap = getattr(bt.capacity, field)
-            if demand > 0 and cap > 0:
-                need = max(need, math.ceil(demand / cap))
+        for r in request.requirements:
+            specs = r.vm_specs if r.vm_specs is not None else request.config.vm_specs
+            group_cap = _group_per_bm_cap(request, r)
+            for spec in specs or []:
+                per_bm = _fits_count(bt.capacity, spec)
+                if per_bm <= 0:
+                    continue
+                if group_cap is not None:
+                    per_bm = min(per_bm, group_cap)
+                upper = spec_count_upper_bound(r, spec, mpn)
+                need += -(-upper // per_bm)  # ceil division
         counts[bt.type_id] = need
     return counts
 
 
+def _group_per_bm_cap(request: ProcurementRequest,
+                      req) -> int | None:
+    """
+    Tightest per-BM VM cap applying to this requirement's group: explicit or
+    auto-generated max_per_bm rules, plus rack-spread anti-affinity caps
+    (bought BMs each live in their own synthetic rack, so a per-rack cap is a
+    per-BM cap for them; a rack rule without cap_per_bucket auto-balances to
+    ~1 per rack, so 1 is the sound assumption).
+    """
+    caps: list[int] = []
+    cfg = request.config
+    if cfg.auto_generate_max_per_bm and (cfg.default_max_per_bm or 0) > 0:
+        caps.append(cfg.default_max_per_bm)
+    for rule in request.max_per_bm_rules:
+        if _selector_matches_req(rule.selector, req):
+            caps.append(rule.max_per_bm)
+    for aa_rule in request.anti_affinity_rules:
+        if "rack" in aa_rule.spread_on and _selector_matches_req(aa_rule.selector, req):
+            caps.append((aa_rule.cap_per_bucket or {}).get("rack", 1))
+    return min(caps) if caps else None
+
+
+def _selector_matches_req(selector, req) -> bool:
+    """GroupSelector match against a requirement's (cluster, ip_type, role)."""
+    if selector is None:
+        return False
+    return (
+        (selector.cluster_id is None or selector.cluster_id == req.cluster_id)
+        and (selector.ip_type is None or selector.ip_type == req.ip_type)
+        and (selector.node_role is None or selector.node_role == req.node_role)
+    )
+
+
 def _classify(result) -> str:
-    """Best-effort map of a failed placement to a shortfall cause."""
-    check = (result.diagnostics or {}).get("constraint_check", {})
-    failed_at = check.get("failed_at")
-    if failed_at in ("anti_affinity", "failover", "max_per_bm"):
+    """
+    Map a proven-INFEASIBLE placement to a shortfall cause. Structural checks
+    from diagnostics come first — they are computed directly from rules and
+    reachable buckets. The layer check's failed_at is only a fallback: its
+    throwaway model forces every worst-case synthetic slot to be placed (it
+    doesn't know splitter active_vars), which biases it toward 'capacity'.
+    """
+    diag = result.diagnostics or {}
+    structural = (
+        "infeasible_anti_affinity_rules",
+        "infeasible_max_per_bm_rules",
+        "infeasible_failover_rules",
+    )
+    if any(diag.get(k) for k in structural):
+        return "anti_affinity"
+    check = diag.get("constraint_check", {})
+    if check.get("failed_at") in ("anti_affinity", "failover", "max_per_bm"):
         return "anti_affinity"
     return "capacity"
 

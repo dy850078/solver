@@ -44,6 +44,44 @@ logger = logging.getLogger(__name__)
 RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
+def pod_node_floor(req: ResourceRequirement, max_pods_per_node: int) -> int:
+    """
+    Minimum node count implied by the "at least N pods" demand:
+    ceil(total_pods / max_pods_per_node). 0 when disabled or no pod demand.
+    """
+    if max_pods_per_node <= 0 or req.total_pods <= 0:
+        return 0
+    return (req.total_pods + max_pods_per_node - 1) // max_pods_per_node
+
+
+def spec_count_upper_bound(
+    req: ResourceRequirement, spec: Resources, max_pods_per_node: int,
+) -> int:
+    """
+    Worst-case number of `spec` VMs needed to satisfy `req` on its own:
+    the max across resource dimensions of ceil(total / spec), raised to the
+    pod-node floor and min_total_vms, capped by max_total_vms.
+
+    Shared by the splitter (slot generation) and the capacity planner
+    (buyable-BM sizing) so the two can never disagree.
+    """
+    upper = 0
+    for field in RESOURCE_FIELDS:
+        spec_val = getattr(spec, field)
+        total_val = getattr(req.total_resources, field)
+        if spec_val > 0 and total_val > 0:
+            upper = max(upper, (total_val + spec_val - 1) // spec_val)
+
+    floor = pod_node_floor(req, max_pods_per_node)
+    if req.min_total_vms is not None:
+        floor = max(floor, req.min_total_vms)
+    if floor > 0:
+        upper = max(upper, floor)
+    if req.max_total_vms is not None and upper > 0:
+        upper = min(upper, req.max_total_vms)
+    return upper
+
+
 class ResourceSplitter:
 
     def __init__(
@@ -67,46 +105,98 @@ class ResourceSplitter:
         # specs actually used per requirement (for solution extraction)
         self._req_specs: dict[int, list[Resources]] = {}
 
+        # Requirements with real demand that could not produce any synthetic
+        # VM (no usable specs / candidates, or count bounds collapsed to 0).
+        # Each entry also posts an infeasibility into the model so the demand
+        # can never silently succeed; callers may inspect this list to fail
+        # fast with a clearer INPUT_ERROR instead.
+        self.dropped_requirements: list[dict] = []
+
     def build(self) -> list[VM]:
         """
         Add split variables and constraints to the shared model.
         Returns synthetic VM objects to be appended to the placement request.
         """
         for req_idx, req in enumerate(self.requirements):
-            specs = self._resolve_specs(req)
+            eligible_ids = self._eligible_candidate_ids(req)
+            specs = self._resolve_specs(req, eligible_ids)
             if not specs:
-                logger.warning(
-                    "Requirement %d (role=%s) has no usable vm_specs — skipping",
-                    req_idx, req.node_role.value,
+                self._drop_requirement(
+                    req_idx, req,
+                    "no usable vm_specs (missing specs, empty or "
+                    "network-filtered candidate_baremetals, or no spec fits "
+                    "any candidate BM)",
                 )
                 continue
             self._req_specs[req_idx] = specs
-            self._build_requirement(req_idx, req, specs)
+            self._build_requirement(req_idx, req, specs, eligible_ids)
         return self.synthetic_vms
 
-    def _resolve_specs(self, req: ResourceRequirement) -> list[Resources]:
+    def _eligible_candidate_ids(self, req: ResourceRequirement) -> list[str]:
+        """
+        The requirement's candidate BMs, narrowed to its network domain when
+        one is declared (缺口 3g: a cluster lives entirely inside one network;
+        "" on the requirement means no restriction).
+        """
+        ids = req.candidate_baremetals
+        if req.network:
+            network_of = {bm.id: bm.network for bm in self.baremetals}
+            ids = [i for i in ids if network_of.get(i) == req.network]
+        return ids
+
+    def _drop_requirement(self, req_idx: int, req: ResourceRequirement,
+                          reason: str) -> None:
+        """
+        A requirement that cannot produce synthetic VMs. Zero-demand
+        requirements are skipped silently; anything with real demand is
+        recorded and makes the model infeasible — silently succeeding while
+        ignoring demand would report "inventory sufficient" for load that was
+        never placed.
+        """
+        logger.warning(
+            "Requirement %d (role=%s) produced no synthetic VMs: %s",
+            req_idx, req.node_role.value, reason,
+        )
+        has_demand = (
+            req.total_pods > 0
+            or (req.min_total_vms or 0) > 0
+            or any(getattr(req.total_resources, f) > 0 for f in RESOURCE_FIELDS)
+        )
+        if not has_demand:
+            return
+        self.dropped_requirements.append({
+            "requirement_index": req_idx,
+            "cluster_id": req.cluster_id,
+            "node_role": req.node_role.value,
+            "reason": reason,
+        })
+        lit = self.model.new_bool_var(f"dropped_req_{req_idx}")
+        self.model.add(lit == 1)
+        self.model.add(lit == 0)
+
+    def _resolve_specs(self, req: ResourceRequirement,
+                       eligible_ids: list[str]) -> list[Resources]:
         """
         Spec pool: requirement-level vm_specs takes precedence; falls back to
-        config.vm_specs. Specs that don't fit any candidate BM's available
+        config.vm_specs. Specs that don't fit any eligible BM's available
         capacity are filtered out immediately (they can never be placed).
 
         Requirements must have candidate_baremetals populated by the scheduler
         (step 3 filtering result). Empty candidate_baremetals is treated as a
-        contract violation: no specs are usable, and the synthetic VMs that
-        would have been generated will be rejected by VMPlacementSolver input
-        validation downstream.
+        contract violation: no specs are usable and the requirement is
+        dropped (see _drop_requirement).
         """
         candidates = req.vm_specs if req.vm_specs is not None else self.config.vm_specs
         if not candidates:
             return []
-        if not req.candidate_baremetals:
+        if not eligible_ids:
             logger.error(
-                "Requirement (role=%s) has empty candidate_baremetals — "
+                "Requirement (role=%s) has no eligible candidate_baremetals — "
                 "scheduler must provide step 3 filtering result",
                 req.node_role.value,
             )
             return []
-        candidate_set = set(req.candidate_baremetals)
+        candidate_set = set(eligible_ids)
         eligible_bms = [bm for bm in self.baremetals if bm.id in candidate_set]
         usable = [
             spec for spec in candidates
@@ -122,6 +212,7 @@ class ResourceSplitter:
         req_idx: int,
         req: ResourceRequirement,
         specs: list[Resources],
+        eligible_ids: list[str],
     ) -> None:
         count_vars_for_req: list[cp_model.IntVar] = []
 
@@ -147,7 +238,7 @@ class ResourceSplitter:
                     node_role=req.node_role,
                     ip_type=req.ip_type,
                     cluster_id=req.cluster_id,
-                    candidate_baremetals=req.candidate_baremetals,
+                    candidate_baremetals=eligible_ids,
                 ))
 
             # Σ active == count  (so count drives how many slots are used)
@@ -160,9 +251,10 @@ class ResourceSplitter:
                 self.model.add(active_vars_for_spec[k] >= active_vars_for_spec[k + 1])
 
         if not count_vars_for_req:
-            logger.warning(
-                "Requirement %d (role=%s): no spec has a positive upper bound",
-                req_idx, req.node_role.value,
+            self._drop_requirement(
+                req_idx, req,
+                "no spec has a positive upper bound (count bounds such as "
+                "max_total_vms may conflict with the demand or pod floor)",
             )
             return
 
@@ -190,48 +282,22 @@ class ResourceSplitter:
 
     def _compute_upper_bound(self, req: ResourceRequirement, spec: Resources) -> int:
         """
-        Worst-case maximum VMs of this spec needed to satisfy the requirement.
-        Takes the max across all resource dimensions (each dimension sets a lower
-        bound on count; we need enough to satisfy the hardest dimension).
+        Worst-case maximum VMs of this spec needed to satisfy the requirement,
+        with the pod-node floor and min/max_total_vms folded in (so the count
+        var can actually reach the floor; the hard constraints live in
+        _build_requirement). Delegates to the shared module-level helper.
         """
-        upper = 0
-        for field in RESOURCE_FIELDS:
-            spec_val = getattr(spec, field)
-            total_val = getattr(req.total_resources, field)
-            if spec_val > 0 and total_val > 0:
-                needed = (total_val + spec_val - 1) // spec_val  # ceil division
-                upper = max(upper, needed)
-
-        # Fold the pod-count floor (and min_total_vms) into the upper bound so
-        # the count can actually reach it; the hard constraints live in
-        # _build_requirement.
-        floor = self._pod_node_floor(req)
-        if req.min_total_vms is not None:
-            floor = max(floor, req.min_total_vms)
-        if floor > 0:
-            upper = max(upper, floor)
-        if req.max_total_vms is not None and upper > 0:
-            upper = min(upper, req.max_total_vms)
-        return upper
+        return spec_count_upper_bound(req, spec, self.config.max_pods_per_node)
 
     def _pod_node_floor(self, req: ResourceRequirement) -> int:
         """
-        Minimum node count implied by the "at least N pods" demand.
-
-        Pods-per-node is a single global cap (config.max_pods_per_node), so a
-        pod-count requirement reduces to a floor on the number of nodes,
-        independent of VM spec:  ceil(total_pods / max_pods_per_node). This
-        guarantees provisioned capacity (node_count * max_pods_per_node) is
-        >= total_pods — a lower bound, never an exact target. If resource
-        coverage needs more nodes, the extra pod headroom is harmless.
-
-        Returns 0 when the constraint is disabled (cap <= 0) or the requirement
-        carries no pod demand — i.e. no effect on the split.
+        Minimum node count implied by the "at least N pods" demand — a lower
+        bound, never an exact target: provisioned capacity (node_count ×
+        max_pods_per_node) is guaranteed >= total_pods, and extra pod headroom
+        from resource-driven nodes is harmless. Delegates to the shared
+        module-level helper.
         """
-        max_pods = self.config.max_pods_per_node
-        if max_pods <= 0 or req.total_pods <= 0:
-            return 0
-        return (req.total_pods + max_pods - 1) // max_pods  # ceil division
+        return pod_node_floor(req, self.config.max_pods_per_node)
 
     def build_waste_objective_terms(self) -> list:
         """
