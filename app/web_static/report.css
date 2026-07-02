@@ -1,43 +1,10 @@
 /* ─────────────────────────────────────────────────────────────
-   Capacity Report — dark, shadcn-minimal.
-   Restrained ink; color is reserved for status chips and the single
-   accent. Chart chrome/status values follow the validated dataviz
-   reference palette (dark surface #1a1a19).
+   Capacity Report — shadcn-minimal, layout & components only.
+   All color/radius/elevation tokens come from theme.css (light &
+   dark); restrained ink — color is reserved for status chips and
+   the single accent.
    ───────────────────────────────────────────────────────────── */
 :root {
-  --bg-page: #0d0d0d;
-  --bg-surface: #1a1a19;
-  --bg-subtle: #222221;
-  --bg-inset: #141413;
-  --bg-hover: rgba(255, 255, 255, 0.04);
-
-  --border-base: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.16);
-
-  --text-base: #f5f5f4;
-  --text-muted: #c3c2b7;
-  --text-subtle: #898781;
-
-  --accent: #3987e5;          /* series-1 blue, dark step */
-  --accent-soft: rgba(57, 135, 229, 0.14);
-  --accent-ring: rgba(57, 135, 229, 0.30);
-
-  /* Status (fixed dataviz status palette — all ≥3:1 on the dark surface) */
-  --status-good: #0ca30c;
-  --status-warning: #fab219;
-  --status-serious: #ec835a;
-  --status-critical: #d03b3b;
-  --status-neutral: #898781;
-
-  /* Chart chrome */
-  --meter-track: #2c2c2a;
-  --grid-hairline: #2c2c2a;
-
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-full: 9999px;
-
   --sidebar-w: 380px;
   --header-h: 56px;
 }
@@ -144,7 +111,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .btn:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn--primary:hover { background: #2a78d6; border-color: #2a78d6; }
+.btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn--block { width: 100%; }
 .btn svg { width: 14px; height: 14px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
@@ -155,7 +122,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-subtle); color: var(--text-muted);
   white-space: pre-wrap; word-break: break-word;
 }
-.alert--error { border-color: rgba(208, 59, 59, 0.4); background: rgba(208, 59, 59, 0.08); color: #eda5a5; }
+.alert--error { border-color: var(--error-border); background: var(--error-soft); color: var(--error); }
 .hidden { display: none !important; }
 .muted { color: var(--text-subtle); }
 
@@ -184,13 +151,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   content: ""; width: 7px; height: 7px; border-radius: 50%;
   background: var(--status-neutral); flex: none;
 }
-.chip--good { color: #7fd67f; border-color: rgba(12, 163, 12, 0.35); }
+.chip--good { color: var(--chip-good-text); border-color: var(--success-border); }
 .chip--good::before { background: var(--status-good); }
-.chip--warning { color: #fac95e; border-color: rgba(250, 178, 25, 0.35); }
+.chip--warning { color: var(--chip-warning-text); border-color: var(--warning-border); }
 .chip--warning::before { background: var(--status-warning); }
-.chip--serious { color: #f3a988; border-color: rgba(236, 131, 90, 0.35); }
+.chip--serious { color: var(--chip-serious-text); border-color: rgba(236, 131, 90, 0.4); }
 .chip--serious::before { background: var(--status-serious); }
-.chip--critical { color: #e88a8a; border-color: rgba(208, 59, 59, 0.4); }
+.chip--critical { color: var(--chip-critical-text); border-color: var(--error-border); }
 .chip--critical::before { background: var(--status-critical); }
 .chip--neutral { color: var(--text-muted); }
 
@@ -271,17 +238,17 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 }
 .viz-empty svg { width: 28px; height: 28px; opacity: 0.5; }
 
-/* Tooltip (per-mark hover) */
+/* Tooltip (per-mark hover) — fixed dark in both themes */
 .tooltip {
   position: fixed; z-index: 50; pointer-events: none;
-  background: #262625; border: 1px solid var(--border-strong);
+  background: #262625; border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: var(--radius-md); padding: 8px 10px;
-  font-size: 12px; color: var(--text-base);
+  font-size: 12px; color: #f5f5f4;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   opacity: 0; transition: opacity 100ms;
   max-width: 320px;
 }
 .tooltip.show { opacity: 1; }
 .tooltip .tooltip__title { font-weight: 600; margin-bottom: 4px; }
-.tooltip .tooltip__row { display: flex; justify-content: space-between; gap: 16px; color: var(--text-muted); }
-.tooltip .tooltip__row b { color: var(--text-base); font-weight: 500; font-variant-numeric: tabular-nums; }
+.tooltip .tooltip__row { display: flex; justify-content: space-between; gap: 16px; color: #c3c2b7; }
+.tooltip .tooltip__row b { color: #f5f5f4; font-weight: 500; font-variant-numeric: tabular-nums; }

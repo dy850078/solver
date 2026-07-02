@@ -1,50 +1,8 @@
 /* ─────────────────────────────────────────────────────────────
-   Design tokens
+   Topology Visualizer — layout & components only.
+   All color/radius/elevation tokens come from theme.css (light & dark).
    ───────────────────────────────────────────────────────────── */
 :root {
-  /* Surfaces */
-  --bg-base: #fafafa;
-  --bg-surface: #ffffff;
-  --bg-subtle: #f4f4f5;
-  --bg-muted: #e4e4e7;
-  --bg-hover: rgba(24, 24, 27, 0.04);
-
-  /* Borders */
-  --border-base: #e4e4e7;
-  --border-strong: #d4d4d8;
-
-  /* Text */
-  --text-base: #18181b;
-  --text-muted: #52525b;
-  --text-subtle: #a1a1aa;
-  --text-inverse: #fafafa;
-
-  /* Brand */
-  --brand: #4f46e5;
-  --brand-hover: #4338ca;
-  --brand-soft: #eef2ff;
-  --brand-ring: rgba(79, 70, 229, 0.18);
-
-  /* Status */
-  --success: #059669;
-  --success-soft: #ecfdf5;
-  --error: #dc2626;
-  --error-soft: #fef2f2;
-  --warning: #d97706;
-  --warning-soft: #fffbeb;
-
-  /* Elevation */
-  --shadow-xs: 0 1px 1px rgba(24, 24, 27, 0.03);
-  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.05), 0 1px 1px rgba(24, 24, 27, 0.03);
-  --shadow-md: 0 4px 8px -2px rgba(24, 24, 27, 0.06), 0 2px 4px -2px rgba(24, 24, 27, 0.03);
-  --shadow-lg: 0 12px 24px -8px rgba(24, 24, 27, 0.10), 0 4px 8px -4px rgba(24, 24, 27, 0.04);
-
-  /* Radius */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-full: 9999px;
-
   /* Layout */
   --sidebar-w: 420px;
   --header-h: 56px;
@@ -87,9 +45,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .app-header__logo {
   width: 28px; height: 28px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, var(--brand) 0%, #7c3aed 100%);
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-ring);
   display: grid; place-items: center;
-  color: #fff;
+  color: var(--brand);
 }
 .app-header__logo svg { width: 16px; height: 16px; }
 .app-header__title { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
@@ -398,9 +357,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
   word-break: break-word;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
-.alert--error { color: var(--error); background: var(--error-soft); border-color: #fecaca; }
-.alert--ok { color: var(--success); background: var(--success-soft); border-color: #a7f3d0; }
-.alert--warn { color: var(--warning); background: var(--warning-soft); border-color: #fde68a; }
+.alert--error { color: var(--error); background: var(--error-soft); border-color: var(--error-border); }
+.alert--ok { color: var(--success); background: var(--success-soft); border-color: var(--success-border); }
+.alert--warn { color: var(--warning); background: var(--warning-soft); border-color: var(--warning-border); }
 .hidden { display: none !important; }
 .muted { color: var(--text-muted); }
 
@@ -924,7 +883,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 12px 14px;
   border-radius: var(--radius-md);
   background: var(--error-soft);
-  border: 1px solid #fecaca;
+  border: 1px solid var(--error-border);
   color: var(--error);
   font-size: 12.5px;
   font-weight: 500;
