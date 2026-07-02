@@ -34,6 +34,7 @@ K8s Capacity 大臣接 User 的 CPU/Mem/Storage/**Pod** 需求（per cluster、�
 - **平均**平衡的是「採買後結果**資源**可用量」（考慮 in-stock 現況、補最短的桶），非採買台數。
 - 打散維度 `ag | datacenter` 一鍵切換（覆蓋 AG→實體 DC 轉換）。
 - 多機型可選；1U 假設（GPU 多 U 未來）。
+- **BGP 網路域隔離**（cluster 統一住一 BGP）：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤。BGP 是 filter 非 spread 維度。
 
 **新舊一起打散（整個 cluster）**
 - anti-affinity 作用範圍＝整個 cluster；帶入現有節點**每桶聚合數**（`ExistingDistribution`）。

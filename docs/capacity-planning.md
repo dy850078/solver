@@ -512,6 +512,37 @@ class ExistingBmOccupancy(BaseModel):
 **solver 改動極小**：max_per_bm 約束（`diagnostics.py:283` / solver 對應處）由
 `Σ(新 VM) ≤ cap` 擴成 `existing_count[bm][group] + Σ(新 VM) ≤ cap`，加一個常數而已。
 
+### 缺口 3g — 網路域 (BGP) 隔離
+
+「整個 cluster 統一住某個 BGP 的 rack」= **每個 cluster 的 VM 只能落在該 BGP 網路域的 BM 上**。
+這是**放置資格過濾（filter / affinity）**，且因「全 cluster 統一」是 per-cluster 單純過濾。
+
+> **BGP 是 filter，不是 spread 維度** —— cluster 固定在一個 BGP 內、不跨 BGP 打散。故
+> **不進 `SPREAD_DIMENSIONS`**，走「候選過濾」那條路。
+
+**sizing / placement / 打散：現有機制已滿足。** 靠既有 `candidate_baremetals`
+（`models.py:135`、`ResourceRequirement.candidate_baremetals:403`）：
+
+- Go Scheduler 填 cluster A 的候選時只放 **BGP1 的 BM** → solver 自然只放 BGP1，零改動。
+- 打散自動正確：`reachable_buckets` 由候選 BM 算（`diagnostics.py:136`），只在「有 BGP1 rack
+  的 AG」間展開。
+- 與 provenance 一致：BGP 是系統已知屬性，由 Go Scheduler 填候選，**不需 user 填**。
+
+**採買：需補 BGP-aware。** 採買往 AG/DC 桶生成虛擬 BM；若一個 AG 底下混 BGP1/BGP2，「往 ag-0
+買」有歧義。故 `ProcurementCap`（與 BM）加 `network` 標籤，cluster A 的殘量只買進符合其 BGP 的桶：
+
+```python
+class ProcurementCap(BaseModel):
+    fab: str
+    bucket: str
+    network: str = ""     # BGP 域，如 "bgp1"；採買只在符合 cluster network 的桶生成
+    max_bm: int
+```
+
+> **待確認**：AG 邊界是否**對齊** BGP（一 AG 全同一 BGP）？
+> - 對齊 → 桶已隱含 BGP，`network` 只是顯式化（錦上添花）。
+> - 交錯（一 AG 混多 BGP）→ `network` 標籤**必需**，否則採買/容量帳會混。
+
 ### 核心資料模型 (草案)
 
 ```python
@@ -524,6 +555,7 @@ class BaremetalType(BaseModel):
 class ProcurementCap(BaseModel):      # 缺口 2：桶機位上限（缺此桶 → 理想化無上限）
     fab: str
     bucket: str                       # AG 或 DC 的值
+    network: str = ""                 # 缺口 3g：BGP 域；採買只在符合 cluster network 的桶生成
     max_bm: int
 
 class CapacityPlanRequest(BaseModel):
@@ -634,7 +666,9 @@ POST /v1/capacity/plan
 
 ## Open Question
 
-**目前無未決 Open Question** —— 需求輸入、供給/採買、報表三條線均已定案（見 Decision Log）。
+1. **AG 是否對齊 BGP 網路域？**（缺口 3g）一個 AG 內是否全是同一 BGP？
+   - 對齊 → `ProcurementCap.network` 只是顯式化。
+   - 交錯（一 AG 混多 BGP）→ `network` 標籤必需，否則採買/容量帳會混。
 
 > 已消解的 Open Questions：
 > - ~~drill-down 粒度到 Room/Rack~~ → 決議 #21：規劃報表最細到 AG/DC，不下 BM/rack。
@@ -683,6 +717,7 @@ POST /v1/capacity/plan
 | 33 | 成因**結構化** `ShortfallDetail`（cause + 桶 + 維度 + needed/available + 人話），可多筆 | 只給三個字使用者無所適從；需指到哪個桶/維度才知道要幹嘛 | 多數欄位既有 diagnostics 已算，只需外露 |
 | 34 | 健康儀表用**單一全域 `reference_vm_spec`**（非 per-role）；碎片用**獨立 `min_useful_spec`** | spec 連同 role 跨 cluster 都不同，per-role 也不真；實際數字已用需求真實 spec，儀表只是共同尺 | 各 role 不同 spec 為既有能力（`ResourceRequirement.vm_specs`）|
 | 35 | 儀表**改名切開撞名**：`remaining_node_slots` / `reference_vm_spec` / `min_useful_spec` | 與既有 `w_headroom`（單台 BM 利用率餘裕）語意不同，避免混淆 | `w_headroom` 維持原名 |
+| 36 | **BGP 網路域隔離**：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤 | cluster 統一住一 BGP＝per-cluster filter；BGP 是 filter 非 spread 維度 | 待確認 AG 是否對齊 BGP（見 Open Question）|
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
