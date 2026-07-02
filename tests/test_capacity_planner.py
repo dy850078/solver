@@ -162,14 +162,19 @@ class TestProcurement:
         assert r.success, r.solver_status
         assert 1 <= r.procured_bm_total <= 2
 
-    def test_no_types_is_input_error(self):
-        in_stock = [make_bm("bm-1", cpu=16, mem=256_000, disk=2000)]
-        req = make_req(cpu=64, spec=SPEC_8)
+    def test_no_types_plans_without_buying(self):
+        """Empty procurement_types = 'can this fit in-stock?' — a valid ask:
+        fits → success with zero buys; doesn't fit → classified shortfall,
+        not an INPUT_ERROR (matters for per-fab filtered subsets)."""
+        fits = make_req(cpu=16, spec=SPEC_8)
+        r = procure(fits, [make_bm("bm-1", cpu=16, mem=256_000, disk=2000)], [])
+        assert r.success
+        assert r.procured_bm_total == 0
 
-        r = procure(req, in_stock, [])
-
-        assert not r.success
-        assert r.solver_status.startswith("INPUT_ERROR")
+        too_big = make_req(cpu=64, spec=SPEC_8)
+        r2 = procure(too_big, [make_bm("bm-2", cpu=16, mem=256_000, disk=2000)], [])
+        assert not r2.success
+        assert r2.shortfall_cause == "capacity"
 
     def test_pod_floor_drives_procurement(self):
         """
@@ -488,6 +493,7 @@ class TestReviewFixes:
             result = FakeResult()
             buyable_type_of = {}
             committed_type_of = {}
+            committed_entry_of = {}
             vm_demand = {}
             virtual_bms = {}
             splitter = None
@@ -635,7 +641,7 @@ def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
     )
 
 
-def plan(book, in_stock, types, caps=None, committed=None, **cfg):
+def plan(book, in_stock, types, caps=None, committed=None, rules=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     return solve_capacity_horizon(CapacityPlanRequest(
@@ -644,6 +650,7 @@ def plan(book, in_stock, types, caps=None, committed=None, **cfg):
         procurement_types=types,
         procurement_caps=caps or [],
         committed_stock=committed or [],
+        anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
     ))
 
@@ -745,8 +752,9 @@ class TestCapacityHorizon:
         assert by_period["2026-02"].bm_procurement_total == 1
 
     def test_budget_view_and_totals(self):
-        """budget_view rolls bought counts up to fab × datacenter × month."""
-        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100)]
+        """budget_view rolls bought counts up to fab × (bucket, network) ×
+        month — the planning cell, not a representative datacenter."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
         types = [make_type("big", 64, 256_000, 2000)]
         book = [entry("2026-01", cpu=24, spec=SPEC_8)]
 
@@ -754,9 +762,10 @@ class TestCapacityHorizon:
 
         assert r.success
         assert r.totals["bm_procurement"] == 1
-        assert r.budget_view == [{
-            "fab": "", "datacenter": "dc-1", "period": "2026-01", "bm_count": 1,
-        }]
+        assert len(r.budget_view) == 1
+        row = r.budget_view[0]
+        assert (row.fab, row.bucket, row.network, row.period, row.bm_count) == \
+            ("", "ag-1", "", "2026-01", 1)
 
     def test_allowed_bm_types_restricts_buying(self):
         """(決議 #38) A cluster limited to 'small' buys 4 smalls, not 1 big."""
@@ -786,6 +795,147 @@ class TestCapacityHorizon:
         assert cell.bm_bought == 0
         assert cell.in_stock_used.cpu_cores == 16
         assert cell.in_stock_available.cpu_cores == 48
+
+
+class TestP3ReviewFixes:
+
+    def test_committed_drain_is_entry_exact(self):
+        """(P3-#1) The pool the solver actually drew from is drained — an
+        unusable floating pool must not absorb the drain and let the bucketed
+        machine double-serve."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [
+            CommittedStock(type_id="big", count=1, network="net-b"),  # unusable
+            CommittedStock(type_id="big", count=1, bucket="ag-1"),
+        ]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].committed_bm_used == 1
+        assert by_period["2026-02"].committed_bm_used == 0  # not double-served
+        assert by_period["2026-02"].bm_procurement_total == 1
+        assert r.totals["bm_procurement"] == 1
+
+    def test_mixed_fab_sentinel_rejected(self):
+        """(P3-#2) fab='' mixed with named fabs would double-plan hardware."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="single-fab mode"):
+            CapacityPlanRequest(
+                demand_book=[entry("2026-01", cpu=8, spec=SPEC_8, fab=""),
+                             entry("2026-01", cpu=8, spec=SPEC_8, fab="fab-a")],
+                in_stock=[],
+                procurement_types=[make_type("big", 64, 256_000, 2000)],
+            )
+
+    def test_unscoped_cap_rejected_in_named_fab_mode(self):
+        """(P3-#2) A fab='' cap in named-fab mode would duplicate one physical
+        slot budget into every fab."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="ProcurementCap"):
+            CapacityPlanRequest(
+                demand_book=[entry("2026-01", cpu=8, spec=SPEC_8, fab="fab-a")],
+                in_stock=[],
+                procurement_types=[make_type("big", 64, 256_000, 2000)],
+                procurement_caps=[ProcurementCap(bucket="ag-1", max_bm=1)],
+            )
+
+    def test_materialized_vrack_renamed(self):
+        """(P3-#4) A machine bought last month must not share a synthetic rack
+        with this month's regenerated virtual BM — buying twice in a row under
+        a rack-spread rule succeeds."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=2)]
+        rule = AntiAffinityRule(
+            group_id="workers",
+            selector=GroupSelector(node_role=NodeRole.WORKER),
+            spread_on=["rack"],
+            cap_per_bucket={"rack": 1},
+        )
+        # Month 2 places 2 VMs under a 1-per-rack cap: one must land on the
+        # month-1 acquisition, one on a fresh buy. Without the vrack rename
+        # the fresh virtual BM shares the acquisition's rack → false space.
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-02", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, caps=caps, rules=[rule])
+
+        assert r.success, [p.solver_status for p in r.by_fab_period]
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-02"].bm_procurement_total == 1
+
+    def test_totals_exclude_failed_month_whatif(self):
+        """(P3-#5) A failed month's what-if uncapped buys stay in its own
+        report; totals and budget_view agree."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, caps=caps)
+
+        assert not r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-02"].bm_procurement_total >= 1  # what-if visible
+        assert r.totals["bm_procurement"] == 1                 # month 1 only
+        assert sum(row.bm_count for row in r.budget_view) == 1
+
+    def test_unknown_allowed_type_is_input_error(self):
+        """(P3-#6) A typo'd allowed_bm_types id fails loudly, naming the id,
+        instead of masquerading as a capacity shortfall."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=64, spec=SPEC_8)
+        req = req.model_copy(update={"allowed_bm_types": ["bgi"]})
+
+        r = procure(req, [make_bm("bm-1", cpu=16, mem=256_000, disk=2000)], types)
+
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "bgi" in r.solver_status
+
+    def test_failed_month_cells_carry_attribution(self):
+        """(P3-#7) A 'space' month's what-if buys appear in cells even when
+        the cell holds no in-stock BM — drill-down reconciles with headline."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        book = [entry("2026-01", cpu=128, spec=SPEC_8)]  # needs 2 BMs, cap 1
+
+        r = plan(book, [], types, caps=caps)
+
+        m1 = r.by_fab_period[0]
+        assert not m1.success
+        assert m1.shortfalls[0].cause == "space"
+        assert m1.bm_procurement_total == 2
+        assert sum(c.bm_bought for c in m1.cells) == 2  # reconciles
+
+    def test_fab_stops_after_first_failure(self):
+        """(P3-#9/#10) After a failed month the fab's later planned months are
+        blocked stubs — no phantom success, no extra solves."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),   # buys the only slot
+                entry("2026-02", cpu=64, spec=SPEC_8),   # fails: space
+                entry("2026-03", cpu=8, spec=SPEC_8)]    # would "succeed" — blocked
+
+        r = plan(book, in_stock, types, caps=caps)
+
+        assert not r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        m3 = by_period["2026-03"]
+        assert not m3.success
+        assert m3.solver_status.startswith("BLOCKED")
+        assert m3.shortfalls[0].cause == "blocked"
+        assert "2026-02" in m3.shortfalls[0].message
 
 
 class TestPlanEndpoint:

@@ -576,6 +576,10 @@ class ProcurementResult(BaseModel):
     procurement: list[ProcurementDecision] = Field(default_factory=list)
     # Draws from committed_stock (already-owned machines put to use).
     committed_used: list[ProcurementDecision] = Field(default_factory=list)
+    # Draws per committed_stock entry INDEX (exact-entry accounting so
+    # roll-forward drains the pool the solver actually drew from; note JSON
+    # serializes the int keys as strings).
+    committed_entry_used: dict[int, int] = Field(default_factory=dict)
     split_decisions: list[SplitDecision] = Field(default_factory=list)
     assignments: list[PlacementAssignment] = Field(default_factory=list)
     # "none" | "space" (bucket max_bm exhausted) | "capacity" | "anti_affinity"
@@ -656,12 +660,6 @@ class DemandEntry(BaseModel):
             allowed_bm_types=self.allowed_bm_types,
         )
 
-    def has_demand(self) -> bool:
-        return (
-            self.cpu_cores > 0 or self.memory_mib > 0 or self.storage_gb > 0
-            or self.pod_count > 0 or (self.min_total_vms or 0) > 0
-        )
-
 
 class CapacityPlanRequest(BaseModel):
     """
@@ -680,15 +678,66 @@ class CapacityPlanRequest(BaseModel):
     failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
+    @model_validator(mode="after")
+    def _validate_fab_scoping(self) -> CapacityPlanRequest:
+        """
+        fab="" is the single-fab sentinel (the whole pool). Mixing it with
+        named fabs would plan the same physical machines in two independent
+        rolling states (capacity sold twice), so the mix is rejected. In
+        named-fab mode, stateful supply (caps = physical slots, committed
+        stock = owned machines) must name its fab for the same reason;
+        procurement_types may stay fab="" — a catalog is stateless.
+        """
+        fabs = {e.fab for e in self.demand_book}
+        if "" in fabs and len(fabs) > 1:
+            raise ValueError(
+                "demand_book mixes fab='' (single-fab mode) with named fabs; "
+                "resolve every entry's fab, or none"
+            )
+        if fabs and "" not in fabs:
+            unscoped_caps = [c.bucket for c in self.procurement_caps if not c.fab]
+            if unscoped_caps:
+                raise ValueError(
+                    "named-fab planning requires every ProcurementCap to name "
+                    "its fab (physical slots exist in exactly one fab); "
+                    f"unscoped cap bucket(s): {unscoped_caps}"
+                )
+            unscoped_committed = [
+                c.type_id for c in self.committed_stock if not c.fab
+            ]
+            if unscoped_committed:
+                raise ValueError(
+                    "named-fab planning requires every CommittedStock entry "
+                    "to name its fab (owned machines sit in one fab); "
+                    f"unscoped entry type(s): {unscoped_committed}"
+                )
+        return self
+
 
 class ShortfallDetail(BaseModel):
     """Structured shortfall cause (決議 #33): what blocked, where, and why."""
-    cause: str                        # "capacity"|"anti_affinity"|"space"|"unknown"
+    # "capacity" | "anti_affinity" | "space" | "unknown" | "input_error"
+    # | "blocked" (month not planned because an earlier month failed this fab)
+    cause: str
     bucket: str | None = None
     dimension: str | None = None
     needed: int | None = None
     available: int | None = None
     message: str = ""
+
+
+class BudgetRow(BaseModel):
+    """
+    One budgeting line: bought BMs per (fab, bucket, network, month). Keyed on
+    the planning cell (決議 #37) — a representative datacenter would be
+    unreliable when an AG spans several DCs; with
+    procurement_spread_dimension="datacenter" the bucket IS the DC.
+    """
+    fab: str
+    bucket: str
+    network: str
+    period: str
+    bm_count: int
 
 
 class BucketMonthCell(BaseModel):
@@ -739,9 +788,11 @@ class CapacityReport(BaseModel):
     """
     success: bool                     # every planned fab-month succeeded
     by_fab_period: list[PeriodFabReport] = Field(default_factory=list)
-    # Budget view (fab × datacenter × month → bought BM count): the Capacity
-    # planner's budgeting projection; committed stock is already paid for and
-    # excluded.
-    budget_view: list[dict[str, Any]] = Field(default_factory=list)
+    # Budgeting projection: bought BMs per (fab, bucket, network, month).
+    # Committed stock is already paid for and excluded. Counts only months
+    # that succeeded (failed months carry what-if numbers in their own
+    # PeriodFabReport, never here).
+    budget_view: list[BudgetRow] = Field(default_factory=list)
+    # Aggregates over SUCCESSFUL months only, consistent with budget_view.
     totals: dict[str, Any] = Field(default_factory=dict)
     solve_time_seconds: float = 0.0
