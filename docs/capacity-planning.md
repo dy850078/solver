@@ -399,6 +399,7 @@ class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一
     min_total_vms: int | None = None
     max_total_vms: int | None = None
     fab: str | None = None                # 預設由 cluster 現有 footprint 推導（系統帶入）
+    allowed_bm_types: list[str] | None = None  # 缺口 3g：per-cluster 限採買機型；None=fab 內任何機型
     # 註：無 demand_mode（一律增量）；無 cluster 現況欄位（系統經 Go Scheduler 帶入）
 ```
 
@@ -539,9 +540,31 @@ class ProcurementCap(BaseModel):
     max_bm: int
 ```
 
-> **待確認**：AG 邊界是否**對齊** BGP（一 AG 全同一 BGP）？
-> - 對齊 → 桶已隱含 BGP，`network` 只是顯式化（錦上添花）。
-> - 交錯（一 AG 混多 BGP）→ `network` 標籤**必需**，否則採買/容量帳會混。
+> **決議：AG 與 BGP 交錯（一 AG 混多 BGP）→ `network` 必需。** 推論：**容量規劃的有效計量
+> 單位是 `(AG/DC × BGP)` 配對**，不是單純 AG —— cluster A（BGP1）只看得到 ag-0 的 BGP1 那部分。
+> 打散仍在 AG（cluster 在自己 BGP 內跨 AG 打散），但**容量帳 / 採買 / 報表以 `(bucket, network)`
+> 為單位**（見缺口 3c 報表加 network 維度）。
+
+### 缺口 3h — 已採購庫存 (pre-committed stock)｜選用
+
+情境：某廠已買好兩種機型各 100 台，想確認「夠不夠、不夠各再買多少」。這是既有採買模型的
+自然延伸 —— **把已購庫存當成「零成本的採買層」**：
+
+- 已購池：每型上限 = 已購台數，**成本權重 0**；新買 = 一般採買，權重 1。
+- 目標 `minimize`：**先用完免費的、才買新的**（owned 權重 0、new 權重 1）。
+- 報表直接回答：**「用掉 100 台裡的 X 台、還缺 → 各機型再買 Y 台」**（`bm_procurement.from_committed`）。
+
+```python
+class CommittedStock(BaseModel):      # 選用；已採購但待分配的庫存
+    fab: str
+    type_id: str
+    count: int                        # 已買幾台
+    bucket: str | None = None         # 已上架則填（→ 等同 in_stock）；浮動則 None（solver 決定落點）
+    network: str | None = None
+```
+
+兩種擺法：已上架（知道 AG/BGP）→ 直接當 `in_stock`；未上架（浮動）→ 當已購池，solver 決定落點
+（受 cluster BGP 限制）。成本低，建議列為**選用能力**，要用才填。
 
 ### 核心資料模型 (草案)
 
@@ -564,19 +587,22 @@ class CapacityPlanRequest(BaseModel):
     in_stock: list[Baremetal]
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
     procurement_caps: list[ProcurementCap] = []  # 桶機位上限；缺 → 該桶理想化無上限（缺口 2）
+    committed_stock: list[CommittedStock] = []   # 已採購待分配庫存（缺口 3h，選用）
     existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
     existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, reference_vm_spec,
                                       #    min_useful_spec, procurement_spread_dimension,
                                       #    w_procurement_balance
 
-# 規劃報表最細粒度 = (fab, bucket=AG/DC, month)；不下到個別 BM/rack
+# 規劃報表最細粒度 = (fab, bucket=AG/DC, network=BGP, month)；不下到個別 BM/rack
 class BucketMonthCell(BaseModel):
     fab: str
     bucket: str                       # AG 或 DC（依 procurement_spread_dimension）
+    network: str                      # BGP 域（缺口 3g：計量單位是 (bucket, network)）
     period: str                       # 月
+    in_stock: dict                    # {total, used, available} Resources（by AG/BGP 現況）
     node_adds: list[SplitDecision]    # 加幾台什麼 spec 的 node（給 owner/工程師）
-    bm_procurement: list[dict]        # [{type_id, count}] 要買幾台 BM（給財務）
+    bm_procurement: list[dict]        # [{type_id, count, from_committed}] 買幾台（含已購庫存 3h）
     shortfalls: list[ShortfallDetail] = []   # 結構化成因（可多個），見缺口 3c
 
 class PeriodFabReport(BaseModel):     # fab × month 彙總（給長官頭條）
@@ -666,15 +692,14 @@ POST /v1/capacity/plan
 
 ## Open Question
 
-1. **AG 是否對齊 BGP 網路域？**（缺口 3g）一個 AG 內是否全是同一 BGP？
-   - 對齊 → `ProcurementCap.network` 只是顯式化。
-   - 交錯（一 AG 混多 BGP）→ `network` 標籤必需，否則採買/容量帳會混。
+**目前無未決 Open Question** —— 三條線 + BGP/庫存均已定案（見 Decision Log）。
 
 > 已消解的 Open Questions：
 > - ~~drill-down 粒度到 Room/Rack~~ → 決議 #21：規劃報表最細到 AG/DC，不下 BM/rack。
 > - ~~採買 topology 落點誰決定~~ → 決議 #29：`max_bm` 掛桶層級，solver 在桶內分配。
 > - ~~成因標籤細緻度~~ → 決議 #33：結構化 `ShortfallDetail`（指到桶/維度 + 人話）。
 > - ~~參考 spec 選法~~ → 決議 #34：單一全域 `reference_vm_spec`；碎片用 `min_useful_spec`。
+> - ~~AG 是否對齊 BGP~~ → 決議 #37：交錯，`network` 必需，計量單位 `(AG, BGP)`。
 
 ---
 
@@ -717,7 +742,10 @@ POST /v1/capacity/plan
 | 33 | 成因**結構化** `ShortfallDetail`（cause + 桶 + 維度 + needed/available + 人話），可多筆 | 只給三個字使用者無所適從；需指到哪個桶/維度才知道要幹嘛 | 多數欄位既有 diagnostics 已算，只需外露 |
 | 34 | 健康儀表用**單一全域 `reference_vm_spec`**（非 per-role）；碎片用**獨立 `min_useful_spec`** | spec 連同 role 跨 cluster 都不同，per-role 也不真；實際數字已用需求真實 spec，儀表只是共同尺 | 各 role 不同 spec 為既有能力（`ResourceRequirement.vm_specs`）|
 | 35 | 儀表**改名切開撞名**：`remaining_node_slots` / `reference_vm_spec` / `min_useful_spec` | 與既有 `w_headroom`（單台 BM 利用率餘裕）語意不同，避免混淆 | `w_headroom` 維持原名 |
-| 36 | **BGP 網路域隔離**：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤 | cluster 統一住一 BGP＝per-cluster filter；BGP 是 filter 非 spread 維度 | 待確認 AG 是否對齊 BGP（見 Open Question）|
+| 36 | **BGP 網路域隔離**：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤 | cluster 統一住一 BGP＝per-cluster filter；BGP 是 filter 非 spread 維度 | 見 #37 |
+| 37 | AG 與 BGP **交錯** → `network` **必需**；容量/採買/報表計量單位＝**`(AG/DC, BGP)`** | 一 AG 混多 BGP，cluster 只看得到自己 BGP 那部分 | 報表 cell 加 `network` 維度 + `(AG,BGP)` in-stock/used/available |
+| 38 | **per-cluster 限採買機型** `DemandEntry.allowed_bm_types` | 不同 cluster 可買不同機型；in-stock 端已由候選過濾，採買端需機型允許清單 | 小改動：殘量只生成 allowed 機型的虛擬 BM |
+| 39 | **已採購庫存**（缺口 3h，選用）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」；成本低 | `CommittedStock`；已上架→in_stock、浮動→已購池 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）

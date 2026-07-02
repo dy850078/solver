@@ -34,7 +34,9 @@ K8s Capacity 大臣接 User 的 CPU/Mem/Storage/**Pod** 需求（per cluster、�
 - **平均**平衡的是「採買後結果**資源**可用量」（考慮 in-stock 現況、補最短的桶），非採買台數。
 - 打散維度 `ag | datacenter` 一鍵切換（覆蓋 AG→實體 DC 轉換）。
 - 多機型可選；1U 假設（GPU 多 U 未來）。
-- **BGP 網路域隔離**（cluster 統一住一 BGP）：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；採買加 `ProcurementCap.network` 標籤。BGP 是 filter 非 spread 維度。
+- **BGP 網路域隔離**（cluster 統一住一 BGP）：sizing/placement/打散靠既有 `candidate_baremetals` 過濾（現有滿足）；BGP 是 filter 非 spread 維度。**AG 與 BGP 交錯 → 計量單位＝`(AG, BGP)`**，採買加 `ProcurementCap.network`、報表 by `(AG, BGP)`。
+- **per-cluster 限採買機型**：`DemandEntry.allowed_bm_types`。
+- **已採購庫存（選用）**：`committed_stock` 當「零成本採買層」，回答「已買 N 台夠不夠、各再買多少」。
 
 **新舊一起打散（整個 cluster）**
 - anti-affinity 作用範圍＝整個 cluster；帶入現有節點**每桶聚合數**（`ExistingDistribution`）。
@@ -44,7 +46,7 @@ K8s Capacity 大臣接 User 的 CPU/Mem/Storage/**Pod** 需求（per cluster、�
 
 **報表**
 - 頭條＝**可落地可用量**（真實 bin-pack）+ 缺口 + **成因**，非名目資源加總（名目會高估）。
-- 對象 **2 個**：Capacity 大臣（主，含編預算視圖）、長官。粒度停在 **`(fab, AG/DC, 月)`**，不下 BM/rack（那是執行階段）。
+- 對象 **2 個**：Capacity 大臣（主，含編預算視圖）、長官。粒度停在 **`(fab, AG/DC, BGP, 月)`**，不下 BM/rack（那是執行階段）；每 cell 顯示 in-stock/used/available。
 - **node 台數** 與 **BM 台數** 兩欄分開（node 給 owner 建 VM、BM 給財務編預算）。
 - 成因**結構化** `ShortfallDetail`：`capacity`/`anti_affinity`/`space` + 哪個桶/維度 + 一句人話。
 - 健康儀表 `remaining_node_slots` 用單一全域 `reference_vm_spec`；碎片用 `min_useful_spec`。
