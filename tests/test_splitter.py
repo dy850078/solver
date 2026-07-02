@@ -640,6 +640,22 @@ class TestPodDimension:
         assert r.success
         assert sum(d.count for d in r.split_decisions) == 2
 
+    def test_pod_capacity_is_at_least_demanded(self):
+        """
+        'At least N pods' semantics: 100 pods with 50 pods/node → 2 nodes, and
+        provisioned capacity (nodes * 50) must be >= the 100 demanded.
+        """
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(cpu=4, mem=16_000, disk=100, pods=100, vm_specs=[spec])
+
+        r = split_solve(req, bms, max_pods_per_node=50)
+
+        assert r.success
+        nodes = sum(d.count for d in r.split_decisions)
+        assert nodes == 2
+        assert nodes * 50 >= 100  # capacity meets or exceeds demand
+
     def test_pod_constraint_disabled_by_default(self):
         """
         max_pods_per_node defaults to 0 (disabled): a large total_pods must be

@@ -216,11 +216,14 @@ class ResourceSplitter:
 
     def _pod_node_floor(self, req: ResourceRequirement) -> int:
         """
-        Minimum node count implied by the pod-count demand.
+        Minimum node count implied by the "at least N pods" demand.
 
         Pods-per-node is a single global cap (config.max_pods_per_node), so a
         pod-count requirement reduces to a floor on the number of nodes,
-        independent of VM spec:  ceil(total_pods / max_pods_per_node).
+        independent of VM spec:  ceil(total_pods / max_pods_per_node). This
+        guarantees provisioned capacity (node_count * max_pods_per_node) is
+        >= total_pods — a lower bound, never an exact target. If resource
+        coverage needs more nodes, the extra pod headroom is harmless.
 
         Returns 0 when the constraint is disabled (cap <= 0) or the requirement
         carries no pod demand — i.e. no effect on the split.

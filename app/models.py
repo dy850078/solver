@@ -407,9 +407,12 @@ class ResourceRequirement(BaseModel):
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
-    # Total pod-count demand for this role. Combined with
-    # SolverConfig.max_pods_per_node it imposes a floor on the number of
-    # nodes the splitter must create. 0 = no pod demand.
+    # Minimum pod-hosting capacity required for this role ("at least N pods").
+    # Combined with SolverConfig.max_pods_per_node it guarantees the split
+    # provisions enough nodes to host at least this many pods:
+    #   node_count >= ceil(total_pods / max_pods_per_node)
+    # so provisioned_capacity = node_count * max_pods_per_node >= total_pods.
+    # It is a lower bound, never an exact target or a cap. 0 = no pod demand.
     total_pods: int = Field(default=0, ge=0)
     candidate_baremetals: list[str] = Field(default_factory=list)
 
