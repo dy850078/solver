@@ -7,6 +7,7 @@
  */
 
 import { listExamples, getExample, planCapacity } from "./api.js";
+import { initForm, buildRequest, loadIntoForm } from "./report-form.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -302,14 +303,9 @@ async function run() {
   const btn = $("run-btn");
   const errBox = $("json-error");
   errBox.classList.add("hidden");
-  let body;
-  try {
-    body = JSON.parse($("json-editor").value);
-  } catch (e) {
-    errBox.textContent = `Invalid JSON: ${e.message}`;
-    errBox.classList.remove("hidden");
-    return;
-  }
+  // The form is the source of truth; the Advanced editor mirrors it.
+  const body = buildRequest();
+  $("json-editor").value = JSON.stringify(body, null, 2);
   btn.disabled = true;
   btn.querySelector(".btn__label").textContent = "Planning…";
   try {
@@ -324,12 +320,17 @@ async function run() {
 }
 
 async function init() {
+  initForm();
   $("run-btn").addEventListener("click", run);
 
   $("upload-btn").addEventListener("click", () => $("upload-input").click());
   $("upload-input").addEventListener("change", async (e) => {
     const file = e.target.files[0];
-    if (file) $("json-editor").value = await file.text();
+    if (file) {
+      const text = await file.text();
+      $("json-editor").value = text;
+      try { loadIntoForm(JSON.parse(text)); } catch { /* editor keeps raw text */ }
+    }
     e.target.value = "";
   });
 
@@ -347,8 +348,9 @@ async function init() {
       if (!sel.value) return;
       const data = await getExample(sel.value);
       $("json-editor").value = JSON.stringify(data, null, 2);
+      loadIntoForm(data);
     });
-  } catch { /* examples are a convenience; the editor still works */ }
+  } catch { /* examples are a convenience; the form still works */ }
 }
 
 init();

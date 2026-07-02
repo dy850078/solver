@@ -5,7 +5,7 @@
    the single accent.
    ───────────────────────────────────────────────────────────── */
 :root {
-  --sidebar-w: 380px;
+  --sidebar-w: 430px;
   --header-h: 56px;
 }
 
@@ -115,6 +115,63 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn--block { width: 100%; }
 .btn svg { width: 14px; height: 14px; }
 .btn:disabled { opacity: 0.5; cursor: default; }
+
+.input {
+  width: 100%;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  color: var(--text-base);
+  padding: 6px 8px;
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.input::-webkit-inner-spin-button, .input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+
+/* ── Form builder rows ── */
+.form-rows { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.form-empty { font-size: 12px; margin: 0; }
+.frow-card {
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  padding: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.frow-card__head { display: flex; align-items: center; justify-content: space-between; }
+.frow-card__title { font-size: 11.5px; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+.frow-card__title b { color: var(--text-muted); }
+.frow { display: grid; gap: 8px; }
+.frow--3 { grid-template-columns: 1.2fr 1fr 1fr; }
+.frow--4 { grid-template-columns: repeat(4, 1fr); }
+.frow--type { grid-template-columns: 1.4fr 0.9fr 0.9fr 0.9fr 1fr auto; align-items: end; }
+.frow--config { grid-template-columns: 1fr 1fr auto; align-items: end; }
+.mini { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.mini__label { font-size: 10.5px; color: var(--text-subtle); white-space: nowrap; }
+.mini .select { padding: 6px 8px; font-size: 12.5px; }
+.mini--check { flex-direction: row; align-items: center; gap: 6px; padding-bottom: 7px; }
+.mini--check input { accent-color: var(--accent); width: 14px; height: 14px; }
+.mini--check .mini__label { font-size: 11.5px; }
+.row-del {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-subtle); font-size: 12px; line-height: 1;
+  padding: 4px 6px; border-radius: var(--radius-sm);
+}
+.row-del:hover { color: var(--error); background: var(--error-soft); }
+.btn--add {
+  height: 30px; padding: 0 10px;
+  font-size: 12px; font-weight: 500;
+  background: transparent; border: 1px dashed var(--border-strong);
+  color: var(--text-muted); width: 100%;
+}
+.btn--add:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
+.adv { border: 1px solid var(--border-base); border-radius: var(--radius-md); padding: 10px 12px; margin-top: 14px; }
+.adv > summary { font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.adv[open] > summary { margin-bottom: 4px; }
+.subhead + .form-rows { margin-top: 2px; }
 
 .alert {
   padding: 10px 12px; border-radius: var(--radius-md);
