@@ -33,12 +33,17 @@ from ortools.sat.python import cp_model
 
 from .models import (
     Baremetal,
+    BucketMonthCell,
+    CapacityPlanRequest,
+    CapacityReport,
+    PeriodFabReport,
     PlacementRequest,
     PlacementResult,
     ProcurementDecision,
     ProcurementRequest,
     ProcurementResult,
     Resources,
+    ShortfallDetail,
     Topology,
 )
 from .splitter import RESOURCE_FIELDS, ResourceSplitter, spec_count_upper_bound
@@ -256,9 +261,15 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
             ]
         return in_stock_ids_by_net[net], virtual_ids_by_net[net]
 
+    type_of = {**buyable_type_of, **committed_type_of}
+
     reqs = []
     for r in request.requirements:
         in_stock_ids, virtual_ids = candidates_for(r.network)
+        if r.allowed_bm_types is not None:
+            # 決議 #38: this cluster may only buy/draw these machine types.
+            allowed = set(r.allowed_bm_types)
+            virtual_ids = [i for i in virtual_ids if type_of[i] in allowed]
         reqs.append(r.model_copy(update={
             "candidate_baremetals":
                 (r.candidate_baremetals or in_stock_ids) + virtual_ids
@@ -362,6 +373,9 @@ def _worst_case_counts(request: ProcurementRequest) -> dict[str, int]:
     for bt in request.procurement_types:
         need = 0
         for r in request.requirements:
+            if (r.allowed_bm_types is not None
+                    and bt.type_id not in r.allowed_bm_types):
+                continue
             specs = r.vm_specs if r.vm_specs is not None else request.config.vm_specs
             group_cap = _group_per_bm_cap(request, r)
             for spec in specs or []:
@@ -512,5 +526,289 @@ def _to_result(request: ProcurementRequest, p: _Pass,
         remaining_node_slots=slots if config.reference_vm_spec is not None else None,
         stranded_available=stranded if config.min_useful_spec is not None else None,
         balance_after=balance_after,
+        bm_placed=placed,
+        bought_bms=[p.virtual_bms[bid] for bid in sorted(used_buy_ids)],
+        committed_bms=[p.virtual_bms[bid] for bid in sorted(used_own_ids)],
         diagnostics=r.diagnostics,
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-period horizon planning (Phase 3): sparse demand book →
+# month-by-month roll-forward per fab → aggregated CapacityReport.
+# ---------------------------------------------------------------------------
+
+def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
+    """
+    Plan every (fab, month) present in the demand book, oldest month first,
+    rolling state forward within each fab:
+
+      - placements consume in-stock capacity (used_capacity advances);
+      - bought / committed machines materialize as next month's in-stock
+        (nodes are sticky — no reshuffling, 決議/替代方案 B);
+      - each materialized machine consumes one slot from every matching
+        bucket cap (max_bm decreases, 決議 #30);
+      - committed pools drain as they are used.
+
+    Months absent from the book are absent from the report (unplanned ≠ zero
+    growth, 決議 #26). Fabs are independent pools (決議 #4). A failed month
+    reports its shortfalls and its demand is NOT carried forward — later
+    months are still planned against the unchanged state, so fix the inputs
+    and replan rather than trusting downstream months after a failure.
+    """
+    start = time.time()
+    config = request.config
+    fab_dim = config.fab_topology_dimension
+    dim = config.procurement_spread_dimension
+
+    periods = sorted({e.period for e in request.demand_book})
+    fabs: list[str] = []
+    for e in request.demand_book:
+        if e.fab not in fabs:
+            fabs.append(e.fab)
+
+    reports: list[PeriodFabReport] = []
+    budget: Counter = Counter()   # (fab, datacenter, period) -> bought count
+    all_ok = True
+
+    for fab in fabs:
+        # Per-fab rolling state. fab "" = single-fab mode: the whole pool.
+        stock = [
+            bm.model_copy(deep=True) for bm in request.in_stock
+            if fab == "" or getattr(bm.topology, fab_dim) == fab
+        ]
+        caps_state = [
+            c.model_copy(deep=True) for c in request.procurement_caps
+            if fab == "" or c.fab in ("", fab)
+        ]
+        committed_state = [
+            cs.model_copy(deep=True) for cs in request.committed_stock
+            if fab == "" or cs.fab in ("", fab)
+        ]
+        types_f = [
+            t for t in request.procurement_types
+            if fab == "" or t.fab in ("", fab)
+        ]
+
+        for period in periods:
+            entries = [
+                e for e in request.demand_book
+                if e.fab == fab and e.period == period
+            ]
+            if not entries:
+                continue  # unplanned month for this fab → absent from report
+
+            preq = ProcurementRequest(
+                requirements=[e.to_requirement() for e in entries],
+                in_stock=stock,
+                procurement_types=types_f,
+                procurement_caps=caps_state,
+                committed_stock=[c for c in committed_state if c.count > 0],
+                anti_affinity_rules=request.anti_affinity_rules,
+                max_per_bm_rules=request.max_per_bm_rules,
+                failover_rules=request.failover_rules,
+                config=config,
+            )
+            res = solve_capacity_plan(preq)
+
+            # Cell attribution must happen before roll-forward renames ids.
+            node_adds_per_cell, bought_per_cell, own_per_cell = (
+                _cell_attribution(res, stock, dim)
+            )
+
+            if res.success:
+                _roll_forward(stock, caps_state, committed_state, res,
+                              dim, period)
+                for bm in res.bought_bms:
+                    budget[(fab, bm.topology.datacenter, period)] += 1
+            else:
+                all_ok = False
+
+            reports.append(_period_report(
+                fab, period, res, stock, dim,
+                node_adds_per_cell, bought_per_cell, own_per_cell,
+            ))
+
+    budget_view = [
+        {"fab": f, "datacenter": dc, "period": pd, "bm_count": n}
+        for (f, dc, pd), n in sorted(budget.items())
+    ]
+    totals = {
+        "node_adds": sum(r.node_adds_total for r in reports),
+        "bm_procurement": sum(r.bm_procurement_total for r in reports),
+        "committed_bm_used": sum(r.committed_bm_used for r in reports),
+        "by_fab": {
+            fab: {
+                "node_adds": sum(r.node_adds_total for r in reports
+                                 if r.fab == fab),
+                "bm_procurement": sum(r.bm_procurement_total for r in reports
+                                      if r.fab == fab),
+            }
+            for fab in fabs
+        },
+    }
+    return CapacityReport(
+        success=all_ok,
+        by_fab_period=reports,
+        budget_view=budget_view,
+        totals=totals,
+        solve_time_seconds=time.time() - start,
+    )
+
+
+def _cell_attribution(res: ProcurementResult, stock: list[Baremetal],
+                      dim: str) -> tuple[Counter, Counter, Counter]:
+    """Count this month's node adds / buys / committed draws per
+    (bucket, network) cell, using pre-roll-forward ids."""
+    cell_of: dict[str, tuple[str, str]] = {}
+    for bm in stock:
+        cell_of[bm.id] = (getattr(bm.topology, dim), bm.network)
+    for bm in list(res.bought_bms) + list(res.committed_bms):
+        cell_of[bm.id] = (getattr(bm.topology, dim), bm.network)
+
+    node_adds = Counter(
+        cell_of[a.baremetal_id] for a in res.assignments
+        if a.baremetal_id in cell_of
+    )
+    bought = Counter(
+        (getattr(bm.topology, dim), bm.network) for bm in res.bought_bms
+    )
+    own = Counter(
+        (getattr(bm.topology, dim), bm.network) for bm in res.committed_bms
+    )
+    return node_adds, bought, own
+
+
+def _roll_forward(stock: list[Baremetal], caps_state: list,
+                  committed_state: list, res: ProcurementResult,
+                  dim: str, period: str) -> None:
+    placed = res.bm_placed
+
+    # 1. Placements consume in-stock capacity.
+    for bm in stock:
+        if bm.id in placed:
+            bm.used_capacity = bm.used_capacity + placed[bm.id]
+
+    # 2. Bought / committed machines materialize as in-stock for the next
+    #    month. Ids are re-prefixed with the acquisition period so a later
+    #    month's virtual-BM generation can never collide with them.
+    for mbm in list(res.bought_bms) + list(res.committed_bms):
+        new_bm = mbm.model_copy(deep=True)
+        new_bm.used_capacity = placed.get(mbm.id, Resources())
+        new_bm.id = f"acq-{period}-{mbm.id}"
+        stock.append(new_bm)
+
+        # 3. Each materialized machine consumes one physical slot from every
+        #    cap tracking its (bucket, network) cell (決議 #30).
+        bucket = getattr(mbm.topology, dim)
+        for cap in caps_state:
+            if cap.bucket == bucket and cap.network in ("", mbm.network):
+                cap.max_bm = max(0, cap.max_bm - 1)
+
+    # 4. Committed pools drain by type; floating pools first (a floating
+    #    machine is the one whose landing the solver chose).
+    for d in res.committed_used:
+        remaining = d.count
+        entries = sorted(
+            (cs for cs in committed_state if cs.type_id == d.type_id),
+            key=lambda cs: cs.bucket is not None,
+        )
+        for cs in entries:
+            take = min(cs.count, remaining)
+            cs.count -= take
+            remaining -= take
+            if remaining <= 0:
+                break
+
+
+def _period_report(fab: str, period: str, res: ProcurementResult,
+                   stock_after: list[Baremetal], dim: str,
+                   node_adds_per_cell: Counter, bought_per_cell: Counter,
+                   own_per_cell: Counter) -> PeriodFabReport:
+    # Post-month in-stock snapshot per (bucket, network) cell — for a failed
+    # month the state is unchanged, so the snapshot shows what was available.
+    cell_stock: dict[tuple[str, str], dict[str, Resources]] = {}
+    for bm in stock_after:
+        cell = (getattr(bm.topology, dim), bm.network)
+        agg = cell_stock.setdefault(cell, {
+            "total": Resources(), "used": Resources(),
+        })
+        agg["total"] = agg["total"] + bm.total_capacity
+        agg["used"] = agg["used"] + bm.used_capacity
+
+    cells = [
+        BucketMonthCell(
+            fab=fab, bucket=bucket, network=network, period=period,
+            node_adds=node_adds_per_cell.get((bucket, network), 0),
+            bm_bought=bought_per_cell.get((bucket, network), 0),
+            committed_used=own_per_cell.get((bucket, network), 0),
+            in_stock_total=agg["total"],
+            in_stock_used=agg["used"],
+            in_stock_available=agg["total"] - agg["used"],
+        )
+        for (bucket, network), agg in sorted(cell_stock.items())
+    ]
+
+    return PeriodFabReport(
+        fab=fab, period=period,
+        success=res.success,
+        node_adds_total=sum(d.count for d in res.split_decisions),
+        bm_procurement_total=res.procured_bm_total,
+        committed_bm_used=res.committed_bm_used,
+        procurement=res.procurement,
+        committed_used=res.committed_used,
+        split_decisions=res.split_decisions,
+        shortfalls=_shortfall_details(res),
+        solver_status=res.solver_status,
+        nominal_available=res.nominal_available,
+        remaining_node_slots=res.remaining_node_slots,
+        stranded_available=res.stranded_available,
+        balance_after=res.balance_after,
+        cells=cells,
+    )
+
+
+def _shortfall_details(res: ProcurementResult) -> list[ShortfallDetail]:
+    """Structured causes (決議 #33): what blocked, where, and a human line."""
+    if res.success:
+        return []
+    details: list[ShortfallDetail] = []
+    diag = res.diagnostics or {}
+
+    if res.shortfall_cause == "anti_affinity":
+        for entry in diag.get("infeasible_anti_affinity_rules", []):
+            for fd in entry.get("failed_dimensions", []):
+                details.append(ShortfallDetail(
+                    cause="anti_affinity",
+                    dimension=fd.get("dimension"),
+                    needed=fd.get("min_buckets_needed"),
+                    available=fd.get("reachable_buckets"),
+                    message=(
+                        f"group {entry.get('group_id')}: needs "
+                        f"{fd.get('min_buckets_needed')} distinct "
+                        f"{fd.get('dimension')} buckets, only "
+                        f"{fd.get('reachable_buckets')} reachable"
+                    ),
+                ))
+
+    if not details:
+        if res.solver_status.startswith("INPUT_ERROR"):
+            details.append(ShortfallDetail(
+                cause="input_error", message=res.solver_status,
+            ))
+        else:
+            message = {
+                "space": "bucket slot caps (max_bm) exhausted — expanding "
+                         "physical slots would make the plan feasible",
+                "capacity": "insufficient resource capacity even with "
+                            "procurement",
+                "anti_affinity": "topology spread constraints cannot be "
+                                 "satisfied",
+                "unknown": f"solve not proven infeasible "
+                           f"(status {res.solver_status}); consider raising "
+                           f"max_solve_time_seconds",
+            }.get(res.shortfall_cause, res.shortfall_cause)
+            details.append(ShortfallDetail(
+                cause=res.shortfall_cause, message=message,
+            ))
+    return details

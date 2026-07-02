@@ -354,12 +354,17 @@ class SolverConfig(BaseModel):
     reference_vm_spec: Resources | None = None
     min_useful_spec: Resources | None = None
 
-    @field_validator("procurement_spread_dimension")
+    # Which topology dimension identifies a fab (site or phase in practice).
+    # The multi-period planner groups in-stock BMs into per-fab pools by this
+    # dimension; a demand entry's fab "" means single-fab mode (match all).
+    fab_topology_dimension: str = "site"
+
+    @field_validator("procurement_spread_dimension", "fab_topology_dimension")
     @classmethod
     def _validate_procurement_spread_dimension(cls, v: str) -> str:
         if v not in SPREAD_DIMENSIONS:
             raise ValueError(
-                f"procurement_spread_dimension {v!r} is not a valid dimension; "
+                f"dimension {v!r} is not a valid topology dimension; "
                 f"valid: {sorted(SPREAD_DIMENSIONS)}"
             )
         return v
@@ -455,6 +460,10 @@ class ResourceRequirement(BaseModel):
     # and the planner additionally scopes in-stock backfill and buyable-BM
     # candidates to the domain (whole-cluster filter, 缺口 3g).
     network: str = ""
+    # Per-cluster machine-type allowlist for procurement (決議 #38): when set,
+    # this requirement's residual demand may only buy / draw these
+    # BaremetalType ids. None = any type in the fab.
+    allowed_bm_types: list[str] | None = None
     candidate_baremetals: list[str] = Field(default_factory=list)
 
 
@@ -589,4 +598,150 @@ class ProcurementResult(BaseModel):
     stranded_available: Resources | None = None
     # Post-solve available CPU cores per spread bucket (balance evidence).
     balance_after: dict[str, int] = Field(default_factory=dict)
+    # Roll-forward hooks (used by the multi-period planner, Phase 3):
+    # per-BM resources consumed by this solve's placement, and the virtual
+    # BMs that materialized (bought / drawn from committed stock) with their
+    # synthetic topology — append them to in-stock for the next period.
+    bm_placed: dict[str, Resources] = Field(default_factory=dict)
+    bought_bms: list[Baremetal] = Field(default_factory=list)
+    committed_bms: list[Baremetal] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Multi-period capacity planning I/O (Phase 3): sparse demand book →
+# month-by-month roll-forward per fab → aggregated CapacityReport.
+# ---------------------------------------------------------------------------
+
+class DemandEntry(BaseModel):
+    """
+    One row of the demand book: the incremental demand for (cluster, role,
+    month). Sparse — only filled months exist; revising a month means
+    replacing its row (upsert is the caller's job; the solver is stateless).
+
+    Three-state month semantics (決議 #26): a missing row = the month is
+    unplanned (absent from the report); a row with all-zero demand = an
+    explicit "no growth" month (reported with zero adds); any dimension > 0 =
+    demand (a 0 dimension is unconstrained, not "uses 0").
+    """
+    cluster_id: str
+    node_role: NodeRole = NodeRole.WORKER
+    period: str                       # e.g. "2026-07"; ISO order = sort order
+    # Incremental demand; 0 on a dimension = no lower bound on it.
+    cpu_cores: int = Field(default=0, ge=0)
+    memory_mib: int = Field(default=0, ge=0)
+    storage_gb: int = Field(default=0, ge=0)
+    pod_count: int = Field(default=0, ge=0)
+    vm_specs: list[Resources] | None = None
+    min_total_vms: int | None = None
+    max_total_vms: int | None = None
+    fab: str = ""                     # "" = single-fab mode (matches all BMs)
+    network: str = ""                 # BGP domain filter (缺口 3g)
+    allowed_bm_types: list[str] | None = None   # 決議 #38
+
+    def to_requirement(self) -> ResourceRequirement:
+        return ResourceRequirement(
+            total_resources=Resources(
+                cpu_cores=self.cpu_cores,
+                memory_mib=self.memory_mib,
+                storage_gb=self.storage_gb,
+            ),
+            node_role=self.node_role,
+            cluster_id=self.cluster_id,
+            vm_specs=self.vm_specs,
+            min_total_vms=self.min_total_vms,
+            max_total_vms=self.max_total_vms,
+            total_pods=self.pod_count,
+            network=self.network,
+            allowed_bm_types=self.allowed_bm_types,
+        )
+
+    def has_demand(self) -> bool:
+        return (
+            self.cpu_cores > 0 or self.memory_mib > 0 or self.storage_gb > 0
+            or self.pod_count > 0 or (self.min_total_vms or 0) > 0
+        )
+
+
+class CapacityPlanRequest(BaseModel):
+    """
+    Input for the multi-period planning endpoint. The horizon is derived from
+    the demand book (the distinct periods present, sorted) — never a fixed 12
+    months (決議 #27). Fabs are self-sufficient: each fab's months are solved
+    independently with its own rolling state (決議 #4).
+    """
+    demand_book: list[DemandEntry]
+    in_stock: list[Baremetal]
+    procurement_types: list[BaremetalType]
+    procurement_caps: list[ProcurementCap] = Field(default_factory=list)
+    committed_stock: list[CommittedStock] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class ShortfallDetail(BaseModel):
+    """Structured shortfall cause (決議 #33): what blocked, where, and why."""
+    cause: str                        # "capacity"|"anti_affinity"|"space"|"unknown"
+    bucket: str | None = None
+    dimension: str | None = None
+    needed: int | None = None
+    available: int | None = None
+    message: str = ""
+
+
+class BucketMonthCell(BaseModel):
+    """
+    Planning-report drill-down cell at the (fab, bucket, network, month)
+    granularity — never per BM/rack (決議 #21/#37). The in-stock figures are
+    the post-month state (what the next month starts from).
+    """
+    fab: str
+    bucket: str
+    network: str
+    period: str
+    node_adds: int = 0
+    bm_bought: int = 0
+    committed_used: int = 0
+    in_stock_total: Resources = Field(default_factory=Resources)
+    in_stock_used: Resources = Field(default_factory=Resources)
+    in_stock_available: Resources = Field(default_factory=Resources)
+
+
+class PeriodFabReport(BaseModel):
+    """One fab × month: headline counts + evidence + drill-down cells."""
+    fab: str
+    period: str
+    success: bool
+    # Headline (node adds vs BM buys are distinct counts, 決議 #23)
+    node_adds_total: int = 0
+    bm_procurement_total: int = 0
+    committed_bm_used: int = 0
+    procurement: list[ProcurementDecision] = Field(default_factory=list)
+    committed_used: list[ProcurementDecision] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    shortfalls: list[ShortfallDetail] = Field(default_factory=list)
+    solver_status: str = ""
+    # Health gauges (缺口 3c)
+    nominal_available: Resources = Field(default_factory=Resources)
+    remaining_node_slots: int | None = None
+    stranded_available: Resources | None = None
+    balance_after: dict[str, int] = Field(default_factory=dict)
+    cells: list[BucketMonthCell] = Field(default_factory=list)
+
+
+class CapacityReport(BaseModel):
+    """
+    Canonical planning output (決議 #24): Web UI and Excel render this JSON.
+    Months absent from the demand book are absent here too — absence means
+    "unplanned", not "zero growth" (決議 #26).
+    """
+    success: bool                     # every planned fab-month succeeded
+    by_fab_period: list[PeriodFabReport] = Field(default_factory=list)
+    # Budget view (fab × datacenter × month → bought BM count): the Capacity
+    # planner's budgeting projection; committed stock is already paid for and
+    # excluded.
+    budget_view: list[dict[str, Any]] = Field(default_factory=list)
+    totals: dict[str, Any] = Field(default_factory=dict)
+    solve_time_seconds: float = 0.0

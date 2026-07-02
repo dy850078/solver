@@ -695,6 +695,16 @@ POST /v1/capacity/plan
    **仍延後**：graceful partial（現以兩解比對報 `space`，非 soft coverage）。
 3. **Phase 3 — 多月 roll-forward + 多 fab 聚合**：完整 `CapacityPlanRequest/Report`、月級時間滾動、
    分層報表（頭條 + drill-down），新增 `/v1/capacity/plan`。
+   ✅ **已實作**（`capacity_planner.py::solve_capacity_horizon`、10 個 horizon 測試）：
+   稀疏帳本 `DemandEntry`（三態月份、horizon=帳本月份）、per-fab 獨立滾動
+   （`fab_topology_dimension`，預設 site）、逐月 roll-forward（庫存消耗、買/領機器
+   materialize 成下月 in-stock 並改 id 防碰撞、機位 `max_bm` 遞減、已購池 drain）、
+   `PeriodFabReport`（頭條 + `ShortfallDetail` + 健康指標）+ `(bucket, network)` cell
+   drill-down + `budget_view`（fab × DC × 月 → 台數）+ totals。
+   順帶補上決議 #38 `allowed_bm_types`（DemandEntry / ResourceRequirement）。
+   **註**：失敗月份的需求**不會**帶入下月（修輸入重算，文件化於 docstring）；
+   graceful partial 仍為未來項。cell 的 node_adds 為總數（spec 細分在 period 層
+   `split_decisions`），較設計草案簡化。
 4. **Phase 4（未來，超出本提案）— 跨 fab 調撥**：見 Decision Log 末。
 
 **回滾策略**：各 Phase 都是 additive（新欄位預設停用 / 新 endpoint）。

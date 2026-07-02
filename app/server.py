@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 
 from . import examples_api, mockgen
 from .models import (
+    CapacityPlanRequest,
+    CapacityReport,
     PlacementRequest,
     PlacementResult,
     ProcurementRequest,
@@ -30,7 +32,7 @@ from .models import (
     SplitPlacementRequest,
     SplitPlacementResult,
 )
-from .capacity_planner import solve_capacity_plan
+from .capacity_planner import solve_capacity_horizon, solve_capacity_plan
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
 
@@ -115,6 +117,12 @@ def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
 def procure(request: ProcurementRequest) -> ProcurementResult:
     """Size procurement: given demand + in-stock, how many BMs of each type to buy."""
     return solve_capacity_plan(request)
+
+
+@api.post("/v1/capacity/plan", response_model=CapacityReport)
+def plan(request: CapacityPlanRequest) -> CapacityReport:
+    """Multi-period capacity plan: sparse demand book → per-fab monthly roll-forward report."""
+    return solve_capacity_horizon(request)
 
 
 @api.get("/health")

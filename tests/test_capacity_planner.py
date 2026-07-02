@@ -6,7 +6,9 @@ Run: pytest tests/test_capacity_planner.py -v
 from app.models import (
     AntiAffinityRule,
     BaremetalType,
+    CapacityPlanRequest,
     CommittedStock,
+    DemandEntry,
     GroupSelector,
     NodeRole,
     PlacementRequest,
@@ -18,7 +20,7 @@ from app.models import (
     SplitPlacementRequest,
     VM,
 )
-from app.capacity_planner import solve_capacity_plan
+from app.capacity_planner import solve_capacity_horizon, solve_capacity_plan
 from app.solver import VMPlacementSolver
 from app.split_solver import solve_split_placement
 
@@ -617,6 +619,201 @@ class TestReviewFixes:
             config=SolverConfig(auto_generate_anti_affinity=False),
         ))
         assert r2.success  # matching network places normally
+
+
+# ===========================================================================
+# Multi-period horizon planning (Phase 3)
+# ===========================================================================
+
+def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
+          role=NodeRole.WORKER, spec=None, fab="", network="", allowed=None):
+    return DemandEntry(
+        cluster_id=cluster, node_role=role, period=period,
+        cpu_cores=cpu, memory_mib=mem, storage_gb=disk, pod_count=pods,
+        vm_specs=[spec] if spec else None,
+        fab=fab, network=network, allowed_bm_types=allowed,
+    )
+
+
+def plan(book, in_stock, types, caps=None, committed=None, **cfg):
+    defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
+    defaults.update(cfg)
+    return solve_capacity_horizon(CapacityPlanRequest(
+        demand_book=book,
+        in_stock=in_stock,
+        procurement_types=types,
+        procurement_caps=caps or [],
+        committed_stock=committed or [],
+        config=SolverConfig(**defaults),
+    ))
+
+
+class TestCapacityHorizon:
+
+    def test_state_rolls_forward_across_months(self):
+        """Month 1 fills the in-stock BM; month 2's identical demand buys."""
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].bm_procurement_total == 0
+        assert by_period["2026-02"].bm_procurement_total == 1
+
+    def test_bought_bm_serves_later_months(self):
+        """A BM bought in month 1 with spare room hosts month 2's demand."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-02", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].bm_procurement_total == 1
+        assert by_period["2026-02"].bm_procurement_total == 0  # reuses acq BM
+
+    def test_caps_consumed_across_months(self):
+        """(決議 #30) A 1-slot bucket bought out in month 1 leaves month 2's
+        buy demand with a `space` shortfall."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        caps = [ProcurementCap(bucket="ag-1", max_bm=1)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, caps=caps)
+
+        assert not r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].success
+        assert by_period["2026-01"].bm_procurement_total == 1
+        m2 = by_period["2026-02"]
+        assert not m2.success
+        assert m2.shortfalls and m2.shortfalls[0].cause == "space"
+
+    def test_fabs_are_independent(self):
+        """(決議 #4) fab A's overflow buys instead of using fab B's idle BM."""
+        bm_a = make_bm("bm-a", cpu=64, mem=256_000, disk=2000)
+        bm_a.topology = bm_a.topology.model_copy(update={"site": "fab-a"})
+        bm_b = make_bm("bm-b", cpu=64, mem=256_000, disk=2000)
+        bm_b.topology = bm_b.topology.model_copy(update={"site": "fab-b"})
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=128, spec=SPEC_8, fab="fab-a"),
+                entry("2026-01", cpu=32, spec=SPEC_8, fab="fab-b")]
+
+        r = plan(book, [bm_a, bm_b], types)
+
+        assert r.success
+        by_fab = {p.fab: p for p in r.by_fab_period}
+        assert by_fab["fab-a"].bm_procurement_total == 1
+        assert by_fab["fab-b"].bm_procurement_total == 0
+
+    def test_sparse_horizon_and_no_growth_month(self):
+        """(決議 #26/#27) Absent months are absent (unplanned); an all-zero
+        row is a planned no-growth month with zero adds."""
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-03")]  # planned, explicitly no growth
+
+        r = plan(book, in_stock, types)
+
+        assert r.success
+        periods = [(p.period, p.node_adds_total) for p in r.by_fab_period]
+        assert periods == [("2026-01", 2), ("2026-03", 0)]  # no 2026-02 row
+
+    def test_committed_pool_drains_across_months(self):
+        """(缺口 3h × roll-forward) One owned machine serves month 1; month 2
+        must buy — the pool doesn't double-serve."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].committed_bm_used == 1
+        assert by_period["2026-01"].bm_procurement_total == 0
+        assert by_period["2026-02"].committed_bm_used == 0
+        assert by_period["2026-02"].bm_procurement_total == 1
+
+    def test_budget_view_and_totals(self):
+        """budget_view rolls bought counts up to fab × datacenter × month."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=24, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types)
+
+        assert r.success
+        assert r.totals["bm_procurement"] == 1
+        assert r.budget_view == [{
+            "fab": "", "datacenter": "dc-1", "period": "2026-01", "bm_count": 1,
+        }]
+
+    def test_allowed_bm_types_restricts_buying(self):
+        """(決議 #38) A cluster limited to 'small' buys 4 smalls, not 1 big."""
+        types = [make_type("small", 16, 64_000, 400),
+                 make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8, allowed=["small"])]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        m1 = r.by_fab_period[0]
+        assert {d.type_id for d in m1.procurement} == {"small"}
+        assert m1.bm_procurement_total == 4
+
+    def test_cells_report_post_month_state(self):
+        """Cells carry the (bucket, network) in-stock snapshot after the
+        month, plus that month's adds."""
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types)
+
+        cell = r.by_fab_period[0].cells[0]
+        assert (cell.bucket, cell.network) == ("ag-1", "")
+        assert cell.node_adds == 2
+        assert cell.bm_bought == 0
+        assert cell.in_stock_used.cpu_cores == 16
+        assert cell.in_stock_available.cpu_cores == 48
+
+
+class TestPlanEndpoint:
+
+    def test_endpoint_smoke(self, client):
+        body = {
+            "demand_book": [{
+                "cluster_id": "c1",
+                "period": "2026-01",
+                "cpu_cores": 64,
+                "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
+            }],
+            "in_stock": [{
+                "id": "bm-1",
+                "total_capacity": {"cpu_cores": 16, "memory_mib": 256000, "storage_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "procurement_types": [{
+                "type_id": "big",
+                "capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        }
+        resp = client.post("/v1/capacity/plan", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"]
+        assert data["totals"]["bm_procurement"] >= 1
 
 
 # ===========================================================================
