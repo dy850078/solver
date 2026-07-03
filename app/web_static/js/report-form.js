@@ -15,7 +15,10 @@
  * existing field names (procurement_types / type_id).
  */
 
-import { analyzeDemandCsv, parseDemandCsv, exportDemandCsv } from "./demand-csv.js";
+import {
+  DEMAND_COLUMNS, DEMAND_HEADER_LINE,
+  analyzeDemandCsv, exportDemandCsv, headerish, validateEntries,
+} from "./demand-csv.js";
 
 const $ = (id) => document.getElementById(id);
 const GiB = 1024; // MiB per GiB
@@ -128,34 +131,129 @@ function modelRow(m, i) {
   </div>`;
 }
 
-function entryRow(e, i) {
-  const roleOpts = ROLES.map((r) =>
-    `<option value="${r}"${r === e.node_role ? " selected" : ""}>${r}</option>`).join("");
-  return `<div class="frow-card">
-    <div class="frow-card__head">
-      <span class="frow-card__title">#${i + 1}</span>
-      ${delBtn("entries", i)}
-    </div>
-    <div class="frow frow--3">
-      <label class="mini"><span class="mini__label">Month</span>
-        <input class="input" type="month" value="${esc(e.period)}"
-          data-s="entries" data-i="${i}" data-f="period"></label>
-      ${txt("entries", i, "cluster_id", e.cluster_id, "Cluster")}
-      ${txt("entries", i, "fab", e.fab, "Fab", "blank = single-fab")}
-    </div>
-    <div class="frow frow--4">
-      ${num("entries", i, "cpu", e.cpu, "vCore")}
-      ${num("entries", i, "memGiB", e.memGiB, "Mem GiB")}
-      ${num("entries", i, "disk", e.disk, "Disk GB")}
-      ${num("entries", i, "pods", e.pods, "Pods ≥")}
-    </div>
-    <div class="frow frow--3">
-      <label class="mini"><span class="mini__label">Role</span>
-        <select class="select" data-s="entries" data-i="${i}" data-f="node_role">${roleOpts}</select></label>
-      ${specSelect("entries", i, "specIdx", e.specIdx, "VM spec", { withAny: true })}
-      ${txt("entries", i, "network", e.network, "Network (BGP)", "blank = any")}
-    </div>
-  </div>`;
+/* ── Demand book grid (entry-first: the grid IS state.entries) ── */
+
+const GRID_COLS = [
+  { f: "fab",        type: "text",  label: "Fab" },
+  { f: "cluster_id", type: "text",  label: "Cluster", cls: "col-cluster" },
+  { f: "node_role",  type: "role",  label: "Role" },
+  { f: "period",     type: "month", label: "Month" },
+  { f: "cpu",        type: "num",   label: "vCore",   cls: "col-num" },
+  { f: "memGiB",     type: "num",   label: "Mem GiB", cls: "col-num", step: "any" },
+  { f: "disk",       type: "num",   label: "Disk GB", cls: "col-num" },
+  { f: "pods",       type: "num",   label: "Pods ≥",  cls: "col-num" },
+  { f: "specIdx",    type: "spec",  label: "VM spec", cls: "col-spec" },
+  { f: "network",    type: "text",  label: "Network" },
+];
+const GRID_RENDER_CAP = 200;
+const gridView = { fabs: new Set(), q: "" };
+
+const emptyEntry = () => ({ cluster_id: "", fab: "", period: "", node_role: "worker",
+                            cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: -1, network: "" });
+
+function gridCell(col, e, i, ghost) {
+  const bind = ghost ? `data-ghost="1" data-f="${col.f}"`
+                     : `data-s="entries" data-i="${i}" data-f="${col.f}"`;
+  const v = e[col.f];
+  switch (col.type) {
+    case "num":
+      return `<input class="dgrid-input" type="number" min="0" step="${col.step || 1}"
+        value="${v ?? 0}" ${bind}>`;
+    case "month":
+      return `<input class="dgrid-input" type="month" value="${esc(v ?? "")}" ${bind}>`;
+    case "role":
+      return `<select class="dgrid-input" ${bind}>${ROLES.map((r) =>
+        `<option value="${r}"${r === v ? " selected" : ""}>${r}</option>`).join("")}</select>`;
+    case "spec": {
+      const opts = [`<option value="-1"${v === -1 ? " selected" : ""}>Any (solver picks)</option>`,
+        ...state.specs.map((s, si) =>
+          `<option value="${si}"${v === si ? " selected" : ""}>${esc(specLabel(s))}</option>`)];
+      return `<select class="dgrid-input" ${bind}>${opts.join("")}</select>`;
+    }
+    default:
+      return `<input class="dgrid-input" type="text" value="${esc(v ?? "")}" ${bind}>`;
+  }
+}
+
+const gridActionsHtml = (i) => `
+  <button type="button" class="dgrid-act" data-act="dupm" data-i="${i}" title="Duplicate to next month">+1M</button>
+  <button type="button" class="dgrid-act" data-act="dup" data-i="${i}" title="Duplicate row">⧉</button>
+  <button type="button" class="dgrid-act dgrid-act--del" data-act="del" data-i="${i}" title="Delete row">✕</button>`;
+
+const ghostRowHtml = () => `<tr class="dgrid-row--ghost">
+  ${GRID_COLS.map((c) => `<td class="${c.cls || ""}">${gridCell(c, emptyEntry(), -1, true)}</td>`).join("")}
+  <td></td><td class="dgrid-status" style="color:var(--text-subtle)">new row — just type</td>
+</tr>`;
+
+const entryInView = (e) =>
+  (!gridView.fabs.size || gridView.fabs.has(e.fab || "")) &&
+  (!gridView.q || (e.cluster_id || "").toLowerCase().includes(gridView.q));
+
+function renderGridFabChips() {
+  const bar = $("demand-fab-filter");
+  const fabs = [...new Set(state.entries.map((e) => e.fab || ""))];
+  if (fabs.length < 2) { bar.innerHTML = ""; gridView.fabs.clear(); return; }
+  bar.innerHTML =
+    `<button type="button" class="fchip${gridView.fabs.size ? "" : " fchip--on"}" data-fab="*">All fabs</button>` +
+    fabs.map((f) => `<button type="button" class="fchip${gridView.fabs.has(f) ? " fchip--on" : ""}"
+        data-fab="${esc(f)}">${esc(f || "(single-fab)")}</button>`).join("");
+}
+
+function updateDemandCount(rowErrors, bookErrors) {
+  const bad = rowErrors.filter((r) => r.length).length;
+  const fabs = new Set(state.entries.map((e) => e.fab || "(single)")).size;
+  const clusters = new Set(state.entries.map((e) => e.cluster_id).filter(Boolean)).size;
+  $("demand-count").textContent =
+    `${state.entries.length} entries · ${fabs} fab(s) · ${clusters} cluster(s)`
+    + (bad ? ` · ${bad} to fix` : "");
+  const box = $("demand-io-msg");
+  if (bookErrors.length) {
+    box.className = "alert alert--error";
+    box.innerHTML = bookErrors.map(esc).join("<br>");
+    box.classList.remove("hidden");
+  } else if (box.classList.contains("alert--error")) {
+    box.classList.add("hidden");
+  }
+}
+
+function renderDemandGrid() {
+  const host = $("demand-grid");
+  const { rowErrors, bookErrors } = validateEntries(state.entries);
+  const visible = [];
+  state.entries.forEach((e, i) => { if (entryInView(e)) visible.push(i); });
+  const shown = visible.slice(0, GRID_RENDER_CAP);
+
+  const ths = GRID_COLS.map((c) => `<th class="${c.cls || ""}">${c.label}</th>`).join("");
+  const rows = shown.map((i) => {
+    const errs = rowErrors[i];
+    return `<tr class="${errs.length ? "dgrid-row--bad" : ""}" data-row="${i}">
+      ${GRID_COLS.map((c) => `<td class="${c.cls || ""}">${gridCell(c, state.entries[i], i, false)}</td>`).join("")}
+      <td style="white-space:nowrap">${gridActionsHtml(i)}</td>
+      <td class="dgrid-status">${errs.length ? esc(errs.join(" · ")) : ""}</td>
+    </tr>`;
+  }).join("");
+  const capNote = visible.length > shown.length
+    ? `<tr><td colspan="${GRID_COLS.length + 2}" class="dgrid-cap">Showing ${shown.length} of ${
+        visible.length} matching rows — refine the filter to see the rest (every row is still submitted).</td></tr>`
+    : "";
+
+  host.innerHTML = `<table class="tbl dgrid">
+    <thead><tr>${ths}<th></th><th>Status</th></tr></thead>
+    <tbody>${rows}${capNote}${ghostRowHtml()}</tbody>
+  </table>`;
+  renderGridFabChips();
+  updateDemandCount(rowErrors, bookErrors);
+}
+
+/* Re-check without rebuilding the DOM (keeps focus while editing). */
+function refreshGridValidation() {
+  const { rowErrors, bookErrors } = validateEntries(state.entries);
+  $("demand-grid").querySelectorAll("tbody tr[data-row]").forEach((tr) => {
+    const errs = rowErrors[+tr.dataset.row] || [];
+    tr.classList.toggle("dgrid-row--bad", !!errs.length);
+    tr.querySelector(".dgrid-status").textContent = errs.join(" · ");
+  });
+  updateDemandCount(rowErrors, bookErrors);
 }
 
 function stockRow(g, i) {
@@ -204,13 +302,14 @@ function committedRow(c, i) {
 const SECTIONS = {
   specs: { el: "spec-rows", row: specRow, deps: ["entries"] },
   models: { el: "model-rows", row: modelRow, deps: ["stock", "committed"] },
-  entries: { el: "demand-rows", row: entryRow, deps: [] },
+  entries: { el: "demand-grid", row: null, deps: [] },   // rendered as a grid
   stock: { el: "stock-rows", row: stockRow, deps: [] },
   caps: { el: "cap-rows", row: capRow, deps: [] },
   committed: { el: "committed-rows", row: committedRow, deps: [] },
 };
 
 function renderSection(name) {
+  if (name === "entries") { renderDemandGrid(); return; }
   const sec = SECTIONS[name];
   const host = $(sec.el);
   host.innerHTML = state[name].map((item, i) => sec.row(item, i)).join("")
@@ -403,37 +502,76 @@ export function loadIntoForm(json) {
   $("cfg-autoaa").checked = cfg.auto_generate_anti_affinity !== false;
 
   if (state.caps.length || state.committed.length) $("supply-adv").open = true;
+  resetGridView();
   renderAll();
 }
 
 /* ── Wiring ── */
 
+const readVal = (t, f) =>
+  t.type === "checkbox" ? t.checked
+  : f.endsWith("Idx") ? parseInt(t.value, 10)
+  : t.type === "number" ? +t.value
+  : t.value;
+
+const nextMonth = (period) => {
+  const m = /^(\d{4})-(\d{2})$/.exec(period || "");
+  if (!m) return null;
+  const d = Number(m[1]) * 12 + (Number(m[2]) - 1) + 1;
+  return `${Math.floor(d / 12)}-${String((d % 12) + 1).padStart(2, "0")}`;
+};
+
+/* Typing in the ghost row turns it into a real entry (keeping focus) and
+ * appends a fresh ghost below. */
+function promoteGhost(t) {
+  const e = emptyEntry();
+  e[t.dataset.f] = readVal(t, t.dataset.f);
+  state.entries.push(e);
+  const i = state.entries.length - 1;
+  const tr = t.closest("tr");
+  tr.classList.remove("dgrid-row--ghost");
+  tr.dataset.row = i;
+  tr.querySelectorAll("[data-ghost]").forEach((inp) => {
+    inp.removeAttribute("data-ghost");
+    inp.dataset.s = "entries";
+    inp.dataset.i = i;
+  });
+  tr.children[GRID_COLS.length].innerHTML = gridActionsHtml(i);
+  tr.querySelector(".dgrid-status").textContent = "";
+  tr.insertAdjacentHTML("afterend", ghostRowHtml());
+  refreshGridValidation();
+}
+
+function resetGridView() {
+  gridView.fabs.clear();
+  gridView.q = "";
+  const search = $("demand-search");
+  if (search) search.value = "";
+  $("demand-io-msg").classList.add("hidden");   // stale import/paste notes
+}
+
 export function initForm() {
   const sidebar = document.querySelector(".sidebar");
+  const demandCard = $("demand-card");
 
-  // Field edits → state.
-  sidebar.addEventListener("input", (ev) => {
+  // Field edits → state (same delegation for the sidebar and the grid).
+  const onFieldInput = (ev) => {
     const t = ev.target;
+    if (t.dataset.ghost) { promoteGhost(t); return; }
     const { s, i, f } = t.dataset;
     if (!s || !SECTIONS[s]) return;
-    let v;
-    if (t.type === "checkbox") v = t.checked;
-    else if (f.endsWith("Idx")) v = parseInt(t.value, 10);
-    else if (t.type === "number") v = +t.value;
-    else v = t.value;
-    state[s][+i][f] = v;
-  });
-
+    state[s][+i][f] = readVal(t, f);
+  };
   // Catalog edits refresh the selects that reference them (on blur/commit,
-  // so typing a name doesn't lose focus).
-  sidebar.addEventListener("change", (ev) => {
+  // so typing a name doesn't lose focus); grid edits re-validate in place.
+  const onFieldChange = (ev) => {
     const { s } = ev.target.dataset;
+    if (s === "entries") { refreshGridValidation(); return; }
     if (!s || !SECTIONS[s]?.deps?.length) return;
     for (const dep of SECTIONS[s].deps) renderSection(dep);
-  });
-
-  // Row remove.
-  sidebar.addEventListener("click", (ev) => {
+  };
+  // Row remove (sidebar cards).
+  const onRowDelete = (ev) => {
     const btn = ev.target.closest("[data-del]");
     if (!btn) return;
     const s = btn.dataset.del;
@@ -443,54 +581,98 @@ export function initForm() {
     if (s === "models") fixupIndexes("modelIdx", i);
     renderSection(s);
     for (const dep of SECTIONS[s].deps || []) renderSection(dep);
-  });
+  };
+  for (const root of [sidebar, demandCard]) {
+    root.addEventListener("input", onFieldInput);
+    root.addEventListener("change", onFieldChange);
+    root.addEventListener("click", onRowDelete);
+  }
 
   const adders = { "add-spec": "specs", "add-model": "models",
-                   "add-entry": "entries", "add-stock": "stock",
+                   "add-stock": "stock",
                    "add-cap": "caps", "add-committed": "committed" };
   for (const [btnId, s] of Object.entries(adders)) {
     $(btnId).addEventListener("click", () => {
-      const item = blank[s]();
-      // New demand entries copy the previous row for fast month-over-month
-      // entry.
-      if (s === "entries" && state.entries.length) {
-        Object.assign(item, structuredClone(
-          state.entries[state.entries.length - 1]));
-      }
-      state[s].push(item);
+      state[s].push(blank[s]());
       renderSection(s);
       for (const dep of SECTIONS[s].deps || []) renderSection(dep);
     });
   }
 
-  // Demand book CSV import / export.
+  // Grid row actions: duplicate (to next month), delete.
+  $("demand-grid").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".dgrid-act");
+    if (!btn) return;
+    const i = +btn.dataset.i;
+    if (btn.dataset.act === "del") {
+      state.entries.splice(i, 1);
+    } else {
+      const copy = structuredClone(state.entries[i]);
+      if (btn.dataset.act === "dupm") copy.period = nextMonth(copy.period) ?? copy.period;
+      state.entries.splice(i + 1, 0, copy);
+    }
+    renderDemandGrid();
+  });
+
+  // Grid filters.
+  $("demand-fab-filter").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".fchip");
+    if (!btn) return;
+    if (btn.dataset.fab === "*") gridView.fabs.clear();
+    else {
+      const f = btn.dataset.fab;
+      gridView.fabs.has(f) ? gridView.fabs.delete(f) : gridView.fabs.add(f);
+      const all = new Set(state.entries.map((e) => e.fab || ""));
+      if (gridView.fabs.size === all.size) gridView.fabs.clear();
+    }
+    renderDemandGrid();
+  });
+  $("demand-search").addEventListener("input", (ev) => {
+    gridView.q = ev.target.value.trim().toLowerCase();
+    renderDemandGrid();
+  });
+
+  // Demand book CSV messages + paste-to-append.
   const ioMsg = (kind, html) => {
     const box = $("demand-io-msg");
     box.className = `alert${kind === "error" ? " alert--error" : ""}`;
     box.innerHTML = html;
     box.classList.remove("hidden");
   };
-  $("demand-import").addEventListener("click", () => {
-    const { entries, errors, warnings, summary } =
-      parseDemandCsv($("demand-csv").value, state.specs);
-    if (errors.length) {
-      ioMsg("error", `<b>Not imported — fix and retry:</b><br>${
-        errors.slice(0, 20).map(esc).join("<br>")}${
-        errors.length > 20 ? `<br>…and ${errors.length - 20} more` : ""}`);
+
+  // Pasting a multi-cell range onto the grid APPENDS rows: with a header
+  // it maps by name, without one by the grid's column order. (Import
+  // (replace)… is the whole-book swap.)
+  $("demand-grid").addEventListener("paste", (ev) => {
+    const text = ev.clipboardData?.getData("text") ?? "";
+    if (!/[\t\n]/.test(text)) return;   // single value → into the focused cell
+    ev.preventDefault();
+    const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
+    const full = headerish(text.split("\n", 1)[0], delim)
+      ? text
+      : DEMAND_COLUMNS.join(delim) + "\n" + text;
+    const a = analyzeDemandCsv(full, state.specs);
+    const flat = [...a.globalErrors,
+      ...a.rows.flatMap((r) => r.errors.map((m) => `Row ${r.line}: ${m}`))];
+    if (flat.length || !a.entries.length) {
+      ioMsg("error", `<b>Paste not applied:</b><br>${
+        flat.slice(0, 12).map(esc).join("<br>") || "no data rows found"}`);
       return;
     }
-    state.entries = entries;
-    renderSection("entries");
-    ioMsg("ok", `Imported <b>${summary.entries}</b> entries · ${summary.fabs} fab(s) · ${
-      summary.clusters} cluster(s) · ${summary.from} → ${summary.to}${
-      warnings.length ? `<br>${warnings.map(esc).join("<br>")}` : ""}`);
+    state.entries.push(...a.entries);
+    // Message first: a book-level error found by the re-render (e.g. mixed
+    // blank/named fabs) must win over the success note, not be masked by it.
+    ioMsg("ok", `Appended <b>${a.entries.length}</b> row(s) from paste.`);
+    renderDemandGrid();
   });
+
   $("demand-upload").addEventListener("click", () => $("demand-upload-input").click());
   $("demand-upload-input").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (file) {
-      $("demand-csv").value = await file.text();
-      $("demand-import").click();
+      dlgText = await file.text();
+      renderCsvDialog();
+      $("csv-dialog").showModal();
     }
     e.target.value = "";
   });
@@ -515,10 +697,18 @@ export function initForm() {
     const importBtn = $("csv-dialog-import");
     msgBox.classList.add("hidden");
 
-    if (!dlgText.trim()) {
-      host.innerHTML = `<div class="csv-empty">Paste your Excel range here (Ctrl/⌘+V)<br>
-        <span style="font-size:11.5px">first row must be the header — e.g.
-        <code>cluster · period · cpu_cores · memory_gib …</code></span></div>`;
+    if (!dlgText.trim()) dlgText = DEMAND_HEADER_LINE;
+
+    // Header-only: show the expected columns and invite a data-only paste.
+    const lines = dlgText.trim().split("\n").filter((l) => l.trim());
+    if (lines.length === 1) {
+      const delim = lines[0].includes("\t") ? "\t" : ",";
+      const cols = lines[0].split(delim);
+      host.innerHTML = `<div class="table-wrap"><table class="tbl csv-table">
+        <thead><tr>${cols.map((h) => `<th>${esc(h.trim())}</th>`).join("")}<th>Status</th></tr></thead>
+        <tbody><tr><td colspan="${cols.length + 1}" class="dgrid-cap">
+          The header is already set — copy just the data rows from Excel and paste here (Ctrl/⌘+V).
+        </td></tr></tbody></table></div>`;
       summaryEl.textContent = "";
       importBtn.disabled = true;
       return;
@@ -561,29 +751,41 @@ export function initForm() {
     const clean = (s) => s.replaceAll("\t", " ").replaceAll("\n", " ").trim();
     const header = [...table.querySelectorAll("thead th")].slice(0, -1)
       .map((th) => clean(th.textContent));
-    const lines = [...table.querySelectorAll("tbody tr")].map((tr) =>
-      [...tr.querySelectorAll("td")].slice(0, -1)
+    const lines = [...table.querySelectorAll("tbody tr")]
+      .filter((tr) => !tr.querySelector(".dgrid-cap"))
+      .map((tr) => [...tr.querySelectorAll("td")].slice(0, -1)
         .map((td) => clean(td.textContent)).join("\t"));
     return [header.join("\t"), ...lines].join("\n");
   };
 
+  // Opens seeded with the current book (or just the header when empty), so
+  // users can review before replacing — or paste data rows straight in.
   $("demand-table-open").addEventListener("click", () => {
-    dlgText = $("demand-csv").value;
+    dlgText = state.entries.length
+      ? exportDemandCsv(state.entries, state.specs).trimEnd()
+      : DEMAND_HEADER_LINE;
     renderCsvDialog();
     $("csv-dialog").showModal();
   });
   $("csv-dialog-close").addEventListener("click", () => $("csv-dialog").close());
   $("csv-dialog-cancel").addEventListener("click", () => $("csv-dialog").close());
 
-  // A multi-cell paste (has tabs/newlines) replaces the whole grid; a
-  // single-value paste falls through into the focused cell.
+  // Multi-cell paste: WITH a header line it replaces the whole book; data
+  // only (no header) replaces the data under the kept header. A single
+  // value falls through into the focused cell.
   $("csv-dialog").addEventListener("paste", (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
-    if (/[\t\n]/.test(text) || !dlgText.trim()) {
-      ev.preventDefault();
+    if (!/[\t\n]/.test(text)) return;
+    ev.preventDefault();
+    const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
+    if (headerish(text.split("\n", 1)[0], delim)) {
       dlgText = text;
-      renderCsvDialog();
+    } else {
+      const headerLine = dlgText.trim().split("\n")[0] || DEMAND_HEADER_LINE;
+      const hd = headerLine.includes("\t") ? "\t" : ",";
+      dlgText = headerLine.split(hd).map((s) => s.trim()).join(delim) + "\n" + text;
     }
+    renderCsvDialog();
   });
 
   // Cell edited → re-serialize the grid and re-validate.
@@ -599,8 +801,8 @@ export function initForm() {
     const a = analyzeDemandCsv(dlgText, state.specs);
     if (!a.entries.length) return;
     state.entries = a.entries;
+    resetGridView();
     renderSection("entries");
-    $("demand-csv").value = dlgText;   // keep the raw textarea in sync
     $("csv-dialog").close();
     ioMsg("ok", `Imported <b>${a.summary.entries}</b> entries · ${a.summary.fabs} fab(s) · ${
       a.summary.clusters} cluster(s) · ${a.summary.from} → ${a.summary.to}${
@@ -631,7 +833,10 @@ export function initForm() {
   state.models = [
     { model_id: "std-64c", cpu: 64, memGiB: 256, disk: 2000, fab: "", buyable: true },
   ];
-  state.entries = [{ ...blank.entries(), specIdx: 1 }];
+  // Starter row defaults to the current month so a fresh page has no
+  // "month is required" error before the user touches anything.
+  state.entries = [{ ...blank.entries(), specIdx: 1,
+                     period: new Date().toISOString().slice(0, 7) }];
   state.stock = [blank.stock()];
   renderAll();
 }

@@ -86,32 +86,6 @@
         <div id="model-rows" class="form-rows"></div>
         <button id="add-model" type="button" class="btn btn--add">+ Add BM model</button>
 
-        <p class="subhead" style="margin-top:16px">Demand — one row per (cluster, month) increment</p>
-        <div id="demand-rows" class="form-rows form-rows--capped"></div>
-        <button id="add-entry" type="button" class="btn btn--add">+ Add demand entry</button>
-
-        <details class="adv" id="demand-io" style="margin-top:10px">
-          <summary>Import / Export demand — CSV · Excel paste</summary>
-          <p class="muted" style="font-size:11.5px; margin:8px 0 6px">
-            Long format, one row per (fab, cluster, role, month). Columns:
-            <code>fab, cluster, role, period, cpu_cores, memory_gib, storage_gb, pods, spec, network</code>
-            — cluster &amp; period required, order free, unknown columns ignored,
-            spec matched by catalog name (blank = Any). Import replaces all demand entries.
-          </p>
-          <button id="demand-table-open" type="button" class="btn btn--add btn--block" style="margin-bottom:8px">
-            Open table editor — paste &amp; check visually…
-          </button>
-          <textarea id="demand-csv" class="editor editor--short" spellcheck="false"
-            placeholder="Paste CSV or Excel cells here…&#10;fab,cluster,role,period,cpu_cores,memory_gib&#10;fab-a,cluster-app,worker,2026-01,64,125"></textarea>
-          <div class="frow" style="grid-template-columns:1fr 1fr 1fr; margin-top:8px">
-            <button id="demand-import" type="button" class="btn btn--add">Import (replace)</button>
-            <button id="demand-upload" type="button" class="btn btn--add">Upload file…</button>
-            <button id="demand-export" type="button" class="btn btn--add">Export CSV</button>
-          </div>
-          <input id="demand-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
-          <div id="demand-io-msg" class="alert hidden" style="margin-top:8px"></div>
-        </details>
-
         <p class="subhead" style="margin-top:16px">In-stock — existing machines (grouped)</p>
         <div id="stock-rows" class="form-rows"></div>
         <button id="add-stock" type="button" class="btn btn--add">+ Add machine group</button>
@@ -180,6 +154,32 @@
   </aside>
 
   <div class="content">
+
+    <section id="demand-card" class="card">
+      <header class="card__header">
+        <h2 class="card__title">Demand book</h2>
+        <span class="card__hint" id="demand-count"></span>
+        <div class="card__header-right">
+          <button id="demand-table-open" type="button" class="btn btn--small">Import (replace)…</button>
+          <button id="demand-upload" type="button" class="btn btn--small">Upload file…</button>
+          <button id="demand-export" type="button" class="btn btn--small">Export CSV</button>
+          <input id="demand-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
+        </div>
+      </header>
+      <div class="card__body">
+        <div class="demand-toolbar">
+          <div id="demand-fab-filter" class="chips-row"></div>
+          <input id="demand-search" class="input demand-search" type="search"
+            placeholder="Filter clusters…" spellcheck="false">
+        </div>
+        <div id="demand-grid" class="table-wrap dgrid-wrap"></div>
+        <p class="muted" style="font-size:11px; margin:8px 0 0">
+          Type in the last row to add · paste an Excel range anywhere in the grid to append
+          (with a header row, or bare values in column order) · Import (replace)… swaps the whole book.
+        </p>
+        <div id="demand-io-msg" class="alert hidden" style="margin-top:8px"></div>
+      </div>
+    </section>
 
     <div id="stats" class="stats hidden"></div>
 

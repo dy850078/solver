@@ -19,6 +19,13 @@
 
 const ROLES = new Set(["worker", "master", "learner", "infra", "l4lb-storage", "bastion"]);
 
+/* Canonical column order — the grid's visual order and the positional
+ * mapping used for headerless pastes. */
+export const DEMAND_COLUMNS =
+  ["fab", "cluster", "role", "period", "cpu_cores", "memory_gib",
+   "storage_gb", "pods", "spec", "network"];
+export const DEMAND_HEADER_LINE = DEMAND_COLUMNS.join(",");
+
 // canonical field -> accepted header spellings
 const HEADER_ALIASES = {
   fab: ["fab", "site"],
@@ -183,6 +190,43 @@ export function analyzeDemandCsv(text, specs) {
     };
   }
   return base;
+}
+
+/** Does this first pasted line look like a header row (vs a data row)?
+ * ≥2 cells matching known column names = header. */
+export function headerish(line, delim) {
+  const hits = line.split(delim).filter((c) => {
+    const key = c.trim().toLowerCase();
+    return Object.values(HEADER_ALIASES).some((names) => names.includes(key));
+  }).length;
+  return hits >= 2;
+}
+
+/**
+ * Book-level validation of form-shaped entries (the grid's source of
+ * truth). Widget-constrained fields (role, spec) can't go wrong here;
+ * this covers requiredness, duplicate keys, and fab-mode mixing.
+ * @returns {rowErrors: string[][], bookErrors: string[]}
+ */
+export function validateEntries(entries) {
+  const rowErrors = entries.map(() => []);
+  const firstOfKey = new Map();
+  entries.forEach((e, i) => {
+    if (!(e.cluster_id || "").trim()) rowErrors[i].push("cluster is required");
+    if (!/^\d{4}-\d{2}$/.test(e.period || "")) rowErrors[i].push("month is required");
+    if (rowErrors[i].length) return;
+    const key = [e.fab || "", e.cluster_id.trim(), e.node_role, e.period].join("|");
+    if (firstOfKey.has(key)) {
+      rowErrors[i].push(`duplicate of row ${firstOfKey.get(key) + 1} (same fab, cluster, role, month)`);
+    } else {
+      firstOfKey.set(key, i);
+    }
+  });
+  const bookErrors = [];
+  const fabs = new Set(entries.filter((_, i) => !rowErrors[i].length).map((e) => e.fab || ""));
+  if (fabs.has("") && fabs.size > 1)
+    bookErrors.push('Mixed blank and named "fab" values: leave fab blank everywhere (single-fab) or name it everywhere.');
+  return { rowErrors, bookErrors };
 }
 
 /** Flat-text contract: errors as "Row N: message" strings. */
