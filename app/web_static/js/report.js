@@ -93,16 +93,92 @@ function renderStats(report) {
   $("stats").classList.remove("hidden");
 }
 
-/* ── Fab × Month table ── */
-function renderGrid(report) {
+/* ── Fab × Month: matrix + list views with a fab filter ──
+ * `view.fabs` empty = all fabs shown. data-idx is always the absolute index
+ * into report.by_fab_period, so selection survives view/filter switches. */
+let currentReport = null;
+let selectedIdx = null;
+const view = { mode: "matrix", fabs: new Set() };
+
+const fabLabel = (f) => f || "(single fab)";
+
+function pivotAxes(report) {
+  const periods = [...new Set(report.by_fab_period.map((p) => p.period))].sort();
+  const fabs = [...new Set(report.by_fab_period.map((p) => p.fab))];
+  const shown = view.fabs.size ? fabs.filter((f) => view.fabs.has(f)) : fabs;
+  const idx = new Map(report.by_fab_period.map((p, i) => [`${p.fab}|${p.period}`, i]));
+  return { periods, fabs, shown, idx };
+}
+
+function renderFabFilter(report) {
+  const bar = $("fab-filter");
+  const { fabs } = pivotAxes(report);
+  if (fabs.length < 2) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  bar.innerHTML =
+    `<button type="button" class="fchip${view.fabs.size ? "" : " fchip--on"}" data-fab="*">All fabs</button>` +
+    fabs.map((f) => `<button type="button" class="fchip${view.fabs.has(f) ? " fchip--on" : ""}"
+        data-fab="${esc(f)}">${esc(fabLabel(f))}</button>`).join("");
+  bar.classList.remove("hidden");
+}
+
+function cellSummary(p) {
+  // Failed months: numbers would be what-ifs (excluded from all totals), so
+  // phrase them as unmet demand instead of a plan.
+  if (!p.success)
+    return p.node_adds_total ? `needs +${fmt(p.node_adds_total)} nodes` : "";
+  const parts = [];
+  if (p.node_adds_total) parts.push(`+${fmt(p.node_adds_total)} nodes`);
+  if (p.bm_procurement_total) parts.push(`${fmt(p.bm_procurement_total)} BM`);
+  if (p.committed_bm_used) parts.push(`${fmt(p.committed_bm_used)} owned`);
+  return parts.join(" · ") || "no growth";
+}
+
+function renderMatrix(report) {
+  const { periods, shown, idx } = pivotAxes(report);
+  const body = shown.map((f) => {
+    const tds = periods.map((m) => {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) return `<td class="pivot-cell pivot-cell--unplanned">—</td>`;
+      const p = report.by_fab_period[i];
+      return `<td class="pivot-cell pivot-cell--click" data-idx="${i}">
+          ${chipHtml(periodChip(p))}
+          <div class="pivot-cell__sub">${esc(cellSummary(p))}</div>
+        </td>`;
+    }).join("");
+    return `<tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>${tds}</tr>`;
+  }).join("");
+
+  // The finance line: bought BMs per month across the shown fabs.
+  const totals = periods.map((m) => shown.reduce((acc, f) => {
+    const i = idx.get(`${f}|${m}`);
+    const p = i == null ? null : report.by_fab_period[i];
+    return acc + (p?.success ? p.bm_procurement_total || 0 : 0);
+  }, 0));
+
+  $("grid-content").innerHTML = `
+    <div class="table-wrap">
+      <table class="tbl pivot">
+        <thead><tr><th>Fab</th>${periods.map((m) => `<th>${esc(m)}</th>`).join("")}</tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr><th class="pivot-rowhead">BM buys total</th>
+          ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr></tfoot>
+      </table>
+    </div>`;
+  $("grid-content").querySelectorAll(".pivot-cell--click").forEach((td) =>
+    td.addEventListener("click", () => selectIdx(Number(td.dataset.idx))));
+}
+
+function renderList(report) {
+  const { shown } = pivotAxes(report);
+  const shownSet = new Set(shown);
   const rows = report.by_fab_period.map((p, i) => {
-    const chip = periodChip(p);
+    if (!shownSet.has(p.fab)) return "";
     const note = p.shortfalls?.[0]?.message || "";
     return `
       <tr class="row--click" data-idx="${i}">
         <td class="mono">${esc(p.period)}</td>
-        <td>${esc(p.fab || "—")}</td>
-        <td>${chipHtml(chip)}</td>
+        <td>${esc(fabLabel(p.fab))}</td>
+        <td>${chipHtml(periodChip(p))}</td>
         <td class="num">${fmt(p.node_adds_total)}</td>
         <td class="num">${fmt(p.bm_procurement_total)}</td>
         <td class="num">${fmt(p.committed_bm_used)}</td>
@@ -122,15 +198,80 @@ function renderGrid(report) {
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+  $("grid-content").querySelectorAll("tr.row--click").forEach((tr) =>
+    tr.addEventListener("click", () => selectIdx(Number(tr.dataset.idx))));
+}
 
-  $("grid-content").querySelectorAll("tr.row--click").forEach((tr) => {
-    tr.addEventListener("click", () => {
-      $("grid-content").querySelectorAll("tr.row--selected")
-        .forEach((r) => r.classList.remove("row--selected"));
-      tr.classList.add("row--selected");
-      renderDetail(report.by_fab_period[Number(tr.dataset.idx)]);
-    });
-  });
+function renderGridView(report) {
+  (view.mode === "list" ? renderList : renderMatrix)(report);
+  markSelection();
+}
+
+function markSelection() {
+  const host = $("grid-content");
+  host.querySelectorAll(".row--selected, .pivot-cell--selected")
+    .forEach((el) => el.classList.remove("row--selected", "pivot-cell--selected"));
+  if (selectedIdx == null) return;
+  const el = host.querySelector(`[data-idx="${selectedIdx}"]`);
+  if (el) el.classList.add(el.tagName === "TD" ? "pivot-cell--selected" : "row--selected");
+}
+
+function selectIdx(i) {
+  selectedIdx = i;
+  markSelection();
+  renderDetail(currentReport.by_fab_period[i]);
+}
+
+/* ── Metric breakdown pivots (one table per metric) ── */
+const METRICS = [
+  { key: "node_adds_total", title: "Node adds", sub: "K8s nodes created" },
+  { key: "bm_procurement_total", title: "BM buys", sub: "machines to purchase (budget)" },
+  { key: "committed_bm_used", title: "Committed used", sub: "already-owned machines consumed" },
+];
+
+function metricTable(report, metric) {
+  const { periods, shown, idx } = pivotAxes(report);
+  // null = unplanned month; NaN = failed month (value would be a what-if).
+  const val = (f, m) => {
+    const i = idx.get(`${f}|${m}`);
+    if (i == null) return null;
+    const p = report.by_fab_period[i];
+    return p.success ? (p[metric.key] || 0) : NaN;
+  };
+  const rows = shown.map((f) => {
+    let total = 0;
+    const tds = periods.map((m) => {
+      const v = val(f, m);
+      if (v == null) return `<td class="num muted">—</td>`;
+      if (Number.isNaN(v)) return `<td class="num muted" title="failed month — excluded from totals">✕</td>`;
+      total += v;
+      return `<td class="num">${fmt(v)}</td>`;
+    }).join("");
+    return `<tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>${tds}
+      <td class="num pivot-total">${fmt(total)}</td></tr>`;
+  }).join("");
+  const colTotals = periods.map((m) => shown.reduce((acc, f) => {
+    const v = val(f, m);
+    return acc + (v && !Number.isNaN(v) ? v : 0);
+  }, 0));
+  return `
+    <p class="subhead">${metric.title} <span class="muted" style="font-weight:400">· ${metric.sub}</span></p>
+    <div class="table-wrap" style="margin-bottom:18px">
+      <table class="tbl pivot">
+        <thead><tr><th>Fab</th>
+          ${periods.map((m) => `<th class="num">${esc(m)}</th>`).join("")}
+          <th class="num">Total</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><th class="pivot-rowhead">Total</th>
+          ${colTotals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}
+          <td class="num pivot-total">${fmt(colTotals.reduce((a, b) => a + b, 0))}</td></tr></tfoot>
+      </table>
+    </div>`;
+}
+
+function renderMetrics(report) {
+  $("metrics-content").innerHTML = METRICS.map((m) => metricTable(report, m)).join("");
+  $("metrics-card").classList.remove("hidden");
 }
 
 /* ── Month detail ── */
@@ -254,7 +395,8 @@ function renderDetail(p) {
 
 /* ── Budget view ── */
 function renderBudget(report) {
-  const rows = report.budget_view || [];
+  let rows = report.budget_view || [];
+  if (view.fabs.size) rows = rows.filter((r) => view.fabs.has(r.fab));
   if (!rows.length) { $("budget-card").classList.add("hidden"); return; }
 
   // Single-series strip: bought BMs per month (direct labels, no legend).
@@ -286,16 +428,25 @@ function renderBudget(report) {
 }
 
 /* ── Orchestration ── */
+function rerenderViews() {
+  if (!currentReport) return;
+  renderFabFilter(currentReport);
+  renderGridView(currentReport);
+  renderMetrics(currentReport);
+  renderBudget(currentReport);
+}
+
 function renderReport(report) {
+  currentReport = report;
+  selectedIdx = null;
+  view.fabs.clear();
   renderStats(report);
-  renderGrid(report);
-  renderBudget(report);
+  rerenderViews();
   $("detail-card").classList.add("hidden");
   // Auto-select the first non-OK month (the interesting one), else the first.
-  const rows = $("grid-content").querySelectorAll("tr.row--click");
-  if (rows.length) {
+  if (report.by_fab_period.length) {
     const firstBad = report.by_fab_period.findIndex((p) => !p.success);
-    rows[firstBad >= 0 ? firstBad : 0].click();
+    selectIdx(firstBad >= 0 ? firstBad : 0);
   }
 }
 
@@ -322,6 +473,26 @@ async function run() {
 async function init() {
   initForm();
   $("run-btn").addEventListener("click", run);
+
+  document.querySelectorAll('input[name="grid-view"]').forEach((r) =>
+    r.addEventListener("change", () => {
+      view.mode = r.value;
+      if (currentReport) renderGridView(currentReport);
+    }));
+
+  $("fab-filter").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".fchip");
+    if (!btn || !currentReport) return;
+    if (btn.dataset.fab === "*") view.fabs.clear();
+    else {
+      const f = btn.dataset.fab;
+      view.fabs.has(f) ? view.fabs.delete(f) : view.fabs.add(f);
+      // Selecting every fab is the same as no filter.
+      const all = new Set(currentReport.by_fab_period.map((p) => p.fab));
+      if (view.fabs.size === all.size) view.fabs.clear();
+    }
+    rerenderViews();
+  });
 
   $("upload-btn").addEventListener("click", () => $("upload-input").click());
   $("upload-input").addEventListener("change", async (e) => {

@@ -314,36 +314,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ─────────────────────────────────────────────────────────────
-   Segmented control
-   ───────────────────────────────────────────────────────────── */
-.segmented {
-  display: inline-flex;
-  padding: 3px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-base);
-  gap: 2px;
-}
-.segmented--block { display: flex; }
-.segmented input { display: none; }
-.segmented label {
-  flex: 1;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  padding: 5px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 120ms, color 120ms;
-}
-.segmented label:hover { color: var(--text-base); }
-.segmented label:has(input:checked) {
-  background: var(--bg-surface);
-  color: var(--text-base);
-  box-shadow: var(--shadow-sm);
-}
+/* Segmented control: shared component, defined in theme.css. */
 
 /* ─────────────────────────────────────────────────────────────
    Inline messages

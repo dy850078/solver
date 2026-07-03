@@ -188,6 +188,40 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .hidden { display: none !important; }
 .muted { color: var(--text-subtle); }
 
+/* ── Fab × Month pivot ── */
+.fab-filter { margin-bottom: 12px; }
+.fchip {
+  padding: 3px 11px; border-radius: var(--radius-full);
+  border: 1px solid var(--border-base); background: var(--bg-subtle);
+  color: var(--text-muted); font-size: 11.5px; font-weight: 500;
+  cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms;
+}
+.fchip:hover { border-color: var(--accent); color: var(--accent); }
+.fchip--on {
+  background: var(--accent-soft); border-color: var(--accent-ring);
+  color: var(--accent); font-weight: 600;
+}
+.pivot th { white-space: nowrap; }
+/* Row heads are data (fab names), not column labels — undo the th styling. */
+.pivot tbody .pivot-rowhead, .pivot tfoot .pivot-rowhead {
+  text-align: left; font-weight: 600; color: var(--text-base); white-space: nowrap;
+  text-transform: none; letter-spacing: normal; font-size: 12.5px;
+  border-bottom: 1px solid var(--grid-hairline);
+}
+.pivot-cell { min-width: 116px; vertical-align: top; }
+.pivot-cell--click { cursor: pointer; transition: background 100ms; }
+.pivot-cell--click:hover { background: var(--bg-subtle); }
+.pivot-cell--selected { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--radius-sm); }
+.pivot-cell--unplanned { color: var(--text-subtle); }
+.pivot-cell__sub {
+  font-size: 11px; color: var(--text-muted); margin-top: 5px;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.pivot tfoot th, .pivot tfoot td {
+  border-top: 2px solid var(--border-strong); font-weight: 600;
+}
+.pivot-total { font-weight: 650; }
+
 /* ── Stat tiles ── */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .stat {

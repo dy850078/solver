@@ -160,9 +160,16 @@
     <section id="grid-card" class="card">
       <header class="card__header">
         <h2 class="card__title">Fab × Month</h2>
-        <span class="card__hint">Click a row for the drill-down · absent months are unplanned, not zero-growth</span>
+        <span class="card__hint">Click a cell for the drill-down · absent months are unplanned, not zero-growth</span>
+        <div class="card__header-right">
+          <div class="segmented" role="radiogroup" aria-label="Grid view">
+            <label><input type="radio" name="grid-view" value="matrix" checked><span>Matrix</span></label>
+            <label><input type="radio" name="grid-view" value="list"><span>List</span></label>
+          </div>
+        </div>
       </header>
       <div class="card__body">
+        <div id="fab-filter" class="chips-row fab-filter hidden"></div>
         <div id="grid-content">
           <div class="viz-empty">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -180,6 +187,14 @@
         <span class="card__hint" id="detail-status-hint"></span>
       </header>
       <div class="card__body" id="detail-content"></div>
+    </section>
+
+    <section id="metrics-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Metric breakdowns</h2>
+        <span class="card__hint">Fab × month pivots · ✕ = failed month, excluded from totals</span>
+      </header>
+      <div class="card__body" id="metrics-content"></div>
     </section>
 
     <section id="budget-card" class="card hidden">
