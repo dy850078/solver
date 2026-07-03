@@ -24,8 +24,17 @@ const state = {
   entries: [],   // {..., specIdx: -1 = any spec from the catalog}
   stock: [],     // {count, modelIdx, fab, dc, ag, network}
   caps: [],
-  committed: [], // {modelIdx, count, fab, bucket}
+  committed: [], // {modelIdx, count, fab, bucket, network}
 };
+
+// Config fields the form owns; anything else in loaded JSON (e.g.
+// reference_vm_spec, max_solve_time_seconds) is preserved verbatim.
+const FORM_CONFIG_FIELDS = new Set([
+  "auto_generate_anti_affinity", "max_pods_per_node",
+  "procurement_spread_dimension", "w_procurement_balance",
+  "fab_topology_dimension", "vm_specs",
+]);
+let extraConfig = {};
 
 const blank = {
   specs: () => ({ name: "", cpu: 8, memGiB: 16, disk: 100 }),
@@ -34,7 +43,7 @@ const blank = {
                     cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: 0, network: "" }),
   stock: () => ({ count: 1, modelIdx: 0, fab: "", dc: "dc-1", ag: "ag-1", network: "" }),
   caps: () => ({ fab: "", bucket: "ag-1", network: "", max_bm: 1 }),
-  committed: () => ({ modelIdx: 0, count: 1, fab: "", bucket: "" }),
+  committed: () => ({ modelIdx: 0, count: 1, fab: "", bucket: "", network: "" }),
 };
 
 /* ── Row templates ── */
@@ -138,10 +147,11 @@ function entryRow(e, i) {
       ${num("entries", i, "disk", e.disk, "Disk GB")}
       ${num("entries", i, "pods", e.pods, "Pods ≥")}
     </div>
-    <div class="frow frow--2">
+    <div class="frow frow--3">
       <label class="mini"><span class="mini__label">Role</span>
         <select class="select" data-s="entries" data-i="${i}" data-f="node_role">${roleOpts}</select></label>
       ${specSelect("entries", i, "specIdx", e.specIdx, "VM spec", { withAny: true })}
+      ${txt("entries", i, "network", e.network, "Network (BGP)", "blank = any")}
     </div>
   </div>`;
 }
@@ -179,9 +189,12 @@ function committedRow(c, i) {
     <div class="frow frow--committed">
       ${modelSelect("committed", i, "modelIdx", c.modelIdx, "BM model")}
       ${num("committed", i, "count", c.count, "Count", { min: 1, step: 1 })}
+      ${delBtn("committed", i)}
+    </div>
+    <div class="frow frow--3">
       ${txt("committed", i, "fab", c.fab, "Fab")}
       ${txt("committed", i, "bucket", c.bucket, "Bucket", "blank = floating")}
-      ${delBtn("committed", i)}
+      ${txt("committed", i, "network", c.network, "Network (BGP)", "blank = any")}
     </div>
   </div>`;
 }
@@ -275,11 +288,13 @@ export function buildRequest() {
       .filter((c) => state.models[c.modelIdx]?.model_id)
       .map((c) => ({ type_id: state.models[c.modelIdx].model_id,
                      count: +c.count || 0, fab: c.fab || "",
-                     bucket: c.bucket || null })),
+                     bucket: c.bucket || null, network: c.network || "" })),
     config: {
+      ...extraConfig,
       auto_generate_anti_affinity: $("cfg-autoaa").checked,
       max_pods_per_node: +$("cfg-maxpods").value || 0,
       procurement_spread_dimension: $("cfg-spread").value,
+      w_procurement_balance: +$("cfg-balance").value || 0,
       fab_topology_dimension: "site",
       // The whole spec catalog: the pool "Any" entries draw from.
       vm_specs: state.specs.map(toResources),
@@ -374,11 +389,15 @@ export function loadIntoForm(json) {
   state.committed = (json.committed_stock || []).map((c) => ({
     modelIdx: modelIdxById.get(c.type_id) ?? 0,
     count: c.count ?? 1, fab: c.fab || "", bucket: c.bucket || "",
+    network: c.network || "",
   }));
 
   const cfg = json.config || {};
+  extraConfig = Object.fromEntries(
+    Object.entries(cfg).filter(([k]) => !FORM_CONFIG_FIELDS.has(k)));
   $("cfg-maxpods").value = cfg.max_pods_per_node ?? 0;
   $("cfg-spread").value = cfg.procurement_spread_dimension || "ag";
+  $("cfg-balance").value = cfg.w_procurement_balance ?? 0;
   $("cfg-autoaa").checked = cfg.auto_generate_anti_affinity !== false;
 
   if (state.caps.length || state.committed.length) $("supply-adv").open = true;

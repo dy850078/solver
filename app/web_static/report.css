@@ -152,8 +152,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .frow--model { grid-template-columns: 1fr auto; align-items: end; }
 .frow--stock { grid-template-columns: 0.7fr 1.6fr auto; align-items: end; }
 .frow--cap { grid-template-columns: 0.8fr 1fr 1fr 0.75fr auto; align-items: end; }
-.frow--committed { grid-template-columns: 1.5fr 0.7fr 0.8fr 0.9fr auto; align-items: end; }
-.frow--config { grid-template-columns: 1fr 1fr auto; align-items: end; }
+.frow--committed { grid-template-columns: 1.7fr 0.7fr auto; align-items: end; }
+.frow--config { grid-template-columns: 1fr 1fr 1fr; align-items: end; }
+.frow--config .mini--check { grid-column: 1 / -1; padding-bottom: 0; }
 .mini { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .mini__label { font-size: 10.5px; color: var(--text-subtle); white-space: nowrap; }
 .mini .select { padding: 6px 8px; font-size: 12.5px; }

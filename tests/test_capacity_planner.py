@@ -657,6 +657,25 @@ def plan(book, in_stock, types, caps=None, committed=None, rules=None, **cfg):
 
 class TestCapacityHorizon:
 
+    def test_auto_anti_affinity_spreads_planned_nodes_across_ags(self):
+        """
+        Planned demand carries the "plan" ip_type sentinel, so auto
+        anti-affinity groups it and spreads the 6 new nodes across the 3 AGs
+        (cap ⌈6/3⌉ = 2) instead of consolidating them onto one machine.
+        """
+        in_stock = [make_bm(f"bm-{i}", cpu=64, mem=256_000, disk=2000,
+                            ag=f"ag-{i}", rack=f"rack-{i}") for i in range(1, 4)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=48, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, auto_generate_anti_affinity=True)
+
+        assert r.success
+        p = r.by_fab_period[0]
+        assert p.bm_procurement_total == 0
+        adds = {c.bucket: c.node_adds for c in p.cells if c.node_adds}
+        assert adds == {"ag-1": 2, "ag-2": 2, "ag-3": 2}
+
     def test_state_rolls_forward_across_months(self):
         """Month 1 fills the in-stock BM; month 2's identical demand buys."""
         in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]

@@ -652,6 +652,10 @@ class DemandEntry(BaseModel):
             ),
             node_role=self.node_role,
             cluster_id=self.cluster_id,
+            # Planned demand has no IP assignment yet, but auto anti-affinity
+            # groups by (cluster, ip_type, role) and skips empty ip_type; a
+            # fixed sentinel keeps planned nodes eligible for AG spreading.
+            ip_type="plan",
             vm_specs=self.vm_specs,
             min_total_vms=self.min_total_vms,
             max_total_vms=self.max_total_vms,
