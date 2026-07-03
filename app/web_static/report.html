@@ -87,8 +87,27 @@
         <button id="add-model" type="button" class="btn btn--add">+ Add BM model</button>
 
         <p class="subhead" style="margin-top:16px">Demand — one row per (cluster, month) increment</p>
-        <div id="demand-rows" class="form-rows"></div>
+        <div id="demand-rows" class="form-rows form-rows--capped"></div>
         <button id="add-entry" type="button" class="btn btn--add">+ Add demand entry</button>
+
+        <details class="adv" id="demand-io" style="margin-top:10px">
+          <summary>Import / Export demand — CSV · Excel paste</summary>
+          <p class="muted" style="font-size:11.5px; margin:8px 0 6px">
+            Long format, one row per (fab, cluster, role, month). Columns:
+            <code>fab, cluster, role, period, cpu_cores, memory_gib, storage_gb, pods, spec, network</code>
+            — cluster &amp; period required, order free, unknown columns ignored,
+            spec matched by catalog name (blank = Any). Import replaces all demand entries.
+          </p>
+          <textarea id="demand-csv" class="editor editor--short" spellcheck="false"
+            placeholder="Paste CSV or Excel cells here…&#10;fab,cluster,role,period,cpu_cores,memory_gib&#10;fab-a,cluster-app,worker,2026-01,64,125"></textarea>
+          <div class="frow" style="grid-template-columns:1fr 1fr 1fr; margin-top:8px">
+            <button id="demand-import" type="button" class="btn btn--add">Import (replace)</button>
+            <button id="demand-upload" type="button" class="btn btn--add">Upload file…</button>
+            <button id="demand-export" type="button" class="btn btn--add">Export CSV</button>
+          </div>
+          <input id="demand-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
+          <div id="demand-io-msg" class="alert hidden" style="margin-top:8px"></div>
+        </details>
 
         <p class="subhead" style="margin-top:16px">In-stock — existing machines (grouped)</p>
         <div id="stock-rows" class="form-rows"></div>

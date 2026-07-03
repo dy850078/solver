@@ -15,6 +15,8 @@
  * existing field names (procurement_types / type_id).
  */
 
+import { parseDemandCsv, exportDemandCsv } from "./demand-csv.js";
+
 const $ = (id) => document.getElementById(id);
 const GiB = 1024; // MiB per GiB
 
@@ -460,6 +462,47 @@ export function initForm() {
       for (const dep of SECTIONS[s].deps || []) renderSection(dep);
     });
   }
+
+  // Demand book CSV import / export.
+  const ioMsg = (kind, html) => {
+    const box = $("demand-io-msg");
+    box.className = `alert${kind === "error" ? " alert--error" : ""}`;
+    box.innerHTML = html;
+    box.classList.remove("hidden");
+  };
+  $("demand-import").addEventListener("click", () => {
+    const { entries, errors, warnings, summary } =
+      parseDemandCsv($("demand-csv").value, state.specs);
+    if (errors.length) {
+      ioMsg("error", `<b>Not imported — fix and retry:</b><br>${
+        errors.slice(0, 20).map(esc).join("<br>")}${
+        errors.length > 20 ? `<br>…and ${errors.length - 20} more` : ""}`);
+      return;
+    }
+    state.entries = entries;
+    renderSection("entries");
+    ioMsg("ok", `Imported <b>${summary.entries}</b> entries · ${summary.fabs} fab(s) · ${
+      summary.clusters} cluster(s) · ${summary.from} → ${summary.to}${
+      warnings.length ? `<br>${warnings.map(esc).join("<br>")}` : ""}`);
+  });
+  $("demand-upload").addEventListener("click", () => $("demand-upload-input").click());
+  $("demand-upload-input").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      $("demand-csv").value = await file.text();
+      $("demand-import").click();
+    }
+    e.target.value = "";
+  });
+  $("demand-export").addEventListener("click", () => {
+    const blob = new Blob([exportDemandCsv(state.entries, state.specs)],
+                          { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "demand-book.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
 
   // Form ⇄ JSON sync.
   $("form-to-json").addEventListener("click", () => {

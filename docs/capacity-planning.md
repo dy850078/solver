@@ -775,6 +775,8 @@ POST /v1/capacity/plan
 | 39 | **已採購庫存**（缺口 3h，effort 低已納入）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」 | `CommittedStock`；已上架→in_stock、浮動→已購池；空＝不啟用 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
 | 40 | **建新拆舊（fleet events）**：先只做 `release`（整台除役還池）、事件月前**擋新節點**；設計已定、**列 backlog 暫不實作** | roll-forward 目前單向消耗，表達不了「某月機器從舊 cluster 除役變回可用」 | 見下方〈Backlog：機隊事件簿〉 |
+| 41 | **UI 定位 = B：檢視 + 微調 + 模擬工具**；正式需求帳本住 Go Scheduler 端 | 20 fab × 20 cluster 規模需要持久化/權限/稽核/並行編輯，在無狀態 sidecar 長儲存層違反 #25；UI 保留 what-if 沙盒、報表視覺化、除錯 demo 三角色 | 演進：UI 加 localStorage 草稿 → Go 端帳本 API 好後加 Load/Save book 按鈕，UI 始終無狀態 |
+| 42 | **需求規模化輸入 = 長表 CSV/TSV 匯入**（Excel 貼上），**匯入取代全部**、**重複鍵報錯**；格子語意維持資源總量（GiB）；需求網格（demand lines grid）**後補** | 20 fab 的需求已活在 Excel；長表與 `DemandEntry` 一比一，同時是未來與 Go 端帳本的交換格式 | 欄位：`fab, cluster, role, period, cpu_cores, memory_gib(或 memory_mib 擇一), storage_gb, pods, spec(目錄名，空=Any), network`；cluster/period 必填、欄序不拘、未知欄警告忽略、全有或全無 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，

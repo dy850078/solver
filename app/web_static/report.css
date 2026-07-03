@@ -133,6 +133,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ── Form builder rows ── */
 .form-rows { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+/* Imported books can be hundreds of entries; cap the list, not the page. */
+.form-rows--capped { max-height: 480px; overflow-y: auto; }
+.editor--short { min-height: 110px; }
 .form-empty { font-size: 12px; margin: 0; }
 .frow-card {
   border: 1px solid var(--border-base);
