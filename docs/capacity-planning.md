@@ -774,8 +774,44 @@ POST /v1/capacity/plan
 | 38 | **per-cluster 限採買機型** `DemandEntry.allowed_bm_types` | 不同 cluster 可買不同機型；in-stock 端已由候選過濾，採買端需機型允許清單 | 小改動：殘量只生成 allowed 機型的虛擬 BM |
 | 39 | **已採購庫存**（缺口 3h，effort 低已納入）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」 | `CommittedStock`；已上架→in_stock、浮動→已購池；空＝不啟用 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
+| 40 | **建新拆舊（fleet events）**：先只做 `release`（整台除役還池）、事件月前**擋新節點**；設計已定、**列 backlog 暫不實作** | roll-forward 目前單向消耗，表達不了「某月機器從舊 cluster 除役變回可用」 | 見下方〈Backlog：機隊事件簿〉 |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，
 編排層在 joint placement 時允許需求落到他 fab，並對跨 fab placement 加權懲罰
 （避免無謂搬遷）。本提案的 per-fab 迴圈結構不需重寫，只需在候選 BM 推導與目標函數擴充。
+
+### Backlog：機隊事件簿（fleet events）— 建新拆舊（決議 #40，設計已定、暫不實作）
+
+**情境**：某月把幾台 BM 從舊 cluster 除役，容量釋放回 in-stock 供後續月份使用。
+現況做不到：`in_stock.used_capacity` 是期初快照，roll-forward 只會消耗容量
+（placement 累加、cap 遞減、買機落地），沒有任何「某月釋放/移除機器」的事件。
+今日唯一 workaround 是斷成兩次 solve、手動改 in-stock，報表會斷開。
+
+**設計**（與 demand book 平行的事件簿）：
+
+```json
+"fleet_events": [
+  { "period": "2026-03", "fab": "fab-a", "action": "release", "bm_ids": ["bm-7", "bm-8"] }
+]
+```
+
+已定的三個語意選擇：
+
+1. **事件範圍：只做 `release`**（除役還池）。`retire`（整台汰除離隊）與
+   `add`（非採買到貨）留到有需求再擴充——同一事件簿結構直接加 action 即可。
+2. **粒度：整台釋放**。事件月起該機 `used_capacity` 歸零；不做部分釋放
+   （表達力換輸入簡單，「整台從舊 cluster 除役」符合實際操作）。
+3. **事前隔離：擋住**。排定 release 的機器在事件月**之前**退出候選池
+   （舊負載照算佔用、但不接新節點），事件月起以乾淨姿態回歸。
+   避免「二月建上去、三月被清掉」的自相矛盾計畫，也天然免除
+   「先放置後除役」的衝突驗證。
+
+**實作要點**（動 `solve_capacity_horizon` 的 per-fab 迴圈）：
+- 每月 solve 前套用該月事件：release → `used_capacity = Resources()`。
+- 事前隔離：對 `period < 事件月` 的 solve，把待除役機從候選推導剔除
+  （仍計入 in-stock 報表快照，gauges 如實反映其舊負載）。
+- 驗證：`bm_ids` 引用不存在的機器、或與具名 fab 範圍不符 → `INPUT_ERROR`。
+- 報表：事件月的 month detail 標註「released N machines」；釋放後容量
+  自然流入 nominal / slots / balance_after / cells。
+- UI：表單加「Fleet events」區（月份 + 機器群組挑選）。
