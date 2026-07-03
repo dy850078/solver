@@ -226,6 +226,45 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .pivot-total { font-weight: 650; }
 
+/* ── Demand CSV table-import dialog ── */
+.csv-dialog {
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-base);
+  padding: 0;
+  width: min(1020px, 94vw);
+  box-shadow: var(--shadow-lg);
+}
+.csv-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.csv-dialog__head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 14px 16px 10px;
+}
+.csv-dialog__title { font-size: 14px; font-weight: 650; }
+.csv-dialog__foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border-base);
+}
+.csv-table-host { max-height: 56vh; overflow: auto; padding: 0 16px 12px; }
+.csv-empty {
+  border: 1.5px dashed var(--border-strong); border-radius: var(--radius-md);
+  padding: 44px 16px; text-align: center;
+  color: var(--text-muted); font-size: 13px;
+}
+.csv-table td[contenteditable] { cursor: text; min-width: 64px; }
+.csv-table td[contenteditable]:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+.csv-table .csv-col-ignored { text-decoration: line-through; opacity: 0.55; }
+.csv-row--bad td { background: var(--error-soft); }
+.csv-status { font-size: 11.5px; color: var(--chip-good-text); white-space: normal; min-width: 180px; }
+.csv-row--bad .csv-status { color: var(--error); }
+
 /* ── Stat tiles ── */
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .stat {

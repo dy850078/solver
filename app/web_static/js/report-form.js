@@ -15,7 +15,7 @@
  * existing field names (procurement_types / type_id).
  */
 
-import { parseDemandCsv, exportDemandCsv } from "./demand-csv.js";
+import { analyzeDemandCsv, parseDemandCsv, exportDemandCsv } from "./demand-csv.js";
 
 const $ = (id) => document.getElementById(id);
 const GiB = 1024; // MiB per GiB
@@ -502,6 +502,109 @@ export function initForm() {
     a.download = "demand-book.csv";
     a.click();
     URL.revokeObjectURL(a.href);
+  });
+
+  // Table-import dialog: paste an Excel range, see it as an editable grid
+  // with per-row validation, import only when everything is clean.
+  let dlgText = "";
+
+  const renderCsvDialog = () => {
+    const host = $("csv-table-host");
+    const msgBox = $("csv-dialog-msg");
+    const summaryEl = $("csv-dialog-summary");
+    const importBtn = $("csv-dialog-import");
+    msgBox.classList.add("hidden");
+
+    if (!dlgText.trim()) {
+      host.innerHTML = `<div class="csv-empty">Paste your Excel range here (Ctrl/⌘+V)<br>
+        <span style="font-size:11.5px">first row must be the header — e.g.
+        <code>cluster · period · cpu_cores · memory_gib …</code></span></div>`;
+      summaryEl.textContent = "";
+      importBtn.disabled = true;
+      return;
+    }
+
+    const a = analyzeDemandCsv(dlgText, state.specs);
+    const fieldAt = (ci) =>
+      Object.entries(a.colOf).find(([, idx]) => idx === ci)?.[0];
+    const ths = a.headerRaw.map((h, ci) => fieldAt(ci)
+      ? `<th>${esc(h)}</th>`
+      : `<th class="csv-col-ignored" title="ignored column">${esc(h)}</th>`
+    ).join("");
+    const body = a.rows.map((r, ri) => `
+      <tr class="${r.errors.length ? "csv-row--bad" : ""}">
+        ${a.headerRaw.map((_, ci) =>
+          `<td contenteditable="plaintext-only">${esc(r.cells[ci] ?? "")}</td>`).join("")}
+        <td class="csv-status">${r.errors.length ? esc(r.errors.join(" · ")) : "✓"}</td>
+      </tr>`).join("");
+    host.innerHTML = `
+      <div class="table-wrap"><table class="tbl csv-table">
+        <thead><tr>${ths}<th>Status</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table></div>`;
+
+    if (a.globalErrors.length || a.warnings.length) {
+      msgBox.className = `alert${a.globalErrors.length ? " alert--error" : ""}`;
+      msgBox.innerHTML = [...a.globalErrors, ...a.warnings].map(esc).join("<br>");
+      msgBox.classList.remove("hidden");
+    }
+    const badRows = a.rows.filter((r) => r.errors.length).length;
+    importBtn.disabled = !a.entries.length;
+    summaryEl.textContent = a.summary
+      ? `${a.summary.entries} entries · ${a.summary.fabs} fab(s) · ${a.summary.clusters} cluster(s) · ${a.summary.from} → ${a.summary.to}`
+      : badRows ? `${badRows} row(s) need fixing` : "";
+  };
+
+  const csvFromTable = () => {
+    const table = $("csv-table-host").querySelector("table");
+    if (!table) return dlgText;
+    const clean = (s) => s.replaceAll("\t", " ").replaceAll("\n", " ").trim();
+    const header = [...table.querySelectorAll("thead th")].slice(0, -1)
+      .map((th) => clean(th.textContent));
+    const lines = [...table.querySelectorAll("tbody tr")].map((tr) =>
+      [...tr.querySelectorAll("td")].slice(0, -1)
+        .map((td) => clean(td.textContent)).join("\t"));
+    return [header.join("\t"), ...lines].join("\n");
+  };
+
+  $("demand-table-open").addEventListener("click", () => {
+    dlgText = $("demand-csv").value;
+    renderCsvDialog();
+    $("csv-dialog").showModal();
+  });
+  $("csv-dialog-close").addEventListener("click", () => $("csv-dialog").close());
+  $("csv-dialog-cancel").addEventListener("click", () => $("csv-dialog").close());
+
+  // A multi-cell paste (has tabs/newlines) replaces the whole grid; a
+  // single-value paste falls through into the focused cell.
+  $("csv-dialog").addEventListener("paste", (ev) => {
+    const text = ev.clipboardData?.getData("text") ?? "";
+    if (/[\t\n]/.test(text) || !dlgText.trim()) {
+      ev.preventDefault();
+      dlgText = text;
+      renderCsvDialog();
+    }
+  });
+
+  // Cell edited → re-serialize the grid and re-validate.
+  $("csv-table-host").addEventListener("focusout", () => {
+    const next = csvFromTable();
+    if (next !== dlgText) {
+      dlgText = next;
+      renderCsvDialog();
+    }
+  });
+
+  $("csv-dialog-import").addEventListener("click", () => {
+    const a = analyzeDemandCsv(dlgText, state.specs);
+    if (!a.entries.length) return;
+    state.entries = a.entries;
+    renderSection("entries");
+    $("demand-csv").value = dlgText;   // keep the raw textarea in sync
+    $("csv-dialog").close();
+    ioMsg("ok", `Imported <b>${a.summary.entries}</b> entries · ${a.summary.fabs} fab(s) · ${
+      a.summary.clusters} cluster(s) · ${a.summary.from} → ${a.summary.to}${
+      a.warnings.length ? `<br>${a.warnings.map(esc).join("<br>")}` : ""}`);
   });
 
   // Form ⇄ JSON sync.

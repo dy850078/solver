@@ -98,6 +98,9 @@
             — cluster &amp; period required, order free, unknown columns ignored,
             spec matched by catalog name (blank = Any). Import replaces all demand entries.
           </p>
+          <button id="demand-table-open" type="button" class="btn btn--add btn--block" style="margin-bottom:8px">
+            Open table editor — paste &amp; check visually…
+          </button>
           <textarea id="demand-csv" class="editor editor--short" spellcheck="false"
             placeholder="Paste CSV or Excel cells here…&#10;fab,cluster,role,period,cpu_cores,memory_gib&#10;fab-a,cluster-app,worker,2026-01,64,125"></textarea>
           <div class="frow" style="grid-template-columns:1fr 1fr 1fr; margin-top:8px">
@@ -234,6 +237,27 @@
   </div>
 
 </main>
+
+<dialog id="csv-dialog" class="csv-dialog">
+  <header class="csv-dialog__head">
+    <div>
+      <div class="csv-dialog__title">Demand book — table import</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">
+        Paste an Excel range (Ctrl/⌘+V) anywhere in this window · cells are editable, rows re-validate on the fly · Import replaces all demand entries
+      </div>
+    </div>
+    <button id="csv-dialog-close" type="button" class="row-del" title="Close">✕</button>
+  </header>
+  <div id="csv-dialog-msg" class="alert alert--error hidden" style="margin:0 16px 10px"></div>
+  <div id="csv-table-host" class="csv-table-host"></div>
+  <footer class="csv-dialog__foot">
+    <span id="csv-dialog-summary" class="muted" style="font-size:12px"></span>
+    <div style="display:flex; gap:8px">
+      <button id="csv-dialog-cancel" type="button" class="btn">Cancel</button>
+      <button id="csv-dialog-import" type="button" class="btn btn--primary" disabled>Import (replace)</button>
+    </div>
+  </footer>
+</dialog>
 
 <div id="report-tooltip" class="tooltip" role="tooltip"></div>
 
