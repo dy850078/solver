@@ -185,6 +185,11 @@ conversion_recipes:
   且釋放的 BM 需跨 AG 均勻挑選，避免抽空單一 AG
 - **釋放數是預估非承諾**：實際「轉換 vs 釋放」的決定延後到每輪 admission 時
   以即時 U 重算（見 §3.4）
+- **釋放冷卻期（soft release）**：釋放的 BM 在資源池中保留 N 週（config，建議 2~4 週）
+  標記為「原 cluster 優先召回」，冷卻期滿才開放他用——
+  防範「早期釋放 + 後期 U 成長」的跨時間 gap，等於每個 cluster 一張免費後悔票
+- **保底 reserve 下限**：釋放額度計算扣除 floor（config，例如「池中至少保留 1 台
+  該 cluster 可用的可轉換機型」），不釋放到光
 
 **Spare 方向的推論**：遷移前水位介於 `0.70 × r ≈ 64%` 與 70% 之間的 cluster，
 遷移前看似達標、轉完必定超標——必須在計畫階段就排入 spare，而非中途發現。
@@ -217,6 +222,10 @@ u' > ceiling          → 先轉一台 spare 加入 cluster 再重算；無 spar
 - **並行度是 gate 算出來的結果，不是寫死的 3**：小 cluster 可能只允許 2 並行甚至 1
 - **Per-AG 水位也要各算一次** `u'_ag ≤ ceiling`：從 AG 抽走一台 BM 後，
   有 AG 反親和的 workload 只能留在該 AG 其餘機器上，避免局部爆掉
+- **Spare 需求不只來自終態，也可能來自窗口期**：例如 pod usage 80% 起跳的 cluster
+  （10 node）drain 一台的窗口水位 `80/0.9 = 88.9% > ceiling`，即使 cpu/mem 終態不缺容量，
+  第一輪也會被擋、需 spare 先行助跑。好消息是每完成一輪轉換 node 數 +1、pod 容量上升，
+  pod 水位快速回落，這類 cluster 只需起步時的 spare
 
 #### 3.3 Spare-first 策略
 
@@ -320,10 +329,21 @@ Pre-flight（一次, 含 spare/釋放結算 §3.1）→ Spare 先行轉換 → �
 
 | Endpoint | 用途 |
 |---|---|
-| `POST /v1/migrations` | 建立計畫：跑 pre-flight，回傳計畫書（終態水位、所需 spare **或可釋放 BM 數與資源量**、候選清單、預估輪數）——只算不做，兼任釋放計算機 |
+| `POST /v1/migrations/preview` | **純試算（釋放計算機）**：同 pre-flight 計算、不落任何狀態記錄。供遷移前討論反覆 what-if（排除某台、調 `release_target` 等） |
+| `POST /v1/migrations` | 建立正式計畫：跑 pre-flight，回傳計畫書並落 `PLANNED` 記錄 |
 | `POST /v1/migrations/{id}/approve` | 人工審核通過 |
 | `POST /v1/migrations/{id}/start` / `pause` / `resume` / `abort` | 執行控制 |
-| `GET /v1/migrations/{id}` | 完整狀態（per-BM 進度、blocked list + 原因、水位即時值） |
+| `GET /v1/migrations/{id}` | 完整狀態（per-BM 進度、blocked list + 原因、水位即時值、已釋放/已轉換數） |
+
+**計畫書輸出欄位**（preview 與正式 plan 共用）：終態水位（三維度）、所需 spare 或
+可釋放 BM 數、**釋放機型明細（model breakdown）**、**預估釋放時點（第幾輪之後，
+反映 release-last）**、候選/排除清單、預估輪數，以及固定的免責聲明。
+對外溝通口徑三共識：
+
+1. **是 forecast 不是承諾**——基於當下 P95 用量；遷移跑數週，實際釋放數每輪重判，
+   可能低於預估。給其他團隊的口徑：「預估可釋放 M 台（機型明細），以實際完成為準」
+2. **拿到手的時間點在遷移尾段**（release-last），且冷卻期滿才真正開放他用
+3. **機型明細與釋放優先序連動**（open question #9），數字必附 model breakdown
 
 計畫書本身即 audit record，延續 scheduler/solver 的可審計文化。
 
@@ -402,7 +422,7 @@ BM 本體的狀態欄位（`converting` / `failed` / `converted`）放 inventory
 | Inventory 資料與實際漂移 | gate 算錯 | 水位一律即時查 K8s metrics，Inventory 只當 BM 屬性/狀態來源 |
 | nodeSelector 綁定 BM 專屬 label | drain 出去的 pod 回不來 | VM node 繼承原 BM label；特殊 taint/label 的 BM 直接排除不轉換 |
 | 小 cluster 窗口期水位過高 | gate 永遠不放行 | 動態並行度（可能降為 1）+ spare-first；仍不行則 pre-flight 即回報不可行 |
-| 過度釋放後 U 成長、水位回不去 70% | 釋放的 BM 已被挪作他用，難追回 | `release_target` 留邊際（65%）+ 每輪以即時 U 重判 + release-last 排序 |
+| 過度釋放後 U 成長、水位回不去 70% | 釋放的 BM 已被挪作他用，難追回 | 五層防線：`release_target` 邊際（65%）+ P95 取樣 + release-last 排序 + 釋放冷卻期（原 cluster 優先召回）+ 保底 reserve 下限 |
 
 ---
 
@@ -432,6 +452,8 @@ BM 不自動還原（回滾 = 人工決策）；`FAILED` 的 BM 一律人工處�
 8. **`release_target` 定多少**：65%？要不要隨 cluster 成長趨勢動態調整？
 9. **釋放優先序政策**：優先釋放哪種 BM——不可轉換機型（讓 cluster 更純 VM）、
    大機型（外部再利用價值高）、或依外部需求指定？release-last 原則的例外條件？
+10. **冷卻期長度與召回機制**：N 週定多少（2~4 週）？冷卻期內原 cluster 召回的
+    觸發條件（水位回升到幾 %）與流程？保底 reserve floor 的具體值？
 
 ---
 
@@ -457,3 +479,6 @@ BM 不自動還原（回滾 = 人工決策）；`FAILED` 的 BM 一律人工處�
 | 不引入 Redis / Celery | Level-triggered reconcile 無 queue 需求；避免第二狀態存放處 | — |
 | 編排不用 GitLab pipeline 當大腦 | 跨 pipeline 狀態/鎖/長等待均不適配 | Pipeline 保留為 BM/VM Service 執行載體 |
 | 釋放計算機併入 pre-flight 計畫書；轉換 vs 釋放每輪以即時水位重判 | 釋放是 spare 公式的鏡像；U 會漂移，計畫值只是 forecast | `release_target` 與釋放優先序（open question #8/#9） |
+| 新增 `POST /v1/migrations/preview` 純試算端點 | 討論階段反覆 what-if 不應留下 `PLANNED` 記錄 | — |
+| 釋放冷卻期（原 cluster 優先召回）+ 保底 reserve 下限 | 防範「早期釋放 + 後期 U 成長」跨時間 gap | 冷卻期長度與召回條件（open question #10） |
+| 計畫書輸出含機型明細、預估釋放時點與 forecast 免責聲明 | 對其他團隊的溝通口徑三共識 | — |
