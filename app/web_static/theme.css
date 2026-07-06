@@ -1,0 +1,174 @@
+/* ─────────────────────────────────────────────────────────────
+   Shared design tokens — light & dark.
+
+   `html[data-theme]` is set by a tiny inline <head> script before first
+   paint (localStorage choice, else the system preference), so there is
+   no flash of the wrong theme. Both pages (Topology Visualizer and
+   Capacity Report) consume these tokens; page stylesheets hold layout
+   and components only.
+
+   The accent is the validated dataviz series blue (light #2a78d6 /
+   dark #3987e5); status dot colors are the fixed dataviz status
+   palette, with themed text steps so chip labels stay readable on
+   both surfaces.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg-page: #fafafa;
+  --bg-base: #fafafa;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f4f4f5;
+  --bg-muted: #e4e4e7;
+  --bg-inset: #f7f7f6;
+  --bg-hover: rgba(24, 24, 27, 0.04);
+
+  /* Borders */
+  --border-base: #e4e4e7;
+  --border-strong: #d4d4d8;
+
+  /* Text */
+  --text-base: #18181b;
+  --text-muted: #52525b;
+  --text-subtle: #a1a1aa;
+  --text-inverse: #fafafa;
+
+  /* Accent (single hue, both pages) */
+  --brand: #2a78d6;
+  --brand-hover: #1c5cab;
+  --brand-soft: #e8f1fc;
+  --brand-ring: rgba(42, 120, 214, 0.18);
+  --accent: var(--brand);
+  --accent-hover: var(--brand-hover);
+  --accent-soft: var(--brand-soft);
+  --accent-ring: var(--brand-ring);
+
+  /* Inline message colors (text / soft bg / border) */
+  --success: #047857;
+  --success-soft: #ecfdf5;
+  --success-border: #a7f3d0;
+  --error: #dc2626;
+  --error-soft: #fef2f2;
+  --error-border: #fecaca;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --warning-border: #fde68a;
+
+  /* Status dots — fixed dataviz status palette (identical both modes) */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --status-neutral: #898781;
+
+  /* Status chip text — themed steps for label contrast */
+  --chip-good-text: #006300;
+  --chip-warning-text: #7a5200;
+  --chip-serious-text: #9a3d16;
+  --chip-critical-text: #ab2424;
+
+  /* Chart chrome */
+  --meter-track: #e4e4e7;
+  --grid-hairline: #ececea;
+
+  /* Elevation */
+  --shadow-xs: 0 1px 1px rgba(24, 24, 27, 0.03);
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, 0.05), 0 1px 1px rgba(24, 24, 27, 0.03);
+  --shadow-md: 0 4px 8px -2px rgba(24, 24, 27, 0.06), 0 2px 4px -2px rgba(24, 24, 27, 0.03);
+  --shadow-lg: 0 12px 24px -8px rgba(24, 24, 27, 0.10), 0 4px 8px -4px rgba(24, 24, 27, 0.04);
+
+  /* Radius */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-page: #0d0d0d;
+  --bg-base: #0d0d0d;
+  --bg-surface: #1a1a19;
+  --bg-subtle: #222221;
+  --bg-muted: #2c2c2a;
+  --bg-inset: #141413;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+
+  --border-base: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  --text-base: #f5f5f4;
+  --text-muted: #c3c2b7;
+  --text-subtle: #898781;
+  --text-inverse: #18181b;
+
+  --brand: #3987e5;
+  --brand-hover: #2a78d6;
+  --brand-soft: rgba(57, 135, 229, 0.14);
+  --brand-ring: rgba(57, 135, 229, 0.30);
+
+  --success: #34c98a;
+  --success-soft: rgba(12, 163, 12, 0.10);
+  --success-border: rgba(12, 163, 12, 0.35);
+  --error: #e66767;
+  --error-soft: rgba(208, 59, 59, 0.10);
+  --error-border: rgba(208, 59, 59, 0.40);
+  --warning: #fab219;
+  --warning-soft: rgba(250, 178, 25, 0.10);
+  --warning-border: rgba(250, 178, 25, 0.35);
+
+  --chip-good-text: #7fd67f;
+  --chip-warning-text: #fac95e;
+  --chip-serious-text: #f3a988;
+  --chip-critical-text: #e88a8a;
+
+  --meter-track: #2c2c2a;
+  --grid-hairline: #2c2c2a;
+
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 8px -2px rgba(0, 0, 0, 0.40);
+  --shadow-lg: 0 12px 24px -8px rgba(0, 0, 0, 0.55);
+}
+
+/* ── Theme toggle button (shared header control) ── */
+.theme-toggle {
+  background: none;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.theme-toggle:hover { border-color: var(--border-base); }
+.theme-toggle .theme-icon { width: 15px; height: 15px; }
+html[data-theme="dark"] .theme-icon--sun { display: none; }
+html:not([data-theme="dark"]) .theme-icon--moon { display: none; }
+
+/* ── Segmented control (shared) ── */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-base);
+  gap: 2px;
+}
+.segmented--block { display: flex; }
+.segmented input { display: none; }
+.segmented label {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.segmented label:hover { color: var(--text-base); }
+.segmented label:has(input:checked) {
+  background: var(--bg-surface);
+  color: var(--text-base);
+  box-shadow: var(--shadow-sm);
+}

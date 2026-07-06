@@ -93,6 +93,10 @@ class Baremetal(BaseModel):
     total_capacity: Resources
     used_capacity: Resources = Field(default_factory=Resources)
     topology: Topology = Field(default_factory=Topology)
+    # Network domain (e.g. BGP zone) this host's rack belongs to. A filter
+    # attribute, not a spread dimension — clusters live entirely inside one
+    # domain and never spread across domains. "" = untagged.
+    network: str = ""
 
     @property
     def available_capacity(self) -> Resources:
@@ -315,12 +319,55 @@ class SolverConfig(BaseModel):
     vm_specs: list[Resources] = Field(default_factory=list)
     # Requirement splitter: penalize over-allocation waste
     w_resource_waste: int = 5
+    # Pod-count dimension (capacity planning Phase 1): a single global cap on
+    # how many pods one VM-as-K8s-node can hold. Because the cap is global and
+    # spec-independent, a pod-count requirement reduces to a floor on the node
+    # count (ceil(total_pods / max_pods_per_node)) rather than a placement
+    # resource dimension — BMs have no pod capacity, so the solver's placement
+    # path is untouched. 0 (default) disables the constraint.
+    max_pods_per_node: int = Field(default=0, ge=0)
     # Per-baremetal cap (C4): limit how many VMs sharing the same
     # (cluster_id, ip_type, node_role) can land on a single BM.
     # When auto_generate_max_per_bm=True, default_max_per_bm MUST be set
     # to a positive integer or the request is rejected with INPUT_ERROR.
     auto_generate_max_per_bm: bool = False
     default_max_per_bm: int | None = None
+    # Procurement (capacity planning Phase 2): weight for minimizing how many
+    # buyable BMs are used. Set high so in-stock BMs are always filled before
+    # buying and the buy count is minimized. procurement_spread_dimension is
+    # the topology dimension buyable BMs bucket on (must be a spread dimension).
+    w_procurement: int = 10_000
+    procurement_spread_dimension: str = "ag"
+    # Committed stock (already purchased, 缺口 3h) costs less than buying new
+    # but more than in-stock, giving the order: in-stock → committed → buy.
+    w_committed_stock: int = 100
+    # Balance the *resulting* per-bucket available capacity (decision #11):
+    # soft-minimize (max − min) of post-placement available CPU cores across
+    # the procurement_spread_dimension buckets, so buying tops up the emptiest
+    # bucket instead of splitting counts evenly. CPU cores is the balance
+    # currency. 0 (default) disables the term.
+    w_procurement_balance: int = 0
+    # Health-gauge yardsticks (decision #34/#35, both optional):
+    # reference_vm_spec — "how many more reference VMs still fit" gauge
+    # (remaining_node_slots); min_useful_spec — remaining space that cannot
+    # fit even this spec counts as stranded (fragmentation).
+    reference_vm_spec: Resources | None = None
+    min_useful_spec: Resources | None = None
+
+    # Which topology dimension identifies a fab (site or phase in practice).
+    # The multi-period planner groups in-stock BMs into per-fab pools by this
+    # dimension; a demand entry's fab "" means single-fab mode (match all).
+    fab_topology_dimension: str = "site"
+
+    @field_validator("procurement_spread_dimension", "fab_topology_dimension")
+    @classmethod
+    def _validate_procurement_spread_dimension(cls, v: str) -> str:
+        if v not in SPREAD_DIMENSIONS:
+            raise ValueError(
+                f"dimension {v!r} is not a valid topology dimension; "
+                f"valid: {sorted(SPREAD_DIMENSIONS)}"
+            )
+        return v
 
     @field_validator("target_spread")
     @classmethod
@@ -400,6 +447,23 @@ class ResourceRequirement(BaseModel):
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
+    # Minimum pod-hosting capacity required for this role ("at least N pods").
+    # Combined with SolverConfig.max_pods_per_node it guarantees the split
+    # provisions enough nodes to host at least this many pods:
+    #   node_count >= ceil(total_pods / max_pods_per_node)
+    # so provisioned_capacity = node_count * max_pods_per_node >= total_pods.
+    # It is a lower bound, never an exact target or a cap. 0 = no pod demand.
+    total_pods: int = Field(default=0, ge=0)
+    # Network domain (BGP zone) this cluster lives in. "" = no restriction.
+    # Honored by the splitter on every path (split-and-solve and the capacity
+    # planner): candidate_baremetals is narrowed to BMs whose network matches,
+    # and the planner additionally scopes in-stock backfill and buyable-BM
+    # candidates to the domain (whole-cluster filter, 缺口 3g).
+    network: str = ""
+    # Per-cluster machine-type allowlist for procurement (決議 #38): when set,
+    # this requirement's residual demand may only buy / draw these
+    # BaremetalType ids. None = any type in the fab.
+    allowed_bm_types: list[str] | None = None
     candidate_baremetals: list[str] = Field(default_factory=list)
 
 
@@ -437,3 +501,302 @@ class SplitPlacementResult(BaseModel):
 
     def to_assignment_map(self) -> dict[str, str]:
         return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Procurement I/O (capacity planning Phase 2): single fab/period —
+# "given demand + in-stock, how many BMs of each type must we buy?"
+# ---------------------------------------------------------------------------
+
+class BaremetalType(BaseModel):
+    """A buyable BM machine type (no fixed id). 1U assumed (1 BM = 1 slot)."""
+    type_id: str
+    capacity: Resources
+    fab: str = ""
+
+
+class ProcurementCap(BaseModel):
+    """
+    Per-bucket procurement slot limit. bucket is a value of the config's
+    procurement_spread_dimension (e.g. an AG). A bucket with no cap is treated
+    as unlimited (idealized). network is the BGP domain (reserved; unused in
+    the single-fab Phase 2 core).
+    """
+    bucket: str
+    max_bm: int = Field(ge=0)
+    fab: str = ""
+    network: str = ""
+
+
+class ProcurementDecision(BaseModel):
+    """How many BMs of a given type to buy (or draw from committed stock)."""
+    type_id: str
+    count: int
+
+
+class CommittedStock(BaseModel):
+    """
+    Already-purchased machines awaiting allocation (缺口 3h). Modeled as a
+    zero-cost procurement tier: the solver drains these before buying new.
+    type_id must reference one of the request's procurement_types.
+    bucket set → the machines land in that bucket; None → floating, the
+    solver picks landing buckets (at most `count` used across all buckets).
+    """
+    type_id: str
+    count: int = Field(ge=0)
+    bucket: str | None = None
+    network: str = ""
+    fab: str = ""
+
+
+class ProcurementRequest(BaseModel):
+    """
+    Input for the procurement endpoint (single fab/period).
+
+    vms: explicit VMs pass through with their candidate_baremetals untouched
+    (the scheduler's step-3 filter is authoritative) — they are placed on
+    in-stock BMs only and never on virtual (buyable/committed) ones. Demand
+    that should drive procurement belongs in `requirements`.
+    """
+    requirements: list[ResourceRequirement] = Field(default_factory=list)
+    vms: list[VM] = Field(default_factory=list)
+    in_stock: list[Baremetal]
+    procurement_types: list[BaremetalType]
+    procurement_caps: list[ProcurementCap] = Field(default_factory=list)
+    committed_stock: list[CommittedStock] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class ProcurementResult(BaseModel):
+    """Output for the procurement endpoint."""
+    success: bool
+    procurement: list[ProcurementDecision] = Field(default_factory=list)
+    # Draws from committed_stock (already-owned machines put to use).
+    committed_used: list[ProcurementDecision] = Field(default_factory=list)
+    # Draws per committed_stock entry INDEX (exact-entry accounting so
+    # roll-forward drains the pool the solver actually drew from; note JSON
+    # serializes the int keys as strings).
+    committed_entry_used: dict[int, int] = Field(default_factory=dict)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    assignments: list[PlacementAssignment] = Field(default_factory=list)
+    # "none" | "space" (bucket max_bm exhausted) | "capacity" | "anti_affinity"
+    # | "unknown" (solve not proven INFEASIBLE — e.g. time limit — so no cause
+    #   can be honestly attributed; see solver_status for the raw status)
+    shortfall_cause: str = "none"
+    solver_status: str = ""
+    solve_time_seconds: float = 0.0
+    in_stock_bm_used: int = 0
+    procured_bm_total: int = 0
+    committed_bm_used: int = 0
+    # Health gauges (缺口 3c), computed over the post-placement state
+    # (in-stock ∪ used committed ∪ bought). nominal_available is the naive
+    # sum of leftover capacity (overstates usable space). remaining_node_slots
+    # counts how many more config.reference_vm_spec VMs still fit (None when
+    # no reference spec configured). stranded_available sums leftovers on BMs
+    # that cannot fit even config.min_useful_spec (None when unconfigured).
+    nominal_available: Resources = Field(default_factory=Resources)
+    remaining_node_slots: int | None = None
+    stranded_available: Resources | None = None
+    # Post-solve available CPU cores per spread bucket (balance evidence).
+    balance_after: dict[str, int] = Field(default_factory=dict)
+    # Roll-forward hooks (used by the multi-period planner, Phase 3):
+    # per-BM resources consumed by this solve's placement, and the virtual
+    # BMs that materialized (bought / drawn from committed stock) with their
+    # synthetic topology — append them to in-stock for the next period.
+    bm_placed: dict[str, Resources] = Field(default_factory=dict)
+    bought_bms: list[Baremetal] = Field(default_factory=list)
+    committed_bms: list[Baremetal] = Field(default_factory=list)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Multi-period capacity planning I/O (Phase 3): sparse demand book →
+# month-by-month roll-forward per fab → aggregated CapacityReport.
+# ---------------------------------------------------------------------------
+
+class DemandEntry(BaseModel):
+    """
+    One row of the demand book: the incremental demand for (cluster, role,
+    month). Sparse — only filled months exist; revising a month means
+    replacing its row (upsert is the caller's job; the solver is stateless).
+
+    Three-state month semantics (決議 #26): a missing row = the month is
+    unplanned (absent from the report); a row with all-zero demand = an
+    explicit "no growth" month (reported with zero adds); any dimension > 0 =
+    demand (a 0 dimension is unconstrained, not "uses 0").
+    """
+    cluster_id: str
+    node_role: NodeRole = NodeRole.WORKER
+    period: str                       # e.g. "2026-07"; ISO order = sort order
+    # Incremental demand; 0 on a dimension = no lower bound on it.
+    cpu_cores: int = Field(default=0, ge=0)
+    memory_mib: int = Field(default=0, ge=0)
+    storage_gb: int = Field(default=0, ge=0)
+    pod_count: int = Field(default=0, ge=0)
+    vm_specs: list[Resources] | None = None
+    min_total_vms: int | None = None
+    max_total_vms: int | None = None
+    fab: str = ""                     # "" = single-fab mode (matches all BMs)
+    network: str = ""                 # BGP domain filter (缺口 3g)
+    allowed_bm_types: list[str] | None = None   # 決議 #38
+
+    def to_requirement(self) -> ResourceRequirement:
+        return ResourceRequirement(
+            total_resources=Resources(
+                cpu_cores=self.cpu_cores,
+                memory_mib=self.memory_mib,
+                storage_gb=self.storage_gb,
+            ),
+            node_role=self.node_role,
+            cluster_id=self.cluster_id,
+            # Planned demand has no IP assignment yet, but auto anti-affinity
+            # groups by (cluster, ip_type, role) and skips empty ip_type; a
+            # fixed sentinel keeps planned nodes eligible for AG spreading.
+            ip_type="plan",
+            vm_specs=self.vm_specs,
+            min_total_vms=self.min_total_vms,
+            max_total_vms=self.max_total_vms,
+            total_pods=self.pod_count,
+            network=self.network,
+            allowed_bm_types=self.allowed_bm_types,
+        )
+
+
+class CapacityPlanRequest(BaseModel):
+    """
+    Input for the multi-period planning endpoint. The horizon is derived from
+    the demand book (the distinct periods present, sorted) — never a fixed 12
+    months (決議 #27). Fabs are self-sufficient: each fab's months are solved
+    independently with its own rolling state (決議 #4).
+    """
+    demand_book: list[DemandEntry]
+    in_stock: list[Baremetal]
+    procurement_types: list[BaremetalType]
+    procurement_caps: list[ProcurementCap] = Field(default_factory=list)
+    committed_stock: list[CommittedStock] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+    @model_validator(mode="after")
+    def _validate_fab_scoping(self) -> CapacityPlanRequest:
+        """
+        fab="" is the single-fab sentinel (the whole pool). Mixing it with
+        named fabs would plan the same physical machines in two independent
+        rolling states (capacity sold twice), so the mix is rejected. In
+        named-fab mode, stateful supply (caps = physical slots, committed
+        stock = owned machines) must name its fab for the same reason;
+        procurement_types may stay fab="" — a catalog is stateless.
+        """
+        fabs = {e.fab for e in self.demand_book}
+        if "" in fabs and len(fabs) > 1:
+            raise ValueError(
+                "demand_book mixes fab='' (single-fab mode) with named fabs; "
+                "resolve every entry's fab, or none"
+            )
+        if fabs and "" not in fabs:
+            unscoped_caps = [c.bucket for c in self.procurement_caps if not c.fab]
+            if unscoped_caps:
+                raise ValueError(
+                    "named-fab planning requires every ProcurementCap to name "
+                    "its fab (physical slots exist in exactly one fab); "
+                    f"unscoped cap bucket(s): {unscoped_caps}"
+                )
+            unscoped_committed = [
+                c.type_id for c in self.committed_stock if not c.fab
+            ]
+            if unscoped_committed:
+                raise ValueError(
+                    "named-fab planning requires every CommittedStock entry "
+                    "to name its fab (owned machines sit in one fab); "
+                    f"unscoped entry type(s): {unscoped_committed}"
+                )
+        return self
+
+
+class ShortfallDetail(BaseModel):
+    """Structured shortfall cause (決議 #33): what blocked, where, and why."""
+    # "capacity" | "anti_affinity" | "space" | "unknown" | "input_error"
+    # | "blocked" (month not planned because an earlier month failed this fab)
+    cause: str
+    bucket: str | None = None
+    dimension: str | None = None
+    needed: int | None = None
+    available: int | None = None
+    message: str = ""
+
+
+class BudgetRow(BaseModel):
+    """
+    One budgeting line: bought BMs per (fab, bucket, network, month). Keyed on
+    the planning cell (決議 #37) — a representative datacenter would be
+    unreliable when an AG spans several DCs; with
+    procurement_spread_dimension="datacenter" the bucket IS the DC.
+    """
+    fab: str
+    bucket: str
+    network: str
+    period: str
+    bm_count: int
+
+
+class BucketMonthCell(BaseModel):
+    """
+    Planning-report drill-down cell at the (fab, bucket, network, month)
+    granularity — never per BM/rack (決議 #21/#37). The in-stock figures are
+    the post-month state (what the next month starts from).
+    """
+    fab: str
+    bucket: str
+    network: str
+    period: str
+    node_adds: int = 0
+    bm_bought: int = 0
+    committed_used: int = 0
+    in_stock_total: Resources = Field(default_factory=Resources)
+    in_stock_used: Resources = Field(default_factory=Resources)
+    in_stock_available: Resources = Field(default_factory=Resources)
+
+
+class PeriodFabReport(BaseModel):
+    """One fab × month: headline counts + evidence + drill-down cells."""
+    fab: str
+    period: str
+    success: bool
+    # Headline (node adds vs BM buys are distinct counts, 決議 #23)
+    node_adds_total: int = 0
+    bm_procurement_total: int = 0
+    committed_bm_used: int = 0
+    procurement: list[ProcurementDecision] = Field(default_factory=list)
+    committed_used: list[ProcurementDecision] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    shortfalls: list[ShortfallDetail] = Field(default_factory=list)
+    solver_status: str = ""
+    # Health gauges (缺口 3c)
+    nominal_available: Resources = Field(default_factory=Resources)
+    remaining_node_slots: int | None = None
+    stranded_available: Resources | None = None
+    balance_after: dict[str, int] = Field(default_factory=dict)
+    cells: list[BucketMonthCell] = Field(default_factory=list)
+
+
+class CapacityReport(BaseModel):
+    """
+    Canonical planning output (決議 #24): Web UI and Excel render this JSON.
+    Months absent from the demand book are absent here too — absence means
+    "unplanned", not "zero growth" (決議 #26).
+    """
+    success: bool                     # every planned fab-month succeeded
+    by_fab_period: list[PeriodFabReport] = Field(default_factory=list)
+    # Budgeting projection: bought BMs per (fab, bucket, network, month).
+    # Committed stock is already paid for and excluded. Counts only months
+    # that succeeded (failed months carry what-if numbers in their own
+    # PeriodFabReport, never here).
+    budget_view: list[BudgetRow] = Field(default_factory=list)
+    # Aggregates over SUCCESSFUL months only, consistent with budget_view.
+    totals: dict[str, Any] = Field(default_factory=dict)
+    solve_time_seconds: float = 0.0

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM Placement Solver — Capacity Report</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%233987e5%27/%3E%3Cpath d=%27M4 12V7M8 12V4M12 12V9%27 stroke=%27white%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+<script>
+/* Apply the theme before first paint: saved choice, else system preference. */
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("solver-theme"); } catch (e) {}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">Capacity Report</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="./" title="Topology Visualizer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+      Topology
+    </a>
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+    <button id="theme-toggle" class="app-header__link theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Light / Dark">
+      <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="8" cy="8" r="3.2"/>
+        <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/>
+      </svg>
+      <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Plan input</h2>
+        <span class="card__hint">Fill the form · raw JSON under Advanced</span>
+      </header>
+      <div class="card__body">
+
+        <div class="field">
+          <label class="field-label" for="example-select">Load example</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose a capacity plan —</option>
+          </select>
+        </div>
+
+        <p class="subhead" style="margin-top:4px">VM Specs — sizes demand entries pick from</p>
+        <div id="spec-rows" class="form-rows"></div>
+        <button id="add-spec" type="button" class="btn btn--add">+ Add VM spec</button>
+
+        <p class="subhead" style="margin-top:16px">BM Models — machines for stock &amp; purchase</p>
+        <div id="model-rows" class="form-rows"></div>
+        <button id="add-model" type="button" class="btn btn--add">+ Add BM model</button>
+
+        <p class="subhead" style="margin-top:16px">In-stock — existing machines (grouped)</p>
+        <div id="stock-rows" class="form-rows"></div>
+        <button id="add-stock" type="button" class="btn btn--add">+ Add machine group</button>
+
+        <details class="adv" id="supply-adv">
+          <summary>Slot caps &amp; committed stock (optional)</summary>
+          <p class="subhead" style="margin-top:10px">Slot caps — max BMs per bucket (absent = unlimited)</p>
+          <div id="cap-rows" class="form-rows"></div>
+          <button id="add-cap" type="button" class="btn btn--add">+ Add cap</button>
+          <p class="subhead" style="margin-top:14px">Committed — purchased, awaiting placement</p>
+          <div id="committed-rows" class="form-rows"></div>
+          <button id="add-committed" type="button" class="btn btn--add">+ Add committed</button>
+        </details>
+
+        <p class="subhead" style="margin-top:16px">Config</p>
+        <div class="frow frow--config">
+          <label class="mini">
+            <span class="mini__label">Max pods / node (0 = off)</span>
+            <input class="input" type="number" min="0" id="cfg-maxpods" value="0">
+          </label>
+          <label class="mini">
+            <span class="mini__label">Spread dimension</span>
+            <select class="select" id="cfg-spread">
+              <option value="ag">AG</option>
+              <option value="datacenter">Datacenter</option>
+            </select>
+          </label>
+          <label class="mini">
+            <span class="mini__label">Balance buys (0 = off)</span>
+            <input class="input" type="number" min="0" id="cfg-balance" value="0">
+          </label>
+          <label class="mini mini--check">
+            <input type="checkbox" id="cfg-autoaa" checked>
+            <span class="mini__label">Auto anti-affinity</span>
+          </label>
+        </div>
+
+        <details class="adv" id="json-adv">
+          <summary>Advanced — Request JSON</summary>
+          <p class="muted" style="font-size:11.5px; margin:8px 0 6px">
+            Run always uses the form. To start from JSON, paste it and click “JSON → Form”.
+          </p>
+          <div class="frow" style="grid-template-columns:1fr 1fr; margin-bottom:8px">
+            <button id="form-to-json" type="button" class="btn btn--add">Form → JSON</button>
+            <button id="json-to-form" type="button" class="btn btn--add">JSON → Form</button>
+          </div>
+          <textarea id="json-editor" class="editor" spellcheck="false"
+            placeholder="CapacityPlanRequest JSON…"></textarea>
+          <button id="upload-btn" type="button" class="btn btn--add btn--block" style="margin-top:8px">
+            Upload JSON file…
+          </button>
+          <input id="upload-input" type="file" accept=".json" hidden>
+        </details>
+
+        <div id="json-error" class="alert alert--error hidden" style="margin-top:10px"></div>
+
+        <button id="run-btn" type="button" class="btn btn--primary btn--block" style="margin-top:12px">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="btn__label">Run plan</span>
+        </button>
+
+      </div>
+    </section>
+  </aside>
+
+  <div class="content">
+
+    <section id="demand-card" class="card">
+      <header class="card__header">
+        <h2 class="card__title">Demand book</h2>
+        <span class="card__hint" id="demand-count"></span>
+        <div class="card__header-right">
+          <button id="demand-table-open" type="button" class="btn btn--small">Import (replace)…</button>
+          <button id="demand-upload" type="button" class="btn btn--small">Upload file…</button>
+          <button id="demand-export" type="button" class="btn btn--small">Export CSV</button>
+          <input id="demand-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
+        </div>
+      </header>
+      <div class="card__body">
+        <div class="demand-toolbar">
+          <div id="demand-fab-filter" class="chips-row"></div>
+          <input id="demand-search" class="input demand-search" type="search"
+            placeholder="Filter clusters…" spellcheck="false">
+        </div>
+        <div id="demand-grid" class="table-wrap dgrid-wrap"></div>
+        <p class="muted" style="font-size:11px; margin:8px 0 0">
+          Type in the last row to add · paste an Excel range anywhere in the grid to append
+          (with a header row, or bare values in column order) · Import (replace)… swaps the whole book.
+        </p>
+        <div id="demand-io-msg" class="alert hidden" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+    <div id="stats" class="stats hidden"></div>
+
+    <section id="grid-card" class="card">
+      <header class="card__header">
+        <h2 class="card__title">Fab × Month</h2>
+        <span class="card__hint">Click a cell for the drill-down · absent months are unplanned, not zero-growth</span>
+        <div class="card__header-right">
+          <div class="segmented" role="radiogroup" aria-label="Grid view">
+            <label><input type="radio" name="grid-view" value="matrix" checked><span>Matrix</span></label>
+            <label><input type="radio" name="grid-view" value="list"><span>List</span></label>
+          </div>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="fab-filter" class="chips-row fab-filter hidden"></div>
+        <div id="grid-content">
+          <div class="viz-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 20V9M9 20V4M15 20v-8M21 20V7"/>
+            </svg>
+            <span>Run a capacity plan to see the monthly report.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="detail-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="detail-title">Month detail</h2>
+        <span class="card__hint" id="detail-status-hint"></span>
+      </header>
+      <div class="card__body" id="detail-content"></div>
+    </section>
+
+    <section id="metrics-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Metric breakdowns</h2>
+        <span class="card__hint">Fab × month pivots · ✕ = failed month, excluded from totals</span>
+      </header>
+      <div class="card__body" id="metrics-content"></div>
+    </section>
+
+    <section id="budget-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Budget view</h2>
+        <span class="card__hint">Bought BMs per fab × (bucket, network) × month · committed stock excluded</span>
+      </header>
+      <div class="card__body">
+        <div id="budget-strip" class="barstrip" style="margin-bottom:16px"></div>
+        <div class="table-wrap"><table class="tbl" id="budget-table"></table></div>
+      </div>
+    </section>
+
+  </div>
+
+</main>
+
+<dialog id="csv-dialog" class="csv-dialog">
+  <header class="csv-dialog__head">
+    <div>
+      <div class="csv-dialog__title">Demand book — table import</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">
+        Paste an Excel range (Ctrl/⌘+V) anywhere in this window · cells are editable, rows re-validate on the fly · Import replaces all demand entries
+      </div>
+    </div>
+    <button id="csv-dialog-close" type="button" class="row-del" title="Close">✕</button>
+  </header>
+  <div id="csv-dialog-msg" class="alert alert--error hidden" style="margin:0 16px 10px"></div>
+  <div id="csv-table-host" class="csv-table-host"></div>
+  <footer class="csv-dialog__foot">
+    <span id="csv-dialog-summary" class="muted" style="font-size:12px"></span>
+    <div style="display:flex; gap:8px">
+      <button id="csv-dialog-cancel" type="button" class="btn">Cancel</button>
+      <button id="csv-dialog-import" type="button" class="btn btn--primary" disabled>Import (replace)</button>
+    </div>
+  </footer>
+</dialog>
+
+<div id="report-tooltip" class="tooltip" role="tooltip"></div>
+
+<script type="module" src="js/theme.js"></script>
+<script type="module" src="js/report.js"></script>
+</body>
+</html>
