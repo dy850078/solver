@@ -44,6 +44,17 @@ logger = logging.getLogger(__name__)
 RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
+def has_demand(req: ResourceRequirement) -> bool:
+    """True when the requirement asks for anything (any resource dimension,
+    a pod floor, or a VM-count floor). All-zero rows are explicit "no growth"
+    markers and must never fail as unsatisfiable."""
+    return (
+        req.total_pods > 0
+        or (req.min_total_vms or 0) > 0
+        or any(getattr(req.total_resources, f) > 0 for f in RESOURCE_FIELDS)
+    )
+
+
 def pod_node_floor(req: ResourceRequirement, max_pods_per_node: int) -> int:
     """
     Minimum node count implied by the "at least N pods" demand:
@@ -157,12 +168,7 @@ class ResourceSplitter:
             "Requirement %d (role=%s) produced no synthetic VMs: %s",
             req_idx, req.node_role.value, reason,
         )
-        has_demand = (
-            req.total_pods > 0
-            or (req.min_total_vms or 0) > 0
-            or any(getattr(req.total_resources, f) > 0 for f in RESOURCE_FIELDS)
-        )
-        if not has_demand:
+        if not has_demand(req):
             return
         self.dropped_requirements.append({
             "requirement_index": req_idx,

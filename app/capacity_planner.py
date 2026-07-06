@@ -44,11 +44,17 @@ from .models import (
     ProcurementDecision,
     ProcurementRequest,
     ProcurementResult,
+    ResourceRequirement,
     Resources,
     ShortfallDetail,
     Topology,
 )
-from .splitter import RESOURCE_FIELDS, ResourceSplitter, spec_count_upper_bound
+from .splitter import (
+    RESOURCE_FIELDS,
+    ResourceSplitter,
+    has_demand,
+    spec_count_upper_bound,
+)
 from .solver import VMPlacementSolver
 
 logger = logging.getLogger(__name__)
@@ -283,16 +289,35 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     type_of = {**buyable_type_of, **committed_type_of}
 
     reqs = []
-    for r in request.requirements:
+    unreachable: list[dict] = []
+    for idx, r in enumerate(request.requirements):
         in_stock_ids, virtual_ids = candidates_for(r.network)
         if r.allowed_bm_types is not None:
             # 決議 #38: this cluster may only buy/draw these machine types.
             allowed = set(r.allowed_bm_types)
             virtual_ids = [i for i in virtual_ids if type_of[i] in allowed]
-        reqs.append(r.model_copy(update={
-            "candidate_baremetals":
-                (r.candidate_baremetals or in_stock_ids) + virtual_ids
-        }))
+        candidates = (r.candidate_baremetals or in_stock_ids) + virtual_ids
+        if not candidates and has_demand(r):
+            # Precheck with a cause-specific message: the splitter would drop
+            # these too, but its generic spec-centric wording doesn't tell the
+            # user what to declare.
+            unreachable.append({
+                "requirement_index": idx,
+                "cluster_id": r.cluster_id,
+                "node_role": r.node_role.value,
+                "reason": _no_candidates_reason(r, request, cells),
+            })
+        reqs.append(r.model_copy(update={"candidate_baremetals": candidates}))
+
+    if unreachable:
+        result = PlacementResult(
+            success=False,
+            solver_status="INPUT_ERROR: unsatisfiable requirement(s)",
+            bm_total_count=len(all_bms),
+        )
+        return _Pass(result, buyable_type_of, committed_type_of,
+                     committed_entry_of, {}, virtual_bms, None, None,
+                     unreachable)
 
     # Explicit VMs pass through with their candidate lists untouched: the
     # scheduler's step-3 filter is authoritative, so an explicit VM never
@@ -343,6 +368,33 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _no_candidates_reason(req: ResourceRequirement,
+                          request: ProcurementRequest,
+                          cells: dict[tuple[str, str], Topology]) -> str:
+    """
+    Actionable wording for a requirement no machine can serve. Cells are
+    declared by the supply side only (in-stock / caps / bucketed committed,
+    決議 #37) — the most common miss is a network nothing has declared.
+    """
+    if req.network and not any(net == req.network for (_, net) in cells):
+        return (
+            f"no (bucket, network) cell exists in network '{req.network}' — "
+            f"declare one via an in-stock machine, a procurement_cap, or a "
+            f"committed_stock entry with network='{req.network}'"
+        )
+    if not request.in_stock and not request.procurement_types:
+        return ("no in-stock machines and no procurement_types — "
+                "nothing can host this demand")
+    if req.allowed_bm_types is not None:
+        return (
+            f"allowed_bm_types {req.allowed_bm_types} matches no reachable "
+            f"buyable or committed machine "
+            f"(network '{req.network or 'any'}') and there are no in-stock "
+            f"candidates"
+        )
+    return "no candidate baremetals reachable for this requirement"
+
 
 def _derive_cells(request: ProcurementRequest,
                   dim: str) -> dict[tuple[str, str], Topology]:

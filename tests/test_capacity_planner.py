@@ -390,6 +390,64 @@ class TestBalanceAndGauges:
         assert r.stranded_available is None
 
 
+class TestUnreachableDemandMessages:
+    """INPUT_ERROR wording for demand no machine can serve must say what to
+    declare — cells come from the supply side only (決議 #37)."""
+
+    def test_network_without_any_cell_names_the_fix(self):
+        """No stock and no cap declares bgp1 → the message points at the
+        three ways to declare the cell, not at vm_specs."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8, network="bgp1")
+
+        r = procure(req, [], types)
+
+        assert not r.success
+        assert "INPUT_ERROR" in r.solver_status
+        assert "'bgp1'" in r.solver_status
+        assert "procurement_cap" in r.solver_status
+
+    def test_no_stock_and_no_types_says_so(self):
+        req = make_req(cpu=32, spec=SPEC_8)
+
+        r = procure(req, [], [])
+
+        assert not r.success
+        assert "INPUT_ERROR" in r.solver_status
+        assert "no in-stock machines and no procurement_types" in r.solver_status
+
+    def test_no_stock_without_network_still_buys(self):
+        """Behavior guard: greenfield without a network works via the
+        fallback cell — everything is bought."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8)
+
+        r = procure(req, [], types)
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total >= 1
+
+    def test_cap_declares_the_network_cell(self):
+        """Behavior guard: a procurement_cap doubles as the cell declaration,
+        so the bgp1 case succeeds once a cap names it."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        req = make_req(cpu=32, spec=SPEC_8, network="bgp1")
+        caps = [ProcurementCap(bucket="ag-1", network="bgp1", max_bm=2)]
+
+        r = procure(req, [], types, caps=caps)
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total >= 1
+
+    def test_zero_demand_row_is_exempt(self):
+        """An all-zero "no growth" requirement with nothing to place on must
+        not fail — it asks for nothing."""
+        r = procure(make_req(), [], [])
+
+        assert r.success, r.solver_status
+        assert r.procured_bm_total == 0
+
+
 # ===========================================================================
 # Code-review regressions (findings #1–#10)
 # ===========================================================================
