@@ -28,6 +28,7 @@ solver 保留在延伸場景（spare 跨 cluster 分配、master/infra fault-dom
 | 3 | **Pre-flight 終態檢查** | 轉換有 ~6-10% 永久容量折損，開跑前先算清楚需要幾台 spare，不中途發現 |
 | 4 | **Per-AG 並行 + 序列化 drain** | 3 AG 各一台同時轉，但 drain 階段全域序列化，避開 PDB 競爭 |
 | 5 | **單一事實來源** | 遷移狀態存 Inventory DB，不引入 CRD/etcd、不引入 Redis |
+| 6 | **釋放計算機** | 水位有餘裕時 BM 純退場不轉換、整機歸還資源池；計畫書預估可釋放量，實際決定每輪用即時資料重算 |
 
 ---
 
@@ -41,6 +42,8 @@ solver 保留在延伸場景（spare 跨 cluster 分配、master/infra fault-dom
 - 只轉換指定 BM Model（config 白名單 + 固定切割配方），其餘維持 baremetal node
 - PDB 預檢不過的 BM 跳過並回報，流程繼續；每輪重驗
 - 轉換失敗的 BM 標記 `failed` 等人工處理，不自動回滾
+- **釋放計算機**：計畫階段預估遷移後可釋放多少資源（整台 BM 退場不轉 VM，供其他用途）；
+  轉換 vs 釋放的實際決定每輪以即時水位重算
 - 提供 plan → approve → start 三段式 API 與 Prometheus metrics / Grafana 可觀測性
 
 ### Non-Goals
@@ -158,24 +161,44 @@ conversion_recipes:
 
 所有公式 **CPU / Mem / Pod 三維度分別計算，取最差維度**判定。`u` 建議使用尖峰或近期 P95 用量。
 
-#### 3.1 Pre-flight 終態檢查（per cluster，開跑前一次性）
+#### 3.1 Pre-flight 容量結算：spare 需求與可釋放量（per cluster，開跑前一次性）
 
-轉換造成永久容量折損（有效比例 `r ≈ 0.90~0.92`），因此：
+轉換造成永久容量折損（有效比例 `r ≈ 0.90~0.92`）。設 `A_keep` 為不可轉換 BM
+（不在 recipe 表 / 特殊 taint）維持原容量、`A_conv` 為可轉換 BM 總容量，
+全轉終態容量 `C_end = A_keep + r × A_conv`。**spare 需求與可釋放量是同一條式子的兩個方向**：
 
 ```
-終態水位 = U / (r × A + S) ≤ 0.70
-→ 所需 spare 容量 S ≥ U / 0.70 − r × A
-   （U = 目前絕對用量, A = 目前總容量; S ≤ 0 表示不需 spare）
+差額 Δ = C_end − U / 0.70
+
+Δ < 0 → 缺容量 → 所需 spare 容量 S ≥ U/0.70 − C_end
+Δ > 0 → 多容量 → 可釋放容量 R = C_end − U/release_target
+        （release_target 比 70% 保守, 建議 65%, config 可調——釋放難回頭, 要留邊際）
 ```
 
-**推論**：遷移前水位介於 `0.70 × r ≈ 64%` 與 70% 之間的 cluster，遷移前看似達標、
-轉完必定超標——必須在計畫階段就排入 spare，而非中途發現。
+**釋放計算機**：`POST /v1/migrations` 的計畫書（只算不做）即扮演此角色，
+輸出「需補 N 台 spare」或「可釋放 M 台 BM + 換算資源量」。釋放相關規則：
 
-同時檢查 node 數終態：每台 BM 轉換淨增 +1 node（1→2），每台 spare +2，
+- **整台為單位**：一台被釋放的可轉換 BM 從 cluster 帳上拿走的是其有效貢獻
+  （如 2×30=60 vCore），**歸還資源池的卻是整台實體機（64c/768g）**——
+  cluster 不需要這容量時，釋放比留作 VM host 更划算
+- **三維度 + per-AG**：釋放同時減少 CPU/Mem/Pod 容量（node 數變少），
+  且釋放的 BM 需跨 AG 均勻挑選，避免抽空單一 AG
+- **釋放數是預估非承諾**：實際「轉換 vs 釋放」的決定延後到每輪 admission 時
+  以即時 U 重算（見 §3.4）
+
+**Spare 方向的推論**：遷移前水位介於 `0.70 × r ≈ 64%` 與 70% 之間的 cluster，
+遷移前看似達標、轉完必定超標——必須在計畫階段就排入 spare，而非中途發現。
+
+同時檢查 node 數終態：每台 BM 轉換淨增 +1 node（1→2）、釋放 −1、每台 spare +2，
 `終態 node 數 ≤ per-cluster max node 上限`，否則計畫不可行。
 
-數值範例：A=1000 vCore、U=680（水位 68%，看似健康）→ 終態容量 920 →
-水位 73.9% 超標 → `S ≥ 680/0.7 − 920 = 51.4 vCore` → 補 1 台 spare（貢獻 60 vCore）即可。
+數值範例：
+
+- **Spare 方向**：A=1000 vCore（全可轉換）、U=680（68%，看似健康）→ C_end=920 →
+  水位 73.9% 超標 → `S ≥ 680/0.7 − 920 = 51.4` → 補 1 台 spare（貢獻 60 vCore）
+- **釋放方向**：A=1000、U=500（50%）→ C_end=920、`U/0.65 = 769` →
+  `R = 151` vCore 有效容量 → 每台轉換型 BM 有效貢獻 60 → **可釋放 2 台整機**
+  （釋放後終態水位 `500/800 = 62.5%`）
 
 #### 3.2 窗口期 admission gate（每次啟動一台轉換前）
 
@@ -200,6 +223,21 @@ u' > ceiling          → 先轉一台 spare 加入 cluster 再重算；無 spar
 Spare BM 是空機，轉換**不需 drain / PDB**，直接走 BIOS → KVM → 切 VM → join，
 是最便宜的容量來源。順序：pre-flight 算出所需 spare 數 → 先全部轉好加入 cluster →
 再開始逐台退 BM，讓每輪的 `u'` 從一開始就有緩衝。
+
+#### 3.4 每輪的轉換 vs 釋放決定（release-last 原則）
+
+計畫書的可釋放量只是 forecast——遷移橫跨數週，U 會漂移、會有 BM 進 blocked/failed。
+因此每輪 admission 時對候選 BM 用即時資料重新判定：
+
+```
+若這台永久離開後, 終態（三維度+per-AG）仍 ≤ release_target → 走釋放路徑
+   （drain → remove → 歸還資源池, 跳過 BIOS/KVM/切 VM, 流程更短）
+否則 → 走轉換路徑
+```
+
+**排序原則：釋放盡量排在遷移後段。** 提早釋放會永久墊高後續所有輪次的基準水位 `u`，
+使後面的 drain 窗口更緊；除非該機器有急迫的外部用途，否則先轉換、後釋放較穩
+（open question：釋放優先序政策）。
 
 ### 4. 並行模型：Per-AG Lane + 全域鎖
 
@@ -243,12 +281,13 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> CANDIDATE : recipe 表命中 + 無特殊 taint/label
-    CANDIDATE --> ADMITTED : 窗口期水位 gate 通過（§3.2, cluster + per-AG）
+    CANDIDATE --> ADMITTED : 窗口期水位 gate 通過（§3.2, cluster + per-AG）<br/>同時決定轉換 or 釋放（§3.4）
     CANDIDATE --> BLOCKED : PDB 預檢不過（allowedDisruptions = 0）
     BLOCKED --> CANDIDATE : 每輪重驗通過
     ADMITTED --> DRAINING : 取得全域 drain token
     DRAINING --> REMOVING : node 排空 → 釋放 token
-    REMOVING --> BIOS_CONFIG : node 退出 cluster（BM Service）
+    REMOVING --> BIOS_CONFIG : 轉換模式（BM Service）
+    REMOVING --> RELEASED : 釋放模式：整機歸還資源池<br/>（跳過 BIOS/KVM/切 VM）
     BIOS_CONFIG --> PROVISIONING : 重開機完成（VM Service: KVM + 依 recipe 切 VM）
     PROVISIONING --> JOINING : VM 生成完成
     JOINING --> CONVERTED : 全部 VM node Ready + 驗證通過
@@ -267,10 +306,13 @@ stateDiagram-v2
 #### 5.3 主流程（每輪迭代）
 
 ```
-Pre-flight（一次）→ Spare 先行轉換 → 逐台迭代：
+Pre-flight（一次, 含 spare/釋放結算 §3.1）→ Spare 先行轉換 → 逐台迭代：
   掃候選（recipe 表 + taint/label 過濾）
-  → admission gate（§3.2）→ PDB 預檢 → [drain token] drain
-  → node 退場 → BIOS/重開機 → KVM + 切 VM → join + 驗證 → 下一台
+  → admission gate（§3.2）+ 轉換/釋放判定（§3.4, release-last）
+  → PDB 預檢 → [drain token] drain → node 退場
+  → 轉換：BIOS/重開機 → KVM + 切 VM → join + 驗證
+  → 釋放：整機歸還資源池
+  → 下一台
 終止三態：全部完成 / 繼續 / 只剩 blocked+failed → 例外報告等人工
 ```
 
@@ -278,7 +320,7 @@ Pre-flight（一次）→ Spare 先行轉換 → 逐台迭代：
 
 | Endpoint | 用途 |
 |---|---|
-| `POST /v1/migrations` | 建立計畫：跑 pre-flight，回傳計畫書（終態水位、所需 spare、候選清單、預估輪數）——只算不做 |
+| `POST /v1/migrations` | 建立計畫：跑 pre-flight，回傳計畫書（終態水位、所需 spare **或可釋放 BM 數與資源量**、候選清單、預估輪數）——只算不做，兼任釋放計算機 |
 | `POST /v1/migrations/{id}/approve` | 人工審核通過 |
 | `POST /v1/migrations/{id}/start` / `pause` / `resume` / `abort` | 執行控制 |
 | `GET /v1/migrations/{id}` | 完整狀態（per-BM 進度、blocked list + 原因、水位即時值） |
@@ -360,6 +402,7 @@ BM 本體的狀態欄位（`converting` / `failed` / `converted`）放 inventory
 | Inventory 資料與實際漂移 | gate 算錯 | 水位一律即時查 K8s metrics，Inventory 只當 BM 屬性/狀態來源 |
 | nodeSelector 綁定 BM 專屬 label | drain 出去的 pod 回不來 | VM node 繼承原 BM label；特殊 taint/label 的 BM 直接排除不轉換 |
 | 小 cluster 窗口期水位過高 | gate 永遠不放行 | 動態並行度（可能降為 1）+ spare-first；仍不行則 pre-flight 即回報不可行 |
+| 過度釋放後 U 成長、水位回不去 70% | 釋放的 BM 已被挪作他用，難追回 | `release_target` 留邊際（65%）+ 每輪以即時 U 重判 + release-last 排序 |
 
 ---
 
@@ -386,6 +429,9 @@ BM 不自動還原（回滾 = 人工決策）；`FAILED` 的 BM 一律人工處�
 5. **Spare 池的管理權責**：spare BM 由誰供給、算誰的容量帳？多 cluster 搶 spare 時的優先序？
 6. **Blocked list 的協調流程**：PDB=0 的 pod 清單回報給 user 後，追蹤與 SLA 由誰 own？
 7. **`u` 的取樣窗口**：P95 的回看區間（7 天 / 14 天）？
+8. **`release_target` 定多少**：65%？要不要隨 cluster 成長趨勢動態調整？
+9. **釋放優先序政策**：優先釋放哪種 BM——不可轉換機型（讓 cluster 更純 VM）、
+   大機型（外部再利用價值高）、或依外部需求指定？release-last 原則的例外條件？
 
 ---
 
@@ -410,3 +456,4 @@ BM 不自動還原（回滾 = 人工決策）；`FAILED` 的 BM 一律人工處�
 | Controller 用 Python + FastAPI、獨立 deployment、單副本 | I/O-bound、量級小、與 solver 同技術棧 | HA 時加 DB lease |
 | 不引入 Redis / Celery | Level-triggered reconcile 無 queue 需求；避免第二狀態存放處 | — |
 | 編排不用 GitLab pipeline 當大腦 | 跨 pipeline 狀態/鎖/長等待均不適配 | Pipeline 保留為 BM/VM Service 執行載體 |
+| 釋放計算機併入 pre-flight 計畫書；轉換 vs 釋放每輪以即時水位重判 | 釋放是 spare 公式的鏡像；U 會漂移，計畫值只是 forecast | `release_target` 與釋放優先序（open question #8/#9） |
