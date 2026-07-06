@@ -1,30 +1,22 @@
 """
-VM Placement Solver — Step 1: Hard Constraints Only
+VM Placement Solver — with Cross-Scheduling Constraints
 
-This is the minimal viable solver. It answers the question:
-  "Is there ANY valid way to assign these VMs to these baremetals?"
+Hard constraints:
+  1. Each VM assigned to exactly one BM (or <= 1 if partial placement)
+  2. BM resource capacity not exceeded (cpu, mem, disk, gpu)
+  3. AG-based anti-affinity rules (within this scheduling run)
+  4. Candidate lists from Go scheduler step 3
+  5. BM VM count limits (current_vm_count + new_vms <= max_vm_count)
+  6. Cross-cluster hard anti-affinity (topology-based)
 
-What it does:
-  1. Each VM is assigned to exactly one baremetal
-  2. Baremetal capacity is not exceeded (cpu, mem, disk, gpu)
-  3. Anti-affinity rules are respected (max N VMs per AG)
-  4. Candidate lists from step 3 are respected
+Soft constraints (objective function):
+  7. Cross-cluster soft anti-affinity (penalty for violations)
+  8. Cross-cluster soft affinity (reward for co-location)
 
-What it does NOT do yet (we'll add these step by step):
-  - No objective function (any feasible solution is returned)
-  - No optimization (no preference for "better" placements)
-
-HOW CP-SAT WORKS (brief primer):
-  CP-SAT is a constraint programming solver. You tell it:
-    - Variables: things that can take different values
-    - Constraints: rules the variables must satisfy
-    - Objective (optional): what to minimize/maximize
-  It then searches for variable assignments that satisfy all constraints.
-
-  In our case:
-    - Variables: assign[vm_i, bm_j] = 0 or 1 (boolean)
-    - Constraints: capacity limits, one-BM-per-VM, anti-affinity
-    - Objective: none yet (just find any feasible solution)
+Two-phase solving:
+  When allow_partial_placement=True AND soft rules exist:
+    Phase 1: maximize placed VM count → get N
+    Phase 2: fix placed count == N, maximize soft rule score
 """
 
 from __future__ import annotations
@@ -32,6 +24,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from typing import Any
 
 from ortools.sat.python import cp_model
 
@@ -39,6 +32,8 @@ from .models import (
     SPREAD_DIMENSIONS,
     VM,
     AntiAffinityRule,
+    TopologyRule,
+    ExistingVM,
     Baremetal,
     FailoverRule,
     GroupSelector,
@@ -47,6 +42,8 @@ from .models import (
     PlacementRequest,
     PlacementResult,
     Resources,
+    Topology,
+    TOPOLOGY_SCOPES,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,6 +76,114 @@ def get_eligible_baremetals(
     ]
 
 
+def _get_topology_value(topo: Topology, scope: str) -> str:
+    """Extract the topology value at a given scope level."""
+    return getattr(topo, scope, "")
+
+
+def _get_topology_zone(topo: Topology, scope: str) -> str:
+    """
+    Build a zone key that includes all levels from the scope upward.
+    e.g. scope="datacenter" → "site-a/p1/dc-1"
+    This ensures that same(lower) implies same(higher).
+    """
+    idx = TOPOLOGY_SCOPES.index(scope)
+    # Include all scopes from the current level up to coarsest
+    parts = []
+    for s in reversed(TOPOLOGY_SCOPES[idx:]):
+        parts.append(getattr(topo, s, ""))
+    return "/".join(parts)
+
+
+# -----------------------------------------------------------------------
+# Validation: conflict detection and redundancy filtering
+# -----------------------------------------------------------------------
+
+def validate_topology_rules(
+    rules: list[TopologyRule],
+) -> tuple[list[TopologyRule], list[dict[str, Any]]]:
+    """
+    Phase 1 of the solver pipeline:
+      a. Detect conflicts: same cluster pair has affinity and anti-affinity
+         at incompatible scope levels → MODEL_INVALID
+      b. Filter redundancy: same cluster pair + same direction with multiple
+         scopes → keep finest-grained, warn about coarser ones
+      c. Downgrade affinity+hard to soft with warning
+
+    Returns (validated_rules, diagnostics_warnings).
+    Raises ValueError if a conflict is detected.
+    """
+    warnings: list[dict[str, Any]] = []
+    processed: list[TopologyRule] = []
+
+    # Downgrade affinity+hard → soft
+    for rule in rules:
+        if rule.type == "affinity" and rule.enforcement == "hard":
+            warnings.append({
+                "type": "enforcement_downgraded",
+                "rule_id": rule.rule_id,
+                "reason": "affinity rules cannot be hard; downgraded to soft",
+            })
+            rule = rule.model_copy(update={"enforcement": "soft"})
+        processed.append(rule)
+
+    # Group by (sorted cluster pair, direction) for conflict/redundancy checks
+    # cluster_ids may have >2 entries; use frozenset as key
+    pair_dir: dict[tuple[frozenset[str], str], list[TopologyRule]] = defaultdict(list)
+    for rule in processed:
+        key = (frozenset(rule.cluster_ids), rule.type)
+        pair_dir[key].append(rule)
+
+    # Check for conflicts: affinity vs anti-affinity at incompatible scopes
+    cluster_sets = {frozenset(r.cluster_ids) for r in processed}
+    for cs in cluster_sets:
+        affinity_rules = pair_dir.get((cs, "affinity"), [])
+        anti_affinity_rules = pair_dir.get((cs, "anti_affinity"), [])
+        if not affinity_rules or not anti_affinity_rules:
+            continue
+
+        for aff in affinity_rules:
+            for anti in anti_affinity_rules:
+                aff_idx = TOPOLOGY_SCOPES.index(aff.scope)
+                anti_idx = TOPOLOGY_SCOPES.index(anti.scope)
+                # Conflict: affinity scope <= anti-affinity scope in hierarchy
+                # (affinity wants same at aff.scope, anti wants different at anti.scope)
+                # If aff scope is same or finer than anti scope → same(aff) implies
+                # same(anti) which contradicts different(anti)
+                if aff_idx <= anti_idx:
+                    raise ValueError(
+                        f"Topology rule conflict: affinity rule '{aff.rule_id}' "
+                        f"at scope '{aff.scope}' conflicts with anti-affinity rule "
+                        f"'{anti.rule_id}' at scope '{anti.scope}' for clusters "
+                        f"{sorted(cs)}. Affinity at scope <= anti-affinity scope "
+                        f"is contradictory."
+                    )
+
+    # Remove redundant rules: same pair + same direction, keep finest scope
+    final_rules: list[TopologyRule] = []
+    for (cs, direction), group in pair_dir.items():
+        if len(group) <= 1:
+            final_rules.extend(group)
+            continue
+
+        # Sort by scope hierarchy index (lowest = finest)
+        group.sort(key=lambda r: TOPOLOGY_SCOPES.index(r.scope))
+        finest = group[0]
+        final_rules.append(finest)
+        for redundant in group[1:]:
+            warnings.append({
+                "type": "redundant_rule_filtered",
+                "rule_id": redundant.rule_id,
+                "reason": (
+                    f"Redundant: '{redundant.rule_id}' at scope '{redundant.scope}' "
+                    f"is coarser than '{finest.rule_id}' at scope '{finest.scope}' "
+                    f"for the same cluster pair and direction; filtered out"
+                ),
+            })
+
+    return final_rules, warnings
+
+
 class VMPlacementSolver:
 
     def __init__(
@@ -92,7 +197,7 @@ class VMPlacementSolver:
         self.config = request.config
         self.active_vars: dict[str, cp_model.IntVar] = active_vars or {}
 
-        # Lookup maps for quick access
+        # Lookup maps
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
         self.bm_map: dict[str, Baremetal] = {bm.id: bm for bm in request.baremetals}
 
@@ -149,7 +254,7 @@ class VMPlacementSolver:
                     "default_max_per_bm to be a positive integer"
                 )
 
-        # Resolve anti-affinity rules (explicit + auto-generated)
+        # Resolve AG-based anti-affinity rules (existing logic)
         self.effective_rules = self._resolve_anti_affinity_rules()
 
         # Resolve per-baremetal rules (explicit + auto-generated)
@@ -183,16 +288,15 @@ class VMPlacementSolver:
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
-        # Decision variables: assign[(vm_id, bm_id)] = BoolVar
-        # Only created for eligible (vm, bm) pairs — this is important
-        # because it means we never even consider impossible assignments.
+        # CP-SAT model and variables (created fresh per solve phase)
+        self.model = cp_model.CpModel()
         self.assign: dict[tuple[str, str], cp_model.IntVar] = {}
 
         # Objective helper: bm_used[bm_id] = 1 if any VM is placed on that BM
         self.bm_used: dict[str, cp_model.IntVar] = {}
 
     # ------------------------------------------------------------------
-    # Step A: Determine which (VM, BM) pairs are eligible
+    # Eligibility pre-filter
     # ------------------------------------------------------------------
 
     def _get_eligible_baremetals(self, vm: VM) -> list[str]:
@@ -303,7 +407,6 @@ class VMPlacementSolver:
         # Sorted for deterministic logging and rule construction.
         auto_spread_dims = sorted(self.config.target_spread.keys())
 
-        # Which VMs are already in explicit rules?
         covered: set[str] = set()
         for rule in rules:
             covered.update(rule.vm_ids)
@@ -520,20 +623,10 @@ class VMPlacementSolver:
         return "selector/" + "/".join(parts)
 
     # ------------------------------------------------------------------
-    # Step C: Build the CP-SAT model
+    # Build CP-SAT model
     # ------------------------------------------------------------------
 
     def _build_variables(self):
-        """
-        Create one boolean variable for each eligible (VM, BM) pair.
-
-        assign[(vm_id, bm_id)] = 1 means "vm is placed on bm"
-        assign[(vm_id, bm_id)] = 0 means "vm is NOT placed on bm"
-
-        We only create variables for pairs where the VM can actually fit.
-        This is a key optimization — if you have 100 VMs and 50 BMs,
-        you might only have 500 eligible pairs instead of 5000.
-        """
         for vm in self.request.vms:
             for bm_id in self._get_eligible_baremetals(vm):
                 self.assign[(vm.id, bm_id)] = self.model.new_bool_var(
@@ -582,35 +675,17 @@ class VMPlacementSolver:
                 self.model.add(sum(vm_vars) == 1)
 
     def _add_capacity_constraints(self):
-        """
-        CONSTRAINT: Total VM demand on each BM must not exceed its available capacity.
-
-        For each baremetal, for each resource dimension (cpu, mem, disk, gpu):
-          sum of (vm_demand * assign_var) for all VMs eligible on this BM <= available_capacity
-
-        Example: BM has 64 available CPU cores.
-          VM-A needs 16 cores, VM-B needs 8 cores, VM-C needs 32 cores.
-          If all three are assigned here: 16+8+32 = 56 <= 64 ✓
-          If we also add VM-D (16 cores): 56+16 = 72 > 64 ✗
-        """
         for bm in self.request.baremetals:
             avail = bm.available_capacity
-
-            # Collect all (vm_id, assign_var) pairs for VMs eligible on this BM
             assigned_vars = [
                 (vm_id, self.assign[(vm_id, bm.id)])
                 for vm_id in self.vm_map
                 if (vm_id, bm.id) in self.assign
             ]
-
             if not assigned_vars:
                 continue
-
-            # For each resource dimension, add a capacity constraint
             for field in RESOURCE_FIELDS:
                 capacity = getattr(avail, field)
-
-                # Build the usage expression: sum(demand * var)
                 usage = sum(
                     getattr(self.vm_map[vm_id].demand, field) * var
                     for vm_id, var in assigned_vars
@@ -1136,15 +1211,140 @@ class VMPlacementSolver:
         return [w * (max_v - min_v)]
 
     # ------------------------------------------------------------------
-    # Step D: Solve and extract results
+    # BM VM count limit
+    # ------------------------------------------------------------------
+
+    def _add_vm_count_constraints(self):
+        """current_vm_count + newly_assigned <= max_vm_count"""
+        for bm in self.request.baremetals:
+            if bm.max_vm_count is None:
+                continue
+            assigned_vars = [
+                self.assign[(vm_id, bm.id)]
+                for vm_id in self.vm_map
+                if (vm_id, bm.id) in self.assign
+            ]
+            if not assigned_vars:
+                continue
+            new_count = sum(assigned_vars)
+            self.model.Add(bm.current_vm_count + new_count <= bm.max_vm_count)
+
+    # ------------------------------------------------------------------
+    # Cross-cluster topology constraints
+    # ------------------------------------------------------------------
+
+    def _add_hard_topology_constraints(self, rules: list[TopologyRule]):
+        """
+        Hard anti-affinity: for each rule, if an existing VM from a related
+        cluster occupies a topology zone, no new VM from this scheduling run
+        (whose cluster_id is in the rule) can be placed in a BM in that zone.
+        """
+        current_cluster_ids = {vm.cluster_id for vm in self.request.vms}
+
+        for rule in rules:
+            if rule.type != "anti_affinity" or rule.enforcement != "hard":
+                continue
+
+            # Which clusters in this rule are "other" (have existing VMs)?
+            other_cluster_ids = set(rule.cluster_ids) - current_cluster_ids
+            # Collect zones occupied by other clusters at this rule's scope
+            occupied_zones: set[str] = set()
+            for cid in other_cluster_ids:
+                occupied_zones.update(
+                    self.existing_cluster_zones.get(cid, {}).get(rule.scope, set())
+                )
+
+            if not occupied_zones:
+                continue
+
+            # For each new VM whose cluster_id is in this rule, forbid BMs in occupied zones
+            for vm in self.request.vms:
+                if vm.cluster_id not in rule.cluster_ids:
+                    continue
+                for bm in self.request.baremetals:
+                    if (vm.id, bm.id) not in self.assign:
+                        continue
+                    bm_zone = _get_topology_zone(bm.topology, rule.scope)
+                    if bm_zone in occupied_zones:
+                        self.model.Add(self.assign[(vm.id, bm.id)] == 0)
+
+    def _build_soft_objective_terms(
+        self, rules: list[TopologyRule]
+    ) -> list[tuple[cp_model.IntVar, int]]:
+        """
+        Build objective terms for soft rules.
+        Returns list of (bool_var, weight) where weight is positive for
+        reward (affinity) and negative for penalty (anti-affinity).
+        """
+        terms: list[tuple[cp_model.IntVar, int]] = []
+        current_cluster_ids = {vm.cluster_id for vm in self.request.vms}
+
+        for rule in rules:
+            if rule.enforcement != "soft":
+                continue
+
+            other_cluster_ids = set(rule.cluster_ids) - current_cluster_ids
+            occupied_zones: set[str] = set()
+            for cid in other_cluster_ids:
+                occupied_zones.update(
+                    self.existing_cluster_zones.get(cid, {}).get(rule.scope, set())
+                )
+
+            if rule.type == "affinity":
+                if not occupied_zones:
+                    # No existing VMs → no effect, already warned in diagnostics
+                    continue
+                # For each new VM in rule's clusters: +weight if placed in occupied zone
+                for vm in self.request.vms:
+                    if vm.cluster_id not in rule.cluster_ids:
+                        continue
+                    colocated_vars = []
+                    for bm in self.request.baremetals:
+                        if (vm.id, bm.id) not in self.assign:
+                            continue
+                        bm_zone = _get_topology_zone(bm.topology, rule.scope)
+                        if bm_zone in occupied_zones:
+                            colocated_vars.append(self.assign[(vm.id, bm.id)])
+                    if colocated_vars:
+                        # score(vm, rule) = 1 if any of these is set
+                        # Since exactly one BM is chosen, sum == 0 or 1
+                        indicator = self.model.NewBoolVar(
+                            f"aff_{rule.rule_id}_{vm.id}"
+                        )
+                        self.model.Add(sum(colocated_vars) >= 1).OnlyEnforceIf(indicator)
+                        self.model.Add(sum(colocated_vars) == 0).OnlyEnforceIf(indicator.Not())
+                        terms.append((indicator, rule.weight))
+
+            elif rule.type == "anti_affinity":
+                if not occupied_zones:
+                    continue
+                # Penalty for each VM placed in an occupied zone
+                for vm in self.request.vms:
+                    if vm.cluster_id not in rule.cluster_ids:
+                        continue
+                    violation_vars = []
+                    for bm in self.request.baremetals:
+                        if (vm.id, bm.id) not in self.assign:
+                            continue
+                        bm_zone = _get_topology_zone(bm.topology, rule.scope)
+                        if bm_zone in occupied_zones:
+                            violation_vars.append(self.assign[(vm.id, bm.id)])
+                    if violation_vars:
+                        indicator = self.model.NewBoolVar(
+                            f"soft_anti_{rule.rule_id}_{vm.id}"
+                        )
+                        self.model.Add(sum(violation_vars) >= 1).OnlyEnforceIf(indicator)
+                        self.model.Add(sum(violation_vars) == 0).OnlyEnforceIf(indicator.Not())
+                        # Negative weight = penalty
+                        terms.append((indicator, -rule.weight))
+
+        return terms
+
+    # ------------------------------------------------------------------
+    # Solve
     # ------------------------------------------------------------------
 
     def solve(self) -> PlacementResult:
-        """
-        Build the model, solve it, return results.
-
-        This is the main entry point.
-        """
         start = time.time()
 
         # Reject requests with input errors — scheduler must fix upstream.
@@ -1161,7 +1361,36 @@ class VMPlacementSolver:
             )
 
         try:
-            # Build the model
+            # Phase 1: Validate topology rules
+            validated_rules, validation_warnings = validate_topology_rules(
+                list(self.request.topology_rules)
+            )
+            self.diagnostics["warnings"] = validation_warnings
+
+            # Check for affinity rules with no existing VMs
+            current_cluster_ids = {vm.cluster_id for vm in self.request.vms}
+            for rule in validated_rules:
+                if rule.type == "affinity":
+                    other_cids = set(rule.cluster_ids) - current_cluster_ids
+                    has_existing = any(
+                        self.existing_cluster_zones.get(cid, {}).get(rule.scope)
+                        for cid in other_cids
+                    )
+                    if not has_existing:
+                        self.diagnostics.setdefault("warnings", []).append({
+                            "type": "affinity_rule_no_effect",
+                            "rule_id": rule.rule_id,
+                            "reason": (
+                                f"Target clusters {sorted(other_cids)} have no "
+                                f"existing VMs; affinity rule has no effect"
+                            ),
+                        })
+
+            # Determine if we have soft rules
+            soft_rules = [r for r in validated_rules if r.enforcement == "soft"]
+            has_soft_rules = len(soft_rules) > 0
+
+            # Build model
             self._build_variables()
             self._add_one_bm_per_vm_constraint()
             self._add_capacity_constraints()
@@ -1211,6 +1440,15 @@ class VMPlacementSolver:
                     diagnostics=diagnostics,
                 )
 
+        except ValueError as e:
+            # Validation error (e.g. topology conflict)
+            return PlacementResult(
+                success=False,
+                solver_status="MODEL_INVALID",
+                solve_time_seconds=time.time() - start,
+                unplaced_vms=[vm.id for vm in self.request.vms],
+                diagnostics={"error": str(e), **self.diagnostics},
+            )
         except Exception as e:
             logger.exception("Solver failed")
             return PlacementResult(
@@ -1248,7 +1486,6 @@ class VMPlacementSolver:
     def _extract_solution(
         self, solver: cp_model.CpSolver, status: str, elapsed: float
     ) -> PlacementResult:
-        """Read the solution: which assign variables are set to 1?"""
         assignments = []
         unplaced = []
 

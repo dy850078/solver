@@ -42,9 +42,10 @@ logs/
 
 # Output files
 *.csv
-*.json
 *.xlsx
 output/
+*.json
+!examples/*.json
 
 # Keep example request files (including nested dirs like examples/mock/)
 !examples/*.json
