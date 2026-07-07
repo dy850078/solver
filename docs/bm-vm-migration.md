@@ -360,7 +360,62 @@ in-flight 數、blocked/failed 數、每輪耗時、drain 時長。
 BM 本體的狀態欄位（`converting` / `failed` / `converted`）放 inventory 既有表——
 其他系統（含 scheduler 容量計算）需要看到「這台正在轉換、容量不可用」。
 
-### 8. Scheduler / Solver 的角色（明確界定）
+### 8. Failure & Concurrency 語意
+
+不引入 queue 的前提下，crash 與多副本併發的正確性由以下機制保證
+（模式借自 K8s controller 本身：leader lease + optimistic concurrency + 冪等操作）。
+
+#### 8.1 Controller crash 復原
+
+- **Level-triggered 是主體**：記憶體中沒有可弄丟的任務——待辦由 DB 狀態推導。
+  重啟後下一個 tick 讀 DB 續跑（`DRAINING` → 繼續 evict；`PROVISIONING` 有 job id → 查 job 狀態）。
+  crash 的影響只是停頓，不會錯亂
+- **步驟中間 crash（已呼叫外部 API、尚未記錄 job id）用 write-ahead intent + 冪等鍵**：
+
+```
+1. 先寫 DB: phase=DISPATCHING, idempotency_key=<mig_id:bm_id:step>
+2. 帶 idempotency_key 呼叫 BM/VM Service
+3. 回寫 job_id, phase=DISPATCHED
+```
+
+  重啟後看到 `DISPATCHING` 無 job id → 以同一把 key 重發（service 端去重）
+  或查詢該 key 是否已有 job。**因此 BM/VM Service 需支援「client 帶冪等鍵」或
+  「依 key 查 job」二擇一——這是前置條件**（open question #4）
+- K8s 端操作天然冪等：evict 已不在的 pod、delete 已刪的 node 皆為 no-op，重放無害
+- Drain token 持久化於 `migration_locks`，重啟後持有者資訊仍在，同流程續跑
+
+#### 8.2 多副本 / 同 flow 併發
+
+三層防禦，任一層失效都有下一層兜底：
+
+1. **部署層**：`replicas=1` + **`strategy: Recreate`**（不可用預設 RollingUpdate——
+   rolling 期間新舊 pod 並存，等於自製 split brain）
+2. **DB lease leader election**：
+
+```sql
+UPDATE leases SET holder=:me, expires_at=now()+'30s'
+WHERE name='migration-controller' AND (holder=:me OR expires_at < now());
+-- 1 列 = 我是 leader；0 列 = 只 serve 唯讀 API, 不跑 reconcile
+```
+
+3. **每個狀態轉移用 optimistic CAS**（即使 lease 因時鐘漂移/GC pause 短暫雙主也不出事）：
+
+```sql
+UPDATE bm_conversions SET state='DRAINING', version=version+1
+WHERE id=:id AND state='ADMITTED' AND version=:expected;
+-- 0 列 = 別人已推進 → 放棄此步、重讀狀態。狀態機不可能被推進兩次
+```
+
+   外部呼叫的冪等鍵是最後保底：即使兩個 pod 都 dispatch，service 端去重。
+
+#### 8.3 為何 queue 不會讓這兩題變簡單
+
+Queue 的 consumer crash 一樣要 visibility timeout / ack / 重投遞，重投遞被處理兩次
+一樣要冪等鍵與 CAS——所有機制重做一遍，還新增「queue 與 DB 狀態不一致」的問題
+（訊息說要做、DB 說做過了，信誰？）。Queue 解高吞吐分發，不解正確性；
+本場景量級用不到前者，後者由 DB 交易語意做最扎實。
+
+### 9. Scheduler / Solver 的角色（明確界定）
 
 **MVP：零改動、零呼叫。** 容量 gate 是確定性算術（無組合決策空間），切割由固定配方決定，
 硬用 CP-SAT 是反模式。
@@ -416,9 +471,9 @@ BM 本體的狀態欄位（`converting` / `failed` / `converted`）放 inventory
 | 並行 drain 觸發 PDB 競爭 | drain 卡死 / 極慢 | 全域 drain token 序列化 drain；Phase 2 加 pod 重疊檢查 |
 | 有效折損率估計失準 | 終態水位超標 | Pre-flight 保守用 8~10%；第一台實測校正 config；`u` 用 P95 而非瞬時值 |
 | 遷移前水位 64~70% 的 cluster 轉完必超標 | 中途發現回不去 70% | Pre-flight 終態公式強制先算 spare 需求，spare-first |
-| BM/VM Service 呼叫非冪等 | requeue 重放造成重複操作 | 與兩服務 owner 確認冪等性 / job id 去重（open question） |
+| BM/VM Service 呼叫非冪等 | requeue 重放造成重複操作 | 前置條件：支援冪等鍵或依 key 查 job（§8.1、open question #4） |
 | KVM 安裝失敗等中間態 | BM 懸空（非 node 亦非 VM host） | 標記 `FAILED` 等人工；容量持續視為不在線；不自動回滾 |
-| 單副本 controller 掛掉 | 流程暫停（不會錯亂） | Level-triggered 設計：重啟後下一 tick 從 DB 續跑；未來需要 HA 時加 DB lease leader election |
+| 單副本 controller 掛掉 | 流程暫停（不會錯亂） | Level-triggered + write-ahead intent（§8.1）；HA 用 DB lease + CAS（§8.2） |
 | Inventory 資料與實際漂移 | gate 算錯 | 水位一律即時查 K8s metrics，Inventory 只當 BM 屬性/狀態來源 |
 | nodeSelector 綁定 BM 專屬 label | drain 出去的 pod 回不來 | VM node 繼承原 BM label；特殊 taint/label 的 BM 直接排除不轉換 |
 | 小 cluster 窗口期水位過高 | gate 永遠不放行 | 動態並行度（可能降為 1）+ spare-first；仍不行則 pre-flight 即回報不可行 |
@@ -465,7 +520,7 @@ BM 不自動還原（回滾 = 人工決策）；`FAILED` 的 BM 一律人工處�
 |---|---|---|
 | 水位目標 = usage ≤ 70%（三維度取最差） | 需求原始定義 | — |
 | 切割配方固定、config 表驅動（64c/768g→2×30c/360g；64c/1024g→2×30c/480g） | 按原 CPU:Mem 比例切、避免碎小 VM 與記憶體浪費；無組合決策空間 | Recipe 驗證器 |
-| MVP 不使用 Solver | 容量 gate 是確定性算術；資料域不合 | 延伸場景備位（§8） |
+| MVP 不使用 Solver | 容量 gate 是確定性算術；資料域不合 | 延伸場景備位（§9） |
 | Per-AG 並行（每 AG ≤1 台）+ 聚合 admission gate + per-AG 水位檢查 | 並行需求 + 防局部 AG 爆掉 | — |
 | Drain 階段全域序列化（pipeline 並行） | 跨 AG 分散的 replica 使同時 drain 成 PDB 最壞組合 | Phase 2 pod 重疊檢查 |
 | 失敗中間態 → `FAILED` 等人工，不自動回滾 | 懸空態自動回滾風險高於人工 | — |
