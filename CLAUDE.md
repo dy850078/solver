@@ -1,168 +1,114 @@
-# CLAUDE.md - solver
+# CLAUDE.md — solver
 
-> **Documentation Version**: 1.0
-> **Last Updated**: 2026-03-08
-> **Project**: solver
-> **Description**: Python-based VM placement optimizer that uses Google OR-Tools CP-SAT solver to find the best assignment of Kubernetes cluster VMs to baremetal servers, replacing the existing round-robin approach in Go scheduler. Runs as a sidecar service (HTTP or CLI) that receives VM requirements and baremetal capacity from the Go scheduler, and returns an optimized placement plan that respects capacity limits, candidate filtering, and AG-based anti-affinity spreading.
-> **Features**: GitHub auto-backup, technical debt prevention
+Python VM-placement optimizer built on Google OR-Tools CP-SAT. Runs as a
+sidecar (HTTP/CLI) to a Go scheduler: receives VM demands + baremetal (BM)
+capacity, returns an optimized placement plan. Replaces the scheduler's
+round-robin placement.
 
-This file provides essential guidance to Claude Code when working with code in this repository.
+This file contains only what a model cannot infer from the code itself:
+domain semantics, conventions, and the working contract with the human
+engineer. Read the referenced source docstrings for full details — they are
+authoritative.
 
-## CRITICAL RULES - READ FIRST
+## Architecture (actual)
 
-### RULE ACKNOWLEDGMENT REQUIRED
-Before starting ANY task, Claude Code must respond with:
-"CRITICAL RULES ACKNOWLEDGED - I will follow all prohibitions and requirements listed in CLAUDE.md"
-
-### ABSOLUTE PROHIBITIONS
-- NEVER create new files in root directory -> use proper module structure
-- NEVER write output files directly to root directory -> use output/
-- NEVER create documentation files (.md) unless explicitly requested by user
-- NEVER use git commands with -i flag (interactive mode not supported)
-- NEVER use `find`, `grep`, `cat`, `head`, `tail`, `ls` commands -> use Read, Glob, Grep tools instead
-- NEVER create duplicate files (manager_v2.py, enhanced_xyz.py, utils_new.py) -> ALWAYS extend existing files
-- NEVER create multiple implementations of same concept -> single source of truth
-- NEVER copy-paste code blocks -> extract into shared utilities/functions
-- NEVER hardcode values that should be configurable -> use config files/environment variables
-- NEVER use naming like enhanced_, improved_, new_, v2_ -> extend original files instead
-
-### MANDATORY REQUIREMENTS
-- COMMIT after every completed task/phase - no exceptions
-- GITHUB BACKUP - Push to GitHub after every commit: `git push origin main`
-- USE TASK AGENTS for all long-running operations (>30 seconds)
-- TODOWRITE for complex tasks (3+ steps) -> parallel agents -> git checkpoints -> test validation
-- READ FILES FIRST before editing
-- DEBT PREVENTION - Before creating new files, check for existing similar functionality
-- SINGLE SOURCE OF TRUTH - One authoritative implementation per feature/concept
-
-### EXECUTION PATTERNS
-- PARALLEL TASK AGENTS - Launch multiple Task agents simultaneously for maximum efficiency
-- SYSTEMATIC WORKFLOW - TodoWrite -> Parallel agents -> Git checkpoints -> GitHub backup -> Test validation
-- GITHUB BACKUP WORKFLOW - After every commit: `git push origin main`
-
-### MANDATORY PRE-TASK COMPLIANCE CHECK
-Before starting any task, verify ALL points:
-
-**Step 1: Rule Acknowledgment**
-- [ ] I acknowledge all critical rules in CLAUDE.md and will follow them
-
-**Step 2: Task Analysis**
-- [ ] Will this create files in root? -> If YES, use proper module structure instead
-- [ ] Will this take >30 seconds? -> If YES, use Task agents not Bash
-- [ ] Is this 3+ steps? -> If YES, use TodoWrite breakdown first
-- [ ] Am I about to use grep/find/cat? -> If YES, use proper tools instead
-
-**Step 3: Technical Debt Prevention (MANDATORY SEARCH FIRST)**
-- [ ] SEARCH FIRST: Use Grep to find existing implementations
-- [ ] CHECK EXISTING: Read any found files to understand current functionality
-- [ ] Does similar functionality already exist? -> If YES, extend existing code
-- [ ] Am I creating a duplicate class/manager? -> If YES, consolidate instead
-- [ ] Will this create multiple sources of truth? -> If YES, redesign approach
-
-**Step 4: Session Management**
-- [ ] Is this a long/complex task? -> If YES, plan context checkpoints
-
-## PROJECT OVERVIEW
-
-solver is a Python-based VM placement optimizer using Google OR-Tools CP-SAT solver. It finds the optimal assignment of Kubernetes cluster VMs to baremetal servers as a sidecar service to the Go scheduler.
-
-### Key Components
-- `solver.py` - Core CP-SAT optimization logic
-- `server.py` - HTTP sidecar service entry point
-- `models.py` - Data models and entities
-- `serialization.py` - Request/response serialization
-- `tests/` - Test suite
-- `docs/` - API, user, and developer documentation
-- `examples/` - Usage examples and sample requests
-
-### Project Structure
 ```
-solver/
-├── CLAUDE.md
-├── README.md
-├── .gitignore
-├── requirements.txt
-├── solver.py              # Core CP-SAT solver
-├── server.py              # HTTP sidecar server
-├── models.py              # Data models
-├── serialization.py       # Serialization utilities
-├── src/
-│   ├── main/
-│   │   ├── python/
-│   │   │   ├── core/      # Core business logic
-│   │   │   ├── utils/     # Utility functions
-│   │   │   ├── models/    # Extended data models
-│   │   │   ├── services/  # Service layer
-│   │   │   └── api/       # API endpoints
-│   │   └── resources/
-│   │       ├── config/    # Configuration files
-│   │       └── assets/    # Static assets
-│   └── test/
-│       ├── unit/
-│       └── integration/
-├── tests/                 # Main test suite
-├── docs/                  # Documentation
-├── examples/              # Usage examples
-├── tools/                 # Dev tools and scripts
-└── output/                # Generated output files
+app/
+├── solver.py        # VMPlacementSolver — CP-SAT model, constraints C1–C5, objective
+├── splitter.py      # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
+├── split_solver.py  # Orchestrates splitter + solver joint solve (split-and-solve endpoint)
+├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
+├── diagnostics.py   # Advisory diagnostics (e.g. spread_below_target)
+├── server.py        # FastAPI app + CLI mode; UI gated behind ENABLE_UI
+├── mockgen.py       # Mock request generator for testing/demo
+└── examples_api.py  # Serves examples/ to the UI
+tests/               # pytest suite; test files mirror app/ modules
+examples/            # Canonical request JSONs (also used by README curl examples)
+docs/decisions/      # ADRs — mentor-style decision records (see Workflow below)
 ```
 
-### Development Status
-- **Setup**: Complete
-- **Core Solver**: In progress
-- **HTTP Service**: In progress
-- **Testing**: In progress
-- **Documentation**: In progress
+## Domain knowledge (cannot be guessed — keep this section accurate)
 
-## GITHUB BACKUP WORKFLOW
+- **Topology**: physical hierarchy `site > phase > datacenter > room > rack`;
+  **AG (availability group)** is a virtual dimension orthogonal to rooms —
+  each rack belongs to exactly one AG. Valid spread dimensions:
+  `SPREAD_DIMENSIONS` in `app/models.py`.
+- **Constraint catalog** (labels used in code comments and tests — keep them):
+  - **C1** — each VM assigned to exactly one BM (`assign[vm,bm]` BoolVars).
+  - **C2** — BM capacity per resource field (`RESOURCE_FIELDS`: cpu, mem, storage, gpu),
+    against `available_capacity = total - used`.
+  - **C3** — anti-affinity: per dimension d in `spread_on`, per bucket b:
+    `Σ assign[vm∈group, bm∈b] ≤ cap_d`, default cap `⌈|VMs|/|buckets(d)|⌉`.
+    Dimensions are AND'd, never the Cartesian product.
+  - **C4** — max-per-BM: no single BM hosts more than `max_per_bm` VMs of a group.
+  - **C5** — failover N-1: per bucket b of `fault_domain`:
+    `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
+  - New constraints get the next label (C6, C7, …), a `CONSTRAINT Cn:` comment
+    with the math in the builder method, and dedicated tests.
+- **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
+  — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
+- **Solver flow** in `solver.py` is staged: Step A (eligibility = candidate
+  filtering ∩ fits-in-capacity) → Step B (rule validation + selector expansion +
+  auto-generation) → Step C (build CP-SAT model + objective) → Step D (solve,
+  extract, diagnostics). Put new logic in the matching stage.
+- **Objective** is a weighted sum — `w_consolidation` (fewer BMs),
+  `w_headroom` (keep per-BM utilization under `headroom_upper_bound_pct`),
+  `w_slot_score` (avoid unusable leftover slivers), `w_resource_waste`
+  (splitter over-allocation). Weights live in `SolverConfig`, never hardcoded.
+- **Splitter** shares one `CpModel` with the placement solver so split and
+  placement are optimized jointly — never split first and place second
+  (that reintroduces the two-step infeasibility bug it was built to avoid).
+- **Input contract violations → INPUT_ERROR**, not silent fixes: empty
+  `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
+  without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with
+  diagnostics. The Go scheduler branches on these statuses — do not change
+  status strings without flagging the contract change.
+
+## Commands
 
 ```bash
-# After every commit, always run:
-git push origin main
+make install                          # venv + editable install with dev extras (python3.13)
+make test                             # pytest (testpaths = tests/, no args needed)
+make run                              # HTTP server on :50051 (UI at /ui needs ENABLE_UI=enable)
+make dev                              # uvicorn --reload with UI enabled
+make cli INPUT=examples/success_basic.json   # one-shot solve, no server
 ```
 
-## COMMON COMMANDS
+Direct: `.venv/bin/python -m pytest` (or `-k <pattern>` for one test).
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+## Working contract with the engineer (mentor mode)
 
-# Run the solver (CLI mode)
-python solver.py
+The human is using this project to learn CP-SAT and placement-system design.
+Non-negotiable communication rules:
 
-# Run the HTTP server
-python server.py
+1. **Explain before you use**: when introducing a new OR-Tools API, modeling
+   trick (reification, symmetry breaking, big-M, …) or algorithmic idea,
+   explain it in 2–3 sentences *before* the code that uses it appears.
+2. **Decisions come with alternatives**: any non-obvious design choice must
+   state what else was considered and why it lost. "I used X" without a
+   "instead of Y because Z" is incomplete.
+3. **Plan first for core changes**: changes touching `app/solver.py`,
+   `app/splitter.py`, `app/split_solver.py`, or `app/models.py` start in plan
+   mode so the human reviews the approach before code exists.
+4. Conversation with the user is in Traditional Chinese (繁體中文); code,
+   comments, and commit messages are in English; ADRs are in Traditional Chinese.
 
-# Run tests
-python -m pytest tests/
+## Workflow
 
-# Push backup to GitHub
-git push origin main
-```
-
-## TECHNICAL DEBT PREVENTION
-
-### WRONG APPROACH:
-```bash
-# Creating new file without searching first
-Write(file_path="new_feature.py", content="...")
-```
-
-### CORRECT APPROACH:
-```bash
-# 1. SEARCH FIRST
-Grep(pattern="feature.*implementation", include="*.py")
-# 2. READ EXISTING FILES
-Read(file_path="existing_feature.py")
-# 3. EXTEND EXISTING FUNCTIONALITY
-Edit(file_path="existing_feature.py", old_string="...", new_string="...")
-```
-
-## RULE COMPLIANCE CHECK
-
-Before starting ANY task, verify:
-- [ ] I acknowledge all critical rules above
-- [ ] Files go in proper module structure (not root)
-- [ ] Use Task agents for >30 second operations
-- [ ] TodoWrite for 3+ step tasks
-- [ ] Commit after each completed task
+- **Branching**: never push to `main`. Work on a feature branch
+  (`<topic>` or `claude/<topic>`), push with `git push -u origin <branch>`,
+  and open a PR only when the user asks. The human reviews every PR before merge.
+- **Commit** after each completed task with a descriptive message.
+- **ADR required for core changes**: any change to solver/splitter/models
+  logic needs a decision record in `docs/decisions/` (use the `/adr` skill;
+  template: `docs/decisions/TEMPLATE.md`). A Stop hook enforces this — and
+  runs the test suite — before you can finish a turn.
+- **Delegate mechanical work**: broad searches and long read-only exploration
+  go to subagents (Explore/general-purpose); keep the main context for design
+  judgment.
+- **Verify end-to-end**: after solver changes, don't stop at unit tests — run
+  `make cli INPUT=examples/...` (or the `/verify-solver` skill) and check the
+  assignments actually satisfy the constraints you touched.
+- **Single source of truth**: extend existing modules; no `*_v2.py` /
+  `enhanced_*` duplicates; no new files in the repo root; generated output
+  goes to `output/`.
