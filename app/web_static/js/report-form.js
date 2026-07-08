@@ -610,6 +610,13 @@ const readVal = (t, f) =>
   : t.type === "number" ? +t.value
   : t.value;
 
+/* Multi-cell paste detection. Tabs/newlines are the Excel signature, but a
+ * single CSV line copied from a file has neither — treat ≥3 comma-separated
+ * cells as row data too, else it silently falls through as a "single value"
+ * and the import appears to do nothing. */
+const looksLikeRows = (text) =>
+  /[\t\n]/.test(text) || text.split(",").length >= 3;
+
 const nextMonth = (period) => {
   const m = /^(\d{4})-(\d{2})$/.exec(period || "");
   if (!m) return null;
@@ -773,7 +780,7 @@ export function initForm() {
   // (replace)… is the whole-book swap.)
   $("demand-grid").addEventListener("paste", (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
-    if (!/[\t\n]/.test(text)) return;   // single value → into the focused cell
+    if (!looksLikeRows(text)) return;   // single value → into the focused cell
     ev.preventDefault();
     const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
     const full = headerish(text.split("\n", 1)[0], delim)
@@ -792,6 +799,14 @@ export function initForm() {
     // blank/named fabs) must win over the success note, not be masked by it.
     ioMsg("ok", `Appended <b>${a.entries.length}</b> row(s) from paste.`);
     renderDemandGrid();
+  });
+
+  $("demand-clear").addEventListener("click", () => {
+    const n = state.entries.length;
+    state.entries = [];
+    resetGridView();
+    renderSection("entries");
+    if (n) ioMsg("ok", `Cleared <b>${n}</b> entr${n === 1 ? "y" : "ies"} — Import or type in the grid to start over.`);
   });
 
   $("demand-upload").addEventListener("click", () => $("demand-upload-input").click());
@@ -903,7 +918,7 @@ export function initForm() {
   // value falls through into the focused cell.
   $("csv-dialog").addEventListener("paste", (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
-    if (!/[\t\n]/.test(text)) return;
+    if (!looksLikeRows(text)) return;
     ev.preventDefault();
     const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
     if (headerish(text.split("\n", 1)[0], delim)) {
@@ -978,7 +993,7 @@ export function initForm() {
   // name, headerless by column order).
   $("stock-grid").addEventListener("paste", (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
-    if (!/[\t\n]/.test(text)) return;
+    if (!looksLikeRows(text)) return;
     ev.preventDefault();
     const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
     const full = headerishStock(text.split("\n", 1)[0], delim)
@@ -995,6 +1010,14 @@ export function initForm() {
     state.stock.push(...a.groups);
     stockIoMsg("ok", `Appended <b>${a.groups.length}</b> group(s) from paste.`);
     renderStockGrid();
+  });
+
+  $("stock-clear").addEventListener("click", () => {
+    const n = state.stock.length;
+    state.stock = [];
+    resetStockView();
+    renderSection("stock");
+    if (n) stockIoMsg("ok", `Cleared <b>${n}</b> group${n === 1 ? "" : "s"} — Import or type in the grid to start over.`);
   });
 
   $("stock-upload").addEventListener("click", () => $("stock-upload-input").click());
@@ -1091,7 +1114,7 @@ export function initForm() {
 
   $("stock-csv-dialog").addEventListener("paste", (ev) => {
     const text = ev.clipboardData?.getData("text") ?? "";
-    if (!/[\t\n]/.test(text)) return;
+    if (!looksLikeRows(text)) return;
     ev.preventDefault();
     const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
     if (headerishStock(text.split("\n", 1)[0], delim)) {

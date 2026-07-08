@@ -609,6 +609,9 @@ class ProcurementResult(BaseModel):
     bm_placed: dict[str, Resources] = Field(default_factory=dict)
     bought_bms: list[Baremetal] = Field(default_factory=list)
     committed_bms: list[Baremetal] = Field(default_factory=list)
+    # Machine type of each bought BM (id -> type_id), so downstream reports
+    # (budget by model) never have to parse it back out of synthetic ids.
+    bought_type_of: dict[str, str] = Field(default_factory=dict)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -732,15 +735,18 @@ class ShortfallDetail(BaseModel):
 
 class BudgetRow(BaseModel):
     """
-    One budgeting line: bought BMs per (fab, bucket, network, month). Keyed on
-    the planning cell (決議 #37) — a representative datacenter would be
-    unreliable when an AG spans several DCs; with
-    procurement_spread_dimension="datacenter" the bucket IS the DC.
+    One budgeting line: bought BMs per (fab, bucket, network, month, model).
+    Keyed on the planning cell (決議 #37) — a representative datacenter would
+    be unreliable when an AG spans several DCs; with
+    procurement_spread_dimension="datacenter" the bucket IS the DC. type_id
+    splits the count by machine model so finance sees WHAT to buy, not just
+    how many.
     """
     fab: str
     bucket: str
     network: str
     period: str
+    type_id: str = ""
     bm_count: int
 
 
@@ -757,6 +763,11 @@ class BucketMonthCell(BaseModel):
     node_adds: int = 0
     bm_bought: int = 0
     committed_used: int = 0
+    # Distinct pre-existing machines this month's placement touched in the
+    # cell (a machine hosting five new nodes counts once). Machines bought or
+    # drawn from committed in EARLIER months count here too — they are
+    # in-stock by the time this month plans.
+    in_stock_bm_used: int = 0
     in_stock_total: Resources = Field(default_factory=Resources)
     in_stock_used: Resources = Field(default_factory=Resources)
     in_stock_available: Resources = Field(default_factory=Resources)
@@ -771,6 +782,7 @@ class PeriodFabReport(BaseModel):
     node_adds_total: int = 0
     bm_procurement_total: int = 0
     committed_bm_used: int = 0
+    in_stock_bm_used: int = 0
     procurement: list[ProcurementDecision] = Field(default_factory=list)
     committed_used: list[ProcurementDecision] = Field(default_factory=list)
     split_decisions: list[SplitDecision] = Field(default_factory=list)

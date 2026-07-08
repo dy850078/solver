@@ -86,6 +86,11 @@ function renderStats(report) {
       <div class="stat__sub">already-owned machines</div>
     </div>
     <div class="stat">
+      <div class="stat__label">In-stock used</div>
+      <div class="stat__value">${fmt(t.in_stock_bm_used ?? 0)}</div>
+      <div class="stat__sub">existing machines touched</div>
+    </div>
+    <div class="stat">
       <div class="stat__label">Solve time</div>
       <div class="stat__value">${(report.solve_time_seconds ?? 0).toFixed(2)}<span style="font-size:14px;color:var(--text-subtle)"> s</span></div>
       <div class="stat__sub">whole horizon</div>
@@ -182,6 +187,7 @@ function renderList(report) {
         <td class="num">${fmt(p.node_adds_total)}</td>
         <td class="num">${fmt(p.bm_procurement_total)}</td>
         <td class="num">${fmt(p.committed_bm_used)}</td>
+        <td class="num">${fmt(p.in_stock_bm_used ?? 0)}</td>
         <td class="muted" style="max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"
             title="${esc(note)}">${esc(note)}</td>
       </tr>`;
@@ -193,6 +199,7 @@ function renderList(report) {
         <thead><tr>
           <th>Month</th><th>Fab</th><th>Status</th>
           <th class="num">Node adds</th><th class="num">BM buys</th><th class="num">Committed</th>
+          <th class="num">In-stock</th>
           <th>Note</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -227,6 +234,7 @@ const METRICS = [
   { key: "node_adds_total", title: "Node adds", sub: "K8s nodes created" },
   { key: "bm_procurement_total", title: "BM buys", sub: "machines to purchase (budget)" },
   { key: "committed_bm_used", title: "Committed used", sub: "already-owned machines consumed" },
+  { key: "in_stock_bm_used", title: "In-stock used", sub: "existing machines touched" },
 ];
 
 function metricTable(report, metric) {
@@ -324,29 +332,15 @@ function renderDetail(p) {
       <dd>${p.stranded_available == null ? "— (no min-useful spec)" : resourcesLine(p.stranded_available)}</dd>
     </dl>`;
 
-  const cells = (p.cells || []).map((c) => {
-    const total = c.in_stock_total?.cpu_cores ?? 0;
-    const used = c.in_stock_used?.cpu_cores ?? 0;
-    const pct = total > 0 ? Math.round((used / total) * 100) : 0;
-    const hot = pct >= 90 ? " meter__fill--hot" : "";
-    const tipHtml = esc(`<div class="tooltip__title">${c.bucket}${c.network ? " · " + c.network : ""}</div>` +
-      `<div class="tooltip__row"><span>CPU used</span><b>${fmt(used)} / ${fmt(total)} c</b></div>` +
-      `<div class="tooltip__row"><span>Available</span><b>${resourcesLine(c.in_stock_available)}</b></div>`);
-    return `
+  const cells = (p.cells || []).map((c) => `
       <tr>
         <td class="mono">${esc(c.bucket) || "—"}</td>
         <td class="mono">${esc(c.network) || "—"}</td>
         <td class="num">${fmt(c.node_adds)}</td>
         <td class="num">${fmt(c.bm_bought)}</td>
         <td class="num">${fmt(c.committed_used)}</td>
-        <td>
-          <div class="meter-cell" data-tip="${tipHtml}">
-            <div class="meter"><div class="meter__fill${hot}" style="width:${total > 0 ? Math.max(pct, 1) : 0}%"></div></div>
-            <span class="pct">${total > 0 ? pct + "%" : "—"}</span>
-          </div>
-        </td>
-      </tr>`;
-  }).join("");
+        <td class="num">${fmt(c.in_stock_bm_used ?? 0)}</td>
+      </tr>`).join("");
 
   const balance = Object.entries(p.balance_after || {}).map(([bucket, cpu]) =>
     `<span class="tag"><b>${esc(bucket) || "—"}</b> ${fmt(cpu)} c free</span>`).join("");
@@ -376,13 +370,13 @@ function renderDetail(p) {
     </div>
 
     ${cells ? `
-      <p class="subhead" style="margin-top:20px">Cells — (bucket, network) drill-down · post-month in-stock</p>
+      <p class="subhead" style="margin-top:20px">Cells — (bucket, network) drill-down · machine counts this month</p>
       <div class="table-wrap">
         <table class="tbl">
           <thead><tr>
             <th>Bucket</th><th>Network</th>
             <th class="num">Node adds</th><th class="num">BM bought</th><th class="num">Committed</th>
-            <th>CPU utilization</th>
+            <th class="num">In-stock used</th>
           </tr></thead>
           <tbody>${cells}</tbody>
         </table>
@@ -412,7 +406,7 @@ function renderBudget(report) {
 
   $("budget-table").innerHTML = `
     <thead><tr>
-      <th>Fab</th><th>Bucket</th><th>Network</th><th>Month</th><th class="num">BM count</th>
+      <th>Fab</th><th>Bucket</th><th>Network</th><th>Month</th><th>Model</th><th class="num">BM count</th>
     </tr></thead>
     <tbody>${rows.map((r) => `
       <tr>
@@ -420,6 +414,7 @@ function renderBudget(report) {
         <td class="mono">${esc(r.bucket) || "—"}</td>
         <td class="mono">${esc(r.network) || "—"}</td>
         <td class="mono">${esc(r.period)}</td>
+        <td class="mono">${esc(r.type_id) || "—"}</td>
         <td class="num">${fmt(r.bm_count)}</td>
       </tr>`).join("")}</tbody>`;
 

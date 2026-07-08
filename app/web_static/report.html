@@ -159,6 +159,7 @@
           <button id="demand-table-open" type="button" class="btn btn--small">Import (replace)…</button>
           <button id="demand-upload" type="button" class="btn btn--small">Upload file…</button>
           <button id="demand-export" type="button" class="btn btn--small">Export CSV</button>
+          <button id="demand-clear" type="button" class="btn btn--small">Clear all</button>
           <input id="demand-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
         </div>
       </header>
@@ -185,6 +186,7 @@
           <button id="stock-table-open" type="button" class="btn btn--small">Import (replace)…</button>
           <button id="stock-upload" type="button" class="btn btn--small">Upload file…</button>
           <button id="stock-export" type="button" class="btn btn--small">Export CSV</button>
+          <button id="stock-clear" type="button" class="btn btn--small">Clear all</button>
           <input id="stock-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
         </div>
       </header>
@@ -248,7 +250,7 @@
     <section id="budget-card" class="card hidden">
       <header class="card__header">
         <h2 class="card__title">Budget view</h2>
-        <span class="card__hint">Bought BMs per fab × (bucket, network) × month · committed stock excluded</span>
+        <span class="card__hint">Bought BMs per fab × (bucket, network) × month × model · committed stock excluded</span>
       </header>
       <div class="card__body">
         <div id="budget-strip" class="barstrip" style="margin-bottom:16px"></div>
