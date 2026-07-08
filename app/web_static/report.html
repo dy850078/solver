@@ -86,10 +86,6 @@
         <div id="model-rows" class="form-rows"></div>
         <button id="add-model" type="button" class="btn btn--add">+ Add BM model</button>
 
-        <p class="subhead" style="margin-top:16px">In-stock — existing machines (grouped)</p>
-        <div id="stock-rows" class="form-rows"></div>
-        <button id="add-stock" type="button" class="btn btn--add">+ Add machine group</button>
-
         <details class="adv" id="supply-adv">
           <summary>Slot caps &amp; committed stock (optional)</summary>
           <p class="subhead" style="margin-top:10px">Slot caps — max BMs per bucket (absent = unlimited)</p>
@@ -181,6 +177,32 @@
       </div>
     </section>
 
+    <section id="stock-card" class="card">
+      <header class="card__header">
+        <h2 class="card__title">In-stock inventory</h2>
+        <span class="card__hint" id="stock-count"></span>
+        <div class="card__header-right">
+          <button id="stock-table-open" type="button" class="btn btn--small">Import (replace)…</button>
+          <button id="stock-upload" type="button" class="btn btn--small">Upload file…</button>
+          <button id="stock-export" type="button" class="btn btn--small">Export CSV</button>
+          <input id="stock-upload-input" type="file" accept=".csv,.tsv,.txt" hidden>
+        </div>
+      </header>
+      <div class="card__body">
+        <div class="demand-toolbar">
+          <div id="stock-fab-filter" class="chips-row"></div>
+          <input id="stock-search" class="input demand-search" type="search"
+            placeholder="Filter dc / ag / network…" spellcheck="false">
+        </div>
+        <div id="stock-grid" class="table-wrap dgrid-wrap"></div>
+        <p class="muted" style="font-size:11px; margin:8px 0 0">
+          Existing machines grouped by model × (fab, dc, ag, network) · type in the last row to add
+          · paste an Excel range anywhere in the grid to append · Import (replace)… swaps the whole inventory.
+        </p>
+        <div id="stock-io-msg" class="alert hidden" style="margin-top:8px"></div>
+      </div>
+    </section>
+
     <div id="stats" class="stats hidden"></div>
 
     <section id="grid-card" class="card">
@@ -255,6 +277,27 @@
     <div style="display:flex; gap:8px">
       <button id="csv-dialog-cancel" type="button" class="btn">Cancel</button>
       <button id="csv-dialog-import" type="button" class="btn btn--primary" disabled>Import (replace)</button>
+    </div>
+  </footer>
+</dialog>
+
+<dialog id="stock-csv-dialog" class="csv-dialog">
+  <header class="csv-dialog__head">
+    <div>
+      <div class="csv-dialog__title">In-stock inventory — table import</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">
+        Paste an Excel range (Ctrl/⌘+V) anywhere in this window · cells are editable, rows re-validate on the fly · Import replaces all in-stock groups
+      </div>
+    </div>
+    <button id="stock-csv-dialog-close" type="button" class="row-del" title="Close">✕</button>
+  </header>
+  <div id="stock-csv-dialog-msg" class="alert alert--error hidden" style="margin:0 16px 10px"></div>
+  <div id="stock-csv-table-host" class="csv-table-host"></div>
+  <footer class="csv-dialog__foot">
+    <span id="stock-csv-dialog-summary" class="muted" style="font-size:12px"></span>
+    <div style="display:flex; gap:8px">
+      <button id="stock-csv-dialog-cancel" type="button" class="btn">Cancel</button>
+      <button id="stock-csv-dialog-import" type="button" class="btn btn--primary" disabled>Import (replace)</button>
     </div>
   </footer>
 </dialog>

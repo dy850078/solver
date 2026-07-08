@@ -19,6 +19,10 @@ import {
   DEMAND_COLUMNS, DEMAND_HEADER_LINE,
   analyzeDemandCsv, exportDemandCsv, headerish, validateEntries,
 } from "./demand-csv.js";
+import {
+  STOCK_COLUMNS, STOCK_HEADER_LINE,
+  analyzeStockCsv, exportStockCsv, headerishStock, validateStock,
+} from "./stock-csv.js";
 
 const $ = (id) => document.getElementById(id);
 const GiB = 1024; // MiB per GiB
@@ -256,20 +260,110 @@ function refreshGridValidation() {
   updateDemandCount(rowErrors, bookErrors);
 }
 
-function stockRow(g, i) {
-  return `<div class="frow-card">
-    <div class="frow frow--stock">
-      ${num("stock", i, "count", g.count, "Machines", { min: 1, step: 1 })}
-      ${modelSelect("stock", i, "modelIdx", g.modelIdx, "BM model")}
-      ${delBtn("stock", i)}
-    </div>
-    <div class="frow frow--4">
-      ${txt("stock", i, "fab", g.fab, "Fab (site)", "blank")}
-      ${txt("stock", i, "dc", g.dc, "DC")}
-      ${txt("stock", i, "ag", g.ag, "AG")}
-      ${txt("stock", i, "network", g.network, "Network", "e.g. bgp1")}
-    </div>
-  </div>`;
+/* ── In-stock inventory grid (group-first: the grid IS state.stock) ──
+ * Mirrors the demand grid so both bulk sections behave identically:
+ * ghost row to add, inline per-row validation, dup/del actions, an Excel
+ * paste-to-append, fab-filter + free-text search. */
+
+const STOCK_GRID_COLS = [
+  { f: "fab",      type: "text",  label: "Fab" },
+  { f: "dc",       type: "text",  label: "Datacenter" },
+  { f: "ag",       type: "text",  label: "AG" },
+  { f: "network",  type: "text",  label: "Network" },
+  { f: "modelIdx", type: "model", label: "BM model", cls: "col-spec" },
+  { f: "count",    type: "num",   label: "Machines", cls: "col-num", step: 1, min: 1 },
+];
+const stockView = { fabs: new Set(), q: "" };
+
+const emptyStock = () =>
+  ({ count: 1, modelIdx: state.models.length ? 0 : -1, fab: "", dc: "", ag: "", network: "" });
+
+function stockGridCell(col, g, i, ghost) {
+  const bind = ghost ? `data-ghost="stock" data-f="${col.f}"`
+                     : `data-s="stock" data-i="${i}" data-f="${col.f}"`;
+  const v = g[col.f];
+  if (col.type === "num")
+    return `<input class="dgrid-input" type="number" min="${col.min ?? 0}" step="${col.step || 1}"
+      value="${v ?? 0}" ${bind}>`;
+  if (col.type === "model") {
+    const opts = state.models.map((m, mi) =>
+      `<option value="${mi}"${mi === v ? " selected" : ""}>${esc(modelLabel(m))}</option>`);
+    if (!opts.length) opts.push(`<option value="-1"${v === -1 ? " selected" : ""}>— no models —</option>`);
+    return `<select class="dgrid-input" ${bind}>${opts.join("")}</select>`;
+  }
+  return `<input class="dgrid-input" type="text" value="${esc(v ?? "")}" ${bind}>`;
+}
+
+const stockActionsHtml = (i) => `
+  <button type="button" class="dgrid-act" data-act="dup" data-i="${i}" title="Duplicate row">⧉</button>
+  <button type="button" class="dgrid-act dgrid-act--del" data-act="del" data-i="${i}" title="Delete row">✕</button>`;
+
+const stockGhostRowHtml = () => `<tr class="dgrid-row--ghost">
+  ${STOCK_GRID_COLS.map((c) => `<td class="${c.cls || ""}">${stockGridCell(c, emptyStock(), -1, true)}</td>`).join("")}
+  <td></td><td class="dgrid-status" style="color:var(--text-subtle)">new row — just type</td>
+</tr>`;
+
+const stockInView = (g) =>
+  (!stockView.fabs.size || stockView.fabs.has(g.fab || "")) &&
+  (!stockView.q || `${g.fab} ${g.dc} ${g.ag} ${g.network}`.toLowerCase().includes(stockView.q));
+
+function renderStockFabChips() {
+  const bar = $("stock-fab-filter");
+  const fabs = [...new Set(state.stock.map((g) => g.fab || ""))];
+  if (fabs.length < 2) { bar.innerHTML = ""; stockView.fabs.clear(); return; }
+  bar.innerHTML =
+    `<button type="button" class="fchip${stockView.fabs.size ? "" : " fchip--on"}" data-fab="*">All fabs</button>` +
+    fabs.map((f) => `<button type="button" class="fchip${stockView.fabs.has(f) ? " fchip--on" : ""}"
+        data-fab="${esc(f)}">${esc(f || "(single-fab)")}</button>`).join("");
+}
+
+function updateStockCount(rowErrors) {
+  const bad = rowErrors.filter((r) => r.length).length;
+  const machines = state.stock.reduce((a, g) => a + (+g.count || 0), 0);
+  const fabs = new Set(state.stock.map((g) => g.fab || "(single)")).size;
+  $("stock-count").textContent =
+    `${state.stock.length} group(s) · ${machines} machine(s) · ${fabs} fab(s)`
+    + (bad ? ` · ${bad} to fix` : "");
+}
+
+function renderStockGrid() {
+  const host = $("stock-grid");
+  const { rowErrors } = validateStock(state.stock, state.models);
+  const visible = [];
+  state.stock.forEach((g, i) => { if (stockInView(g)) visible.push(i); });
+  const shown = visible.slice(0, GRID_RENDER_CAP);
+
+  const ths = STOCK_GRID_COLS.map((c) => `<th class="${c.cls || ""}">${c.label}</th>`).join("");
+  const rows = shown.map((i) => {
+    const errs = rowErrors[i];
+    return `<tr class="${errs.length ? "dgrid-row--bad" : ""}" data-row="${i}">
+      ${STOCK_GRID_COLS.map((c) => `<td class="${c.cls || ""}">${stockGridCell(c, state.stock[i], i, false)}</td>`).join("")}
+      <td style="white-space:nowrap">${stockActionsHtml(i)}</td>
+      <td class="dgrid-status">${errs.length ? esc(errs.join(" · ")) : ""}</td>
+    </tr>`;
+  }).join("");
+  const capNote = visible.length > shown.length
+    ? `<tr><td colspan="${STOCK_GRID_COLS.length + 2}" class="dgrid-cap">Showing ${shown.length} of ${
+        visible.length} matching rows — refine the filter to see the rest (every row is still submitted).</td></tr>`
+    : "";
+
+  host.innerHTML = `<table class="tbl dgrid">
+    <thead><tr>${ths}<th></th><th>Status</th></tr></thead>
+    <tbody>${rows}${capNote}${stockGhostRowHtml()}</tbody>
+  </table>`;
+  renderStockFabChips();
+  updateStockCount(rowErrors);
+}
+
+/* Re-check without rebuilding the DOM (keeps focus while editing). */
+function refreshStockGridValidation() {
+  const { rowErrors } = validateStock(state.stock, state.models);
+  $("stock-grid").querySelectorAll("tbody tr[data-row]").forEach((tr) => {
+    const errs = rowErrors[+tr.dataset.row] || [];
+    tr.classList.toggle("dgrid-row--bad", !!errs.length);
+    tr.querySelector(".dgrid-status").textContent = errs.join(" · ");
+  });
+  updateStockCount(rowErrors);
 }
 
 function capRow(c, i) {
@@ -303,13 +397,14 @@ const SECTIONS = {
   specs: { el: "spec-rows", row: specRow, deps: ["entries"] },
   models: { el: "model-rows", row: modelRow, deps: ["stock", "committed"] },
   entries: { el: "demand-grid", row: null, deps: [] },   // rendered as a grid
-  stock: { el: "stock-rows", row: stockRow, deps: [] },
+  stock: { el: "stock-grid", row: null, deps: [] },      // rendered as a grid
   caps: { el: "cap-rows", row: capRow, deps: [] },
   committed: { el: "committed-rows", row: committedRow, deps: [] },
 };
 
 function renderSection(name) {
   if (name === "entries") { renderDemandGrid(); return; }
+  if (name === "stock") { renderStockGrid(); return; }
   const sec = SECTIONS[name];
   const host = $(sec.el);
   host.innerHTML = state[name].map((item, i) => sec.row(item, i)).join("")
@@ -503,6 +598,7 @@ export function loadIntoForm(json) {
 
   if (state.caps.length || state.committed.length) $("supply-adv").open = true;
   resetGridView();
+  resetStockView();
   renderAll();
 }
 
@@ -542,6 +638,26 @@ function promoteGhost(t) {
   refreshGridValidation();
 }
 
+/* Same, for the in-stock grid's ghost row. */
+function promoteStockGhost(t) {
+  const g = emptyStock();
+  g[t.dataset.f] = readVal(t, t.dataset.f);
+  state.stock.push(g);
+  const i = state.stock.length - 1;
+  const tr = t.closest("tr");
+  tr.classList.remove("dgrid-row--ghost");
+  tr.dataset.row = i;
+  tr.querySelectorAll("[data-ghost]").forEach((inp) => {
+    inp.removeAttribute("data-ghost");
+    inp.dataset.s = "stock";
+    inp.dataset.i = i;
+  });
+  tr.children[STOCK_GRID_COLS.length].innerHTML = stockActionsHtml(i);
+  tr.querySelector(".dgrid-status").textContent = "";
+  tr.insertAdjacentHTML("afterend", stockGhostRowHtml());
+  refreshStockGridValidation();
+}
+
 function resetGridView() {
   gridView.fabs.clear();
   gridView.q = "";
@@ -550,14 +666,26 @@ function resetGridView() {
   $("demand-io-msg").classList.add("hidden");   // stale import/paste notes
 }
 
+function resetStockView() {
+  stockView.fabs.clear();
+  stockView.q = "";
+  const search = $("stock-search");
+  if (search) search.value = "";
+  $("stock-io-msg").classList.add("hidden");
+}
+
 export function initForm() {
   const sidebar = document.querySelector(".sidebar");
   const demandCard = $("demand-card");
+  const stockCard = $("stock-card");
 
-  // Field edits → state (same delegation for the sidebar and the grid).
+  // Field edits → state (same delegation for the sidebar and the grids).
   const onFieldInput = (ev) => {
     const t = ev.target;
-    if (t.dataset.ghost) { promoteGhost(t); return; }
+    if (t.dataset.ghost) {
+      (t.dataset.ghost === "stock" ? promoteStockGhost : promoteGhost)(t);
+      return;
+    }
     const { s, i, f } = t.dataset;
     if (!s || !SECTIONS[s]) return;
     state[s][+i][f] = readVal(t, f);
@@ -567,6 +695,7 @@ export function initForm() {
   const onFieldChange = (ev) => {
     const { s } = ev.target.dataset;
     if (s === "entries") { refreshGridValidation(); return; }
+    if (s === "stock") { refreshStockGridValidation(); return; }
     if (!s || !SECTIONS[s]?.deps?.length) return;
     for (const dep of SECTIONS[s].deps) renderSection(dep);
   };
@@ -582,14 +711,13 @@ export function initForm() {
     renderSection(s);
     for (const dep of SECTIONS[s].deps || []) renderSection(dep);
   };
-  for (const root of [sidebar, demandCard]) {
+  for (const root of [sidebar, demandCard, stockCard]) {
     root.addEventListener("input", onFieldInput);
     root.addEventListener("change", onFieldChange);
     root.addEventListener("click", onRowDelete);
   }
 
   const adders = { "add-spec": "specs", "add-model": "models",
-                   "add-stock": "stock",
                    "add-cap": "caps", "add-committed": "committed" };
   for (const [btnId, s] of Object.entries(adders)) {
     $(btnId).addEventListener("click", () => {
@@ -806,6 +934,193 @@ export function initForm() {
     $("csv-dialog").close();
     ioMsg("ok", `Imported <b>${a.summary.entries}</b> entries · ${a.summary.fabs} fab(s) · ${
       a.summary.clusters} cluster(s) · ${a.summary.from} → ${a.summary.to}${
+      a.warnings.length ? `<br>${a.warnings.map(esc).join("<br>")}` : ""}`);
+  });
+
+  /* ── In-stock grid: mirror of the demand wiring above ── */
+
+  const stockIoMsg = (kind, html) => {
+    const box = $("stock-io-msg");
+    box.className = `alert${kind === "error" ? " alert--error" : ""}`;
+    box.innerHTML = html;
+    box.classList.remove("hidden");
+  };
+
+  // Grid row actions: duplicate, delete.
+  $("stock-grid").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".dgrid-act");
+    if (!btn) return;
+    const i = +btn.dataset.i;
+    if (btn.dataset.act === "del") state.stock.splice(i, 1);
+    else state.stock.splice(i + 1, 0, structuredClone(state.stock[i]));
+    renderStockGrid();
+  });
+
+  // Grid filters.
+  $("stock-fab-filter").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".fchip");
+    if (!btn) return;
+    if (btn.dataset.fab === "*") stockView.fabs.clear();
+    else {
+      const f = btn.dataset.fab;
+      stockView.fabs.has(f) ? stockView.fabs.delete(f) : stockView.fabs.add(f);
+      const all = new Set(state.stock.map((g) => g.fab || ""));
+      if (stockView.fabs.size === all.size) stockView.fabs.clear();
+    }
+    renderStockGrid();
+  });
+  $("stock-search").addEventListener("input", (ev) => {
+    stockView.q = ev.target.value.trim().toLowerCase();
+    renderStockGrid();
+  });
+
+  // Paste an Excel range onto the grid → APPEND groups (header maps by
+  // name, headerless by column order).
+  $("stock-grid").addEventListener("paste", (ev) => {
+    const text = ev.clipboardData?.getData("text") ?? "";
+    if (!/[\t\n]/.test(text)) return;
+    ev.preventDefault();
+    const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
+    const full = headerishStock(text.split("\n", 1)[0], delim)
+      ? text
+      : STOCK_COLUMNS.join(delim) + "\n" + text;
+    const a = analyzeStockCsv(full, state.models);
+    const flat = [...a.globalErrors,
+      ...a.rows.flatMap((r) => r.errors.map((m) => `Row ${r.line}: ${m}`))];
+    if (flat.length || !a.groups.length) {
+      stockIoMsg("error", `<b>Paste not applied:</b><br>${
+        flat.slice(0, 12).map(esc).join("<br>") || "no data rows found"}`);
+      return;
+    }
+    state.stock.push(...a.groups);
+    stockIoMsg("ok", `Appended <b>${a.groups.length}</b> group(s) from paste.`);
+    renderStockGrid();
+  });
+
+  $("stock-upload").addEventListener("click", () => $("stock-upload-input").click());
+  $("stock-upload-input").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      stockDlgText = await file.text();
+      renderStockDialog();
+      $("stock-csv-dialog").showModal();
+    }
+    e.target.value = "";
+  });
+  $("stock-export").addEventListener("click", () => {
+    const blob = new Blob([exportStockCsv(state.stock, state.models)], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "in-stock.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  // Table-import dialog for in-stock.
+  let stockDlgText = "";
+
+  const renderStockDialog = () => {
+    const host = $("stock-csv-table-host");
+    const msgBox = $("stock-csv-dialog-msg");
+    const summaryEl = $("stock-csv-dialog-summary");
+    const importBtn = $("stock-csv-dialog-import");
+    msgBox.classList.add("hidden");
+
+    if (!stockDlgText.trim()) stockDlgText = STOCK_HEADER_LINE;
+
+    const lines = stockDlgText.trim().split("\n").filter((l) => l.trim());
+    if (lines.length === 1) {
+      const delim = lines[0].includes("\t") ? "\t" : ",";
+      const cols = lines[0].split(delim);
+      host.innerHTML = `<div class="table-wrap"><table class="tbl csv-table">
+        <thead><tr>${cols.map((h) => `<th>${esc(h.trim())}</th>`).join("")}<th>Status</th></tr></thead>
+        <tbody><tr><td colspan="${cols.length + 1}" class="dgrid-cap">
+          The header is already set — copy just the data rows from Excel and paste here (Ctrl/⌘+V).
+        </td></tr></tbody></table></div>`;
+      summaryEl.textContent = "";
+      importBtn.disabled = true;
+      return;
+    }
+
+    const a = analyzeStockCsv(stockDlgText, state.models);
+    const fieldAt = (ci) => Object.entries(a.colOf).find(([, idx]) => idx === ci)?.[0];
+    const ths = a.headerRaw.map((h, ci) => fieldAt(ci)
+      ? `<th>${esc(h)}</th>`
+      : `<th class="csv-col-ignored" title="ignored column">${esc(h)}</th>`).join("");
+    const body = a.rows.map((r) => `
+      <tr class="${r.errors.length ? "csv-row--bad" : ""}">
+        ${a.headerRaw.map((_, ci) =>
+          `<td contenteditable="plaintext-only">${esc(r.cells[ci] ?? "")}</td>`).join("")}
+        <td class="csv-status">${r.errors.length ? esc(r.errors.join(" · ")) : "✓"}</td>
+      </tr>`).join("");
+    host.innerHTML = `<div class="table-wrap"><table class="tbl csv-table">
+      <thead><tr>${ths}<th>Status</th></tr></thead><tbody>${body}</tbody></table></div>`;
+
+    if (a.globalErrors.length || a.warnings.length) {
+      msgBox.className = `alert${a.globalErrors.length ? " alert--error" : ""}`;
+      msgBox.innerHTML = [...a.globalErrors, ...a.warnings].map(esc).join("<br>");
+      msgBox.classList.remove("hidden");
+    }
+    const badRows = a.rows.filter((r) => r.errors.length).length;
+    importBtn.disabled = !a.groups.length;
+    summaryEl.textContent = a.summary
+      ? `${a.summary.groups} group(s) · ${a.summary.machines} machine(s) · ${a.summary.fabs} fab(s) · ${a.summary.buckets} bucket(s)`
+      : badRows ? `${badRows} row(s) need fixing` : "";
+  };
+
+  const stockCsvFromTable = () => {
+    const table = $("stock-csv-table-host").querySelector("table");
+    if (!table) return stockDlgText;
+    const clean = (s) => s.replaceAll("\t", " ").replaceAll("\n", " ").trim();
+    const header = [...table.querySelectorAll("thead th")].slice(0, -1).map((th) => clean(th.textContent));
+    const rows = [...table.querySelectorAll("tbody tr")]
+      .filter((tr) => !tr.querySelector(".dgrid-cap"))
+      .map((tr) => [...tr.querySelectorAll("td")].slice(0, -1).map((td) => clean(td.textContent)).join("\t"));
+    return [header.join("\t"), ...rows].join("\n");
+  };
+
+  $("stock-table-open").addEventListener("click", () => {
+    stockDlgText = state.stock.length
+      ? exportStockCsv(state.stock, state.models).trimEnd()
+      : STOCK_HEADER_LINE;
+    renderStockDialog();
+    $("stock-csv-dialog").showModal();
+  });
+  $("stock-csv-dialog-close").addEventListener("click", () => $("stock-csv-dialog").close());
+  $("stock-csv-dialog-cancel").addEventListener("click", () => $("stock-csv-dialog").close());
+
+  $("stock-csv-dialog").addEventListener("paste", (ev) => {
+    const text = ev.clipboardData?.getData("text") ?? "";
+    if (!/[\t\n]/.test(text)) return;
+    ev.preventDefault();
+    const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
+    if (headerishStock(text.split("\n", 1)[0], delim)) {
+      stockDlgText = text;
+    } else {
+      const headerLine = stockDlgText.trim().split("\n")[0] || STOCK_HEADER_LINE;
+      const hd = headerLine.includes("\t") ? "\t" : ",";
+      stockDlgText = headerLine.split(hd).map((s) => s.trim()).join(delim) + "\n" + text;
+    }
+    renderStockDialog();
+  });
+
+  $("stock-csv-table-host").addEventListener("focusout", () => {
+    const next = stockCsvFromTable();
+    if (next !== stockDlgText) {
+      stockDlgText = next;
+      renderStockDialog();
+    }
+  });
+
+  $("stock-csv-dialog-import").addEventListener("click", () => {
+    const a = analyzeStockCsv(stockDlgText, state.models);
+    if (!a.groups.length) return;
+    state.stock = a.groups;
+    resetStockView();
+    renderSection("stock");
+    $("stock-csv-dialog").close();
+    stockIoMsg("ok", `Imported <b>${a.summary.groups}</b> group(s) · ${a.summary.machines} machine(s) · ${
+      a.summary.fabs} fab(s) · ${a.summary.buckets} bucket(s)${
       a.warnings.length ? `<br>${a.warnings.map(esc).join("<br>")}` : ""}`);
   });
 
