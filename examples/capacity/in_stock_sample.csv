@@ -1,0 +1,6 @@
+fab,datacenter,ag,network,model,count
+fab-a,dc-1,ag-1,bgp1,std-64c,10
+fab-a,dc-1,ag-2,bgp1,std-64c,10
+fab-a,dc-2,ag-1,bgp2,std-64c,8
+fab-b,dc-1,ag-1,bgp1,std-64c,6
+fab-b,dc-1,ag-2,bgp1,std-64c,6

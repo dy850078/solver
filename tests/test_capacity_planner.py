@@ -843,6 +843,42 @@ class TestCapacityHorizon:
         row = r.budget_view[0]
         assert (row.fab, row.bucket, row.network, row.period, row.bm_count) == \
             ("", "ag-1", "", "2026-01", 1)
+        assert row.type_id == "big"
+
+    def test_budget_view_splits_by_model(self):
+        """With several buyable models, budget rows carry WHICH model to buy
+        (finance needs the model, not just a count)."""
+        types = [make_type("small", 16, 64_000, 400),
+                 make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=32, spec=SPEC_8, cluster="c-small",
+                      allowed=["small"]),
+                entry("2026-01", cpu=64, spec=SPEC_8, cluster="c-big",
+                      allowed=["big"])]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        by_type = {row.type_id: row.bm_count for row in r.budget_view}
+        assert by_type == {"small": 2, "big": 1}
+
+    def test_in_stock_bm_used_reported(self):
+        """The report says how many EXISTING machines this month's placement
+        touched — machine count, not utilization (user ask)."""
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000,
+                            ag="ag-1", rack="r1"),
+                    make_bm("bm-2", cpu=64, mem=256_000, disk=2000,
+                            ag="ag-2", rack="r2")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types)
+
+        assert r.success
+        p = r.by_fab_period[0]
+        # 2×8c VMs consolidate onto one machine; the other is untouched.
+        assert p.in_stock_bm_used == 1
+        assert sum(c.in_stock_bm_used for c in p.cells) == 1
+        assert r.totals["in_stock_bm_used"] == 1
 
     def test_allowed_bm_types_restricts_buying(self):
         """(決議 #38) A cluster limited to 'small' buys 4 smalls, not 1 big."""

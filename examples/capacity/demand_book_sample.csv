@@ -1,7 +1,7 @@
-fab,cluster,role,period,cpu_cores,memory_gib,storage_gb,pods,spec,network
-fab-a,cluster-app,worker,2026-01,64,125,800,200,,
-fab-a,cluster-app,worker,2026-02,192,375,2400,0,,
-fab-a,cluster-app,master,2026-01,12,24,300,0,,
-fab-a,cluster-app,worker,2026-03,0,0,0,0,,
-fab-b,cluster-ml,worker,2026-01,16,31.25,200,0,,
-fab-b,cluster-ml,worker,2026-02,32,62.5,400,0,,
+fab,cluster,role,period,cpu_cores,memory_gib,storage_gb,pods,spec,network,allowed_bm_types
+fab-a,cluster-app,worker,2026-01,64,125,800,200,,,
+fab-a,cluster-app,worker,2026-02,192,375,2400,0,,,
+fab-a,cluster-app,master,2026-01,12,24,300,0,,,
+fab-a,cluster-app,worker,2026-03,0,0,0,0,,,
+fab-b,cluster-ml,worker,2026-01,16,31.25,200,0,,,std-64c
+fab-b,cluster-ml,worker,2026-02,32,62.5,400,0,,,std-64c
