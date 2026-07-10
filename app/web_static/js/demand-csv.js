@@ -20,10 +20,11 @@
 const ROLES = new Set(["worker", "master", "learner", "infra", "l4lb-storage", "bastion"]);
 
 /* Canonical column order — the grid's visual order and the positional
- * mapping used for headerless pastes. */
+ * mapping used for headerless pastes. allowed_bm_types is appended LAST so
+ * pre-existing 10-column files and pastes keep their positional mapping. */
 export const DEMAND_COLUMNS =
   ["fab", "cluster", "role", "period", "cpu_cores", "memory_gib",
-   "storage_gb", "pods", "spec", "network"];
+   "storage_gb", "pods", "spec", "network", "allowed_bm_types"];
 export const DEMAND_HEADER_LINE = DEMAND_COLUMNS.join(",");
 
 // canonical field -> accepted header spellings
@@ -39,7 +40,13 @@ const HEADER_ALIASES = {
   pods: ["pods", "pod_count"],
   spec: ["spec", "vm_spec"],
   network: ["network", "bgp", "net"],
+  allowed: ["allowed_bm_types", "allowed", "allowed_models", "bm_types"],
 };
+
+/* "small; big" → ["small", "big"]. Multi-value INSIDE one CSV cell uses ;
+ * or | (a comma would need quoting); blank = any model. */
+export const splitAllowed = (raw) =>
+  String(raw ?? "").split(/[;|]/).map((s) => s.trim()).filter(Boolean);
 
 /* Minimal delimited-text parser: handles quoted fields ("" escapes). */
 function parseDelimited(text, delim) {
@@ -88,7 +95,7 @@ const numAt = (v, { float = false } = {}) => {
  * }
  * entries is non-empty ONLY when there are no errors anywhere.
  */
-export function analyzeDemandCsv(text, specs) {
+export function analyzeDemandCsv(text, specs, models = []) {
   const warnings = [], globalErrors = [];
   const delim = text.split("\n", 1)[0].includes("\t") ? "\t" : ",";
   const grid = parseDelimited(text, delim);
@@ -155,6 +162,16 @@ export function analyzeDemandCsv(text, specs) {
         bad(`unknown spec "${specName}" (catalog: ${specs.map((s) => s.name).join(", ") || "empty"}).`);
     }
 
+    const allowed = splitAllowed(cell(r, "allowed")).map((name) => {
+      const hit = models.find((m) => m.model_id.toLowerCase() === name.toLowerCase());
+      if (!hit) {
+        bad(`unknown allowed model "${name}" (catalog: ${
+          models.map((m) => m.model_id).join(", ") || "empty"}).`);
+        return name;
+      }
+      return hit.model_id;   // canonical casing
+    });
+
     if (row.errors.length) continue;
 
     const fab = cell(r, "fab");
@@ -168,6 +185,7 @@ export function analyzeDemandCsv(text, specs) {
     row.entry = {
       cluster_id: cluster, fab, period, node_role: role,
       cpu, memGiB, disk, pods, specIdx, network: cell(r, "network"),
+      allowed,
     };
   }
 
@@ -208,12 +226,17 @@ export function headerish(line, delim) {
  * this covers requiredness, duplicate keys, and fab-mode mixing.
  * @returns {rowErrors: string[][], bookErrors: string[]}
  */
-export function validateEntries(entries) {
+export function validateEntries(entries, models = []) {
   const rowErrors = entries.map(() => []);
+  const modelNames = new Set(models.map((m) => m.model_id.toLowerCase()));
   const firstOfKey = new Map();
   entries.forEach((e, i) => {
     if (!(e.cluster_id || "").trim()) rowErrors[i].push("cluster is required");
     if (!/^\d{4}-\d{2}$/.test(e.period || "")) rowErrors[i].push("month is required");
+    for (const name of e.allowed || []) {
+      if (!modelNames.has(name.toLowerCase()))
+        rowErrors[i].push(`allowed model "${name}" not in the BM Model catalog`);
+    }
     if (rowErrors[i].length) return;
     const key = [e.fab || "", e.cluster_id.trim(), e.node_role, e.period].join("|");
     if (firstOfKey.has(key)) {
@@ -230,8 +253,8 @@ export function validateEntries(entries) {
 }
 
 /** Flat-text contract: errors as "Row N: message" strings. */
-export function parseDemandCsv(text, specs) {
-  const a = analyzeDemandCsv(text, specs);
+export function parseDemandCsv(text, specs, models = []) {
+  const a = analyzeDemandCsv(text, specs, models);
   const errors = [
     ...a.globalErrors,
     ...a.rows.flatMap((r) => r.errors.map((m) => `Row ${r.line}: ${m}`)),
@@ -246,11 +269,12 @@ const csvField = (v) => {
 
 /** Export form-shaped demand entries back to canonical CSV. */
 export function exportDemandCsv(entries, specs) {
-  const header = "fab,cluster,role,period,cpu_cores,memory_gib,storage_gb,pods,spec,network";
+  const header = DEMAND_HEADER_LINE;
   const lines = entries.map((e) => [
     e.fab, e.cluster_id, e.node_role, e.period,
     e.cpu || 0, e.memGiB || 0, e.disk || 0, e.pods || 0,
     specs[e.specIdx]?.name ?? "", e.network,
+    (e.allowed || []).join("; "),
   ].map(csvField).join(","));
   return [header, ...lines].join("\n") + "\n";
 }

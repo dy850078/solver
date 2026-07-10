@@ -246,6 +246,7 @@ select.dgrid-input { cursor: pointer; min-width: 88px; }
 .dgrid-input::-webkit-inner-spin-button, .dgrid-input::-webkit-outer-spin-button { -webkit-appearance: none; }
 .dgrid .col-cluster { min-width: 130px; }
 .dgrid .col-spec { min-width: 150px; }
+.dgrid .col-allowed { min-width: 120px; }
 .dgrid .col-num .dgrid-input { text-align: right; font-variant-numeric: tabular-nums; }
 .dgrid-row--bad td { background: var(--error-soft); }
 .dgrid-status { font-size: 11px; color: var(--error); white-space: normal; min-width: 140px; max-width: 220px; }

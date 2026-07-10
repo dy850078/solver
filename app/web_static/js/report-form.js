@@ -17,7 +17,7 @@
 
 import {
   DEMAND_COLUMNS, DEMAND_HEADER_LINE,
-  analyzeDemandCsv, exportDemandCsv, headerish, validateEntries,
+  analyzeDemandCsv, exportDemandCsv, headerish, splitAllowed, validateEntries,
 } from "./demand-csv.js";
 import {
   STOCK_COLUMNS, STOCK_HEADER_LINE,
@@ -49,7 +49,8 @@ const blank = {
   specs: () => ({ name: "", cpu: 8, memGiB: 16, disk: 100 }),
   models: () => ({ model_id: "", cpu: 64, memGiB: 256, disk: 2000, fab: "", buyable: true }),
   entries: () => ({ cluster_id: "cluster-1", fab: "", period: "", node_role: "worker",
-                    cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: 0, network: "" }),
+                    cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: 0, network: "",
+                    allowed: [] }),
   stock: () => ({ count: 1, modelIdx: 0, fab: "", dc: "dc-1", ag: "ag-1", network: "" }),
   caps: () => ({ fab: "", bucket: "ag-1", network: "", max_bm: 1 }),
   committed: () => ({ modelIdx: 0, count: 1, fab: "", bucket: "", network: "" }),
@@ -148,12 +149,14 @@ const GRID_COLS = [
   { f: "pods",       type: "num",   label: "Pods ≥",  cls: "col-num" },
   { f: "specIdx",    type: "spec",  label: "VM spec", cls: "col-spec" },
   { f: "network",    type: "text",  label: "Network" },
+  { f: "allowed",    type: "allowed", label: "Allowed BMs", cls: "col-allowed" },
 ];
 const GRID_RENDER_CAP = 200;
 const gridView = { fabs: new Set(), q: "" };
 
 const emptyEntry = () => ({ cluster_id: "", fab: "", period: "", node_role: "worker",
-                            cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: -1, network: "" });
+                            cpu: 0, memGiB: 0, disk: 0, pods: 0, specIdx: -1, network: "",
+                            allowed: [] });
 
 function gridCell(col, e, i, ghost) {
   const bind = ghost ? `data-ghost="1" data-f="${col.f}"`
@@ -174,6 +177,10 @@ function gridCell(col, e, i, ghost) {
           `<option value="${si}"${v === si ? " selected" : ""}>${esc(specLabel(s))}</option>`)];
       return `<select class="dgrid-input" ${bind}>${opts.join("")}</select>`;
     }
+    case "allowed":
+      return `<input class="dgrid-input" type="text" placeholder="any"
+        title="BM models this cluster may buy/draw; separate with ; — blank = any"
+        value="${esc((v || []).join("; "))}" ${bind}>`;
     default:
       return `<input class="dgrid-input" type="text" value="${esc(v ?? "")}" ${bind}>`;
   }
@@ -222,7 +229,7 @@ function updateDemandCount(rowErrors, bookErrors) {
 
 function renderDemandGrid() {
   const host = $("demand-grid");
-  const { rowErrors, bookErrors } = validateEntries(state.entries);
+  const { rowErrors, bookErrors } = validateEntries(state.entries, state.models);
   const visible = [];
   state.entries.forEach((e, i) => { if (entryInView(e)) visible.push(i); });
   const shown = visible.slice(0, GRID_RENDER_CAP);
@@ -251,7 +258,7 @@ function renderDemandGrid() {
 
 /* Re-check without rebuilding the DOM (keeps focus while editing). */
 function refreshGridValidation() {
-  const { rowErrors, bookErrors } = validateEntries(state.entries);
+  const { rowErrors, bookErrors } = validateEntries(state.entries, state.models);
   $("demand-grid").querySelectorAll("tbody tr[data-row]").forEach((tr) => {
     const errs = rowErrors[+tr.dataset.row] || [];
     tr.classList.toggle("dgrid-row--bad", !!errs.length);
@@ -449,6 +456,7 @@ export function buildRequest() {
       vm_specs: spec ? [toResources(spec)] : null,
       fab: e.fab || "",
       network: e.network || "",
+      allowed_bm_types: e.allowed?.length ? e.allowed : null,
     };
   });
 
@@ -532,6 +540,7 @@ export function loadIntoForm(json) {
       pods: e.pod_count || 0,
       specIdx: spec ? addSpec(spec) : -1,
       network: e.network || "",
+      allowed: e.allowed_bm_types ?? [],
     };
   });
 
@@ -606,6 +615,7 @@ export function loadIntoForm(json) {
 
 const readVal = (t, f) =>
   t.type === "checkbox" ? t.checked
+  : f === "allowed" ? splitAllowed(t.value)
   : f.endsWith("Idx") ? parseInt(t.value, 10)
   : t.type === "number" ? +t.value
   : t.value;
@@ -786,7 +796,7 @@ export function initForm() {
     const full = headerish(text.split("\n", 1)[0], delim)
       ? text
       : DEMAND_COLUMNS.join(delim) + "\n" + text;
-    const a = analyzeDemandCsv(full, state.specs);
+    const a = analyzeDemandCsv(full, state.specs, state.models);
     const flat = [...a.globalErrors,
       ...a.rows.flatMap((r) => r.errors.map((m) => `Row ${r.line}: ${m}`))];
     if (flat.length || !a.entries.length) {
@@ -857,7 +867,7 @@ export function initForm() {
       return;
     }
 
-    const a = analyzeDemandCsv(dlgText, state.specs);
+    const a = analyzeDemandCsv(dlgText, state.specs, state.models);
     const fieldAt = (ci) =>
       Object.entries(a.colOf).find(([, idx]) => idx === ci)?.[0];
     const ths = a.headerRaw.map((h, ci) => fieldAt(ci)
@@ -941,7 +951,7 @@ export function initForm() {
   });
 
   $("csv-dialog-import").addEventListener("click", () => {
-    const a = analyzeDemandCsv(dlgText, state.specs);
+    const a = analyzeDemandCsv(dlgText, state.specs, state.models);
     if (!a.entries.length) return;
     state.entries = a.entries;
     resetGridView();
