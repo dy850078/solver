@@ -604,6 +604,7 @@ def _to_result(request: ProcurementRequest, p: _Pass,
         bm_placed=placed,
         bought_bms=[p.virtual_bms[bid] for bid in sorted(used_buy_ids)],
         committed_bms=[p.virtual_bms[bid] for bid in sorted(used_own_ids)],
+        bought_type_of={bid: p.buyable_type_of[bid] for bid in used_buy_ids},
         diagnostics=r.diagnostics,
     )
 
@@ -696,7 +697,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             res = solve_capacity_plan(preq)
 
             # Cell attribution must happen before roll-forward renames ids.
-            node_adds_per_cell, bought_per_cell, own_per_cell = (
+            node_adds_per_cell, bought_per_cell, own_per_cell, stock_used_per_cell = (
                 _cell_attribution(res, stock, dim)
             )
 
@@ -705,7 +706,8 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                               dim, period)
                 for bm in res.bought_bms:
                     bucket, network = _cell_of(bm, dim)
-                    budget[(fab, bucket, network, period)] += 1
+                    type_id = res.bought_type_of.get(bm.id, "")
+                    budget[(fab, bucket, network, period, type_id)] += 1
             else:
                 all_ok = False
                 failed_period = period
@@ -713,11 +715,12 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             reports.append(_period_report(
                 fab, period, res, stock, dim,
                 node_adds_per_cell, bought_per_cell, own_per_cell,
+                stock_used_per_cell,
             ))
 
     budget_view = [
-        BudgetRow(fab=f, bucket=b, network=n, period=pd, bm_count=cnt)
-        for (f, b, n, pd), cnt in sorted(budget.items())
+        BudgetRow(fab=f, bucket=b, network=n, period=pd, type_id=t, bm_count=cnt)
+        for (f, b, n, pd, t), cnt in sorted(budget.items())
     ]
     # Aggregates cover SUCCESSFUL months only (consistent with budget_view);
     # a failed month's numbers are what-if output and live only in its own
@@ -727,6 +730,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
         "node_adds": sum(r.node_adds_total for r in ok_reports),
         "bm_procurement": sum(r.bm_procurement_total for r in ok_reports),
         "committed_bm_used": sum(r.committed_bm_used for r in ok_reports),
+        "in_stock_bm_used": sum(r.in_stock_bm_used for r in ok_reports),
         "by_fab": {
             fab: {
                 "node_adds": sum(r.node_adds_total for r in ok_reports
@@ -772,11 +776,14 @@ def _cell_of(bm: Baremetal, dim: str) -> tuple[str, str]:
     return (getattr(bm.topology, dim), bm.network)
 
 
-def _cell_attribution(res: ProcurementResult, stock: list[Baremetal],
-                      dim: str) -> tuple[Counter, Counter, Counter]:
-    """Count this month's node adds / buys / committed draws per
-    (bucket, network) cell, using pre-roll-forward ids."""
+def _cell_attribution(
+    res: ProcurementResult, stock: list[Baremetal], dim: str,
+) -> tuple[Counter, Counter, Counter, Counter]:
+    """Count this month's node adds / buys / committed draws / distinct
+    in-stock machines touched, per (bucket, network) cell, using
+    pre-roll-forward ids."""
     cell_by_id: dict[str, tuple[str, str]] = {}
+    stock_ids = {bm.id for bm in stock}
     for bm in stock:
         cell_by_id[bm.id] = _cell_of(bm, dim)
     for bm in list(res.bought_bms) + list(res.committed_bms):
@@ -788,7 +795,12 @@ def _cell_attribution(res: ProcurementResult, stock: list[Baremetal],
     )
     bought = Counter(_cell_of(bm, dim) for bm in res.bought_bms)
     own = Counter(_cell_of(bm, dim) for bm in res.committed_bms)
-    return node_adds, bought, own
+    # Distinct machines, not placements: five nodes on one BM = one machine.
+    touched_stock = {
+        a.baremetal_id for a in res.assignments if a.baremetal_id in stock_ids
+    }
+    stock_used = Counter(cell_by_id[bid] for bid in touched_stock)
+    return node_adds, bought, own, stock_used
 
 
 def _roll_forward(stock: list[Baremetal], caps_state: list,
@@ -836,7 +848,8 @@ def _roll_forward(stock: list[Baremetal], caps_state: list,
 def _period_report(fab: str, period: str, res: ProcurementResult,
                    stock_after: list[Baremetal], dim: str,
                    node_adds_per_cell: Counter, bought_per_cell: Counter,
-                   own_per_cell: Counter) -> PeriodFabReport:
+                   own_per_cell: Counter,
+                   stock_used_per_cell: Counter) -> PeriodFabReport:
     # Post-month in-stock snapshot per (bucket, network) cell — for a failed
     # month the state is unchanged, so the snapshot shows what was available.
     cell_stock: dict[tuple[str, str], dict[str, Resources]] = {}
@@ -861,6 +874,7 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
             node_adds=node_adds_per_cell.get((bucket, network), 0),
             bm_bought=bought_per_cell.get((bucket, network), 0),
             committed_used=own_per_cell.get((bucket, network), 0),
+            in_stock_bm_used=stock_used_per_cell.get((bucket, network), 0),
             in_stock_total=agg["total"],
             in_stock_used=agg["used"],
             in_stock_available=agg["total"] - agg["used"],
@@ -875,6 +889,7 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
         node_adds_total=sum(d.count for d in res.split_decisions),
         bm_procurement_total=res.procured_bm_total,
         committed_bm_used=res.committed_bm_used,
+        in_stock_bm_used=res.in_stock_bm_used,
         procurement=res.procurement,
         committed_used=res.committed_used,
         split_decisions=res.split_decisions,
