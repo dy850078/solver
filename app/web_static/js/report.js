@@ -153,20 +153,28 @@ function renderMatrix(report) {
     return `<tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>${tds}</tr>`;
   }).join("");
 
-  // The finance line: bought BMs per month across the shown fabs.
+  // The finance line: bought BMs per month across the shown fabs — and its
+  // running sum, which reads as "machines short by this month if NOTHING is
+  // bought" (each month's buys are exactly that month's marginal gap).
   const totals = periods.map((m) => shown.reduce((acc, f) => {
     const i = idx.get(`${f}|${m}`);
     const p = i == null ? null : report.by_fab_period[i];
     return acc + (p?.success ? p.bm_procurement_total || 0 : 0);
   }, 0));
+  let cumRun = 0;
+  const cum = totals.map((n) => (cumRun += n));
 
   $("grid-content").innerHTML = `
     <div class="table-wrap">
       <table class="tbl pivot">
         <thead><tr><th>Fab</th>${periods.map((m) => `<th>${esc(m)}</th>`).join("")}</tr></thead>
         <tbody>${body}</tbody>
-        <tfoot><tr><th class="pivot-rowhead">BM buys total</th>
-          ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr></tfoot>
+        <tfoot>
+          <tr><th class="pivot-rowhead">BM buys total</th>
+            ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr>
+          <tr><th class="pivot-rowhead">Cumulative gap (if not bought)</th>
+            ${cum.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr>
+        </tfoot>
       </table>
     </div>`;
   $("grid-content").querySelectorAll(".pivot-cell--click").forEach((td) =>
@@ -277,8 +285,70 @@ function metricTable(report, metric) {
     </div>`;
 }
 
+/* Per-fab running sum of planned buys: "machines short by each month if
+ * NOTHING is bought". Monthly buys are that month's marginal gap, so the
+ * prefix sum is the accumulated one the user asked for. Unplanned months
+ * carry the gap forward (muted); failed months show ✕ and stop
+ * accumulating — there is no valid plan to accumulate past them. */
+function cumulativeGapTable(report) {
+  const { periods, shown, idx } = pivotAxes(report);
+  const cells = new Map();   // `${f}|${m}` -> {kind: num|carry|dead|none, v}
+  const finals = new Map();
+  for (const f of shown) {
+    let running = 0, dead = false, planned = false;
+    for (const m of periods) {
+      const i = idx.get(`${f}|${m}`);
+      if (dead) { cells.set(`${f}|${m}`, { kind: "dead" }); continue; }
+      if (i == null) {
+        cells.set(`${f}|${m}`, planned ? { kind: "carry", v: running } : { kind: "none" });
+        continue;
+      }
+      const p = report.by_fab_period[i];
+      if (!p.success) { dead = true; cells.set(`${f}|${m}`, { kind: "dead" }); continue; }
+      planned = true;
+      running += p.bm_procurement_total || 0;
+      cells.set(`${f}|${m}`, { kind: "num", v: running });
+    }
+    finals.set(f, running);
+  }
+
+  const td = (c) => {
+    if (c.kind === "num") return `<td class="num">${fmt(c.v)}</td>`;
+    if (c.kind === "carry")
+      return `<td class="num muted" title="no plan this month — gap carried forward">${fmt(c.v)}</td>`;
+    if (c.kind === "dead")
+      return `<td class="num muted" title="month failed — even buying does not produce a valid plan">✕</td>`;
+    return `<td class="num muted">—</td>`;
+  };
+  const rows = shown.map((f) => `
+    <tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>
+      ${periods.map((m) => td(cells.get(`${f}|${m}`))).join("")}
+      <td class="num pivot-total">${fmt(finals.get(f))}</td></tr>`).join("");
+  const colTotals = periods.map((m) => shown.reduce((acc, f) => {
+    const c = cells.get(`${f}|${m}`);
+    return acc + (c.kind === "num" || c.kind === "carry" ? c.v : 0);
+  }, 0));
+  const grand = shown.reduce((a, f) => a + finals.get(f), 0);
+
+  return `
+    <p class="subhead">Cumulative machine gap
+      <span class="muted" style="font-weight:400">· machines short by each month if nothing is bought · running total of planned buys</span></p>
+    <div class="table-wrap" style="margin-bottom:18px">
+      <table class="tbl pivot">
+        <thead><tr><th>Fab</th>
+          ${periods.map((m) => `<th class="num">${esc(m)}</th>`).join("")}
+          <th class="num">Final</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><th class="pivot-rowhead">Total</th>
+          ${colTotals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}
+          <td class="num pivot-total">${fmt(grand)}</td></tr></tfoot>
+      </table>
+    </div>`;
+}
+
 function renderMetrics(report) {
-  $("metrics-content").innerHTML = METRICS.map((m) => metricTable(report, m)).join("");
+  $("metrics-content").innerHTML =
+    METRICS.map((m) => metricTable(report, m)).join("") + cumulativeGapTable(report);
   $("metrics-card").classList.remove("hidden");
 }
 
