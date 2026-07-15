@@ -777,7 +777,7 @@ POST /v1/capacity/plan
 | 40 | **建新拆舊（fleet events）**：先只做 `release`（整台除役還池）、事件月前**擋新節點**；設計已定、**列 backlog 暫不實作** | roll-forward 目前單向消耗，表達不了「某月機器從舊 cluster 除役變回可用」 | 見下方〈Backlog：機隊事件簿〉 |
 | 41 | **UI 定位 = B：檢視 + 微調 + 模擬工具**；正式需求帳本住 Go Scheduler 端 | 20 fab × 20 cluster 規模需要持久化/權限/稽核/並行編輯，在無狀態 sidecar 長儲存層違反 #25；UI 保留 what-if 沙盒、報表視覺化、除錯 demo 三角色 | 演進：UI 加 localStorage 草稿 → Go 端帳本 API 好後加 Load/Save book 按鈕，UI 始終無狀態 |
 | 42 | **需求規模化輸入 = 長表 CSV/TSV 匯入**（Excel 貼上），**匯入取代全部**、**重複鍵報錯**；格子語意維持資源總量（GiB）；需求網格（demand lines grid）**後補** | 20 fab 的需求已活在 Excel；長表與 `DemandEntry` 一比一，同時是未來與 Go 端帳本的交換格式 | 欄位：`fab, cluster, role, period, cpu_cores, memory_gib(或 memory_mib 擇一), storage_gb, pods, spec(目錄名，空=Any), network`；cluster/period 必填、欄序不拘、未知欄警告忽略、全有或全無 |
-| 43 | **「不採買累計缺口」= 每月採買量的前綴和**（純 UI 變換，不另跑情境） | 每月採買量本身就是該月的邊際缺口（solver 買的是滿足需求的最少台數），per-fab running sum 即「都不買的話到 M 月累計缺幾台」；回答「說服採買」的緊迫性論述 | 未規劃月攜帶前值（淡色標注）、失敗月 ✕ 停止累計；節點級 no-buy what-if 見下方 Backlog |
+| 43 | **「不採買累計缺口」= 每月採買量的前綴和**（純 UI 變換，不另跑情境） | 每月採買量本身就是該月的邊際缺口（solver 買的是滿足需求的最少台數），per-fab running sum 即「都不買的話到 M 月累計缺幾台」；回答「說服採買」的緊迫性論述 | 未規劃月攜帶前值（淡色標注）；**失敗月繼續累計其 what-if 採買量並從此標 `≥`（下界）**——先前的缺口不因該月失敗而消失，且該月真實缺口可能大於 what-if（capacity/AA 成因時無法量化）。此表本身即 what-if 情境，納入失敗月 what-if 與「totals 只計成功月」不衝突。節點級 no-buy what-if 見下方 Backlog |
 
 ### 未來展望：跨 fab 調撥（Phase 4，超出本提案範圍）
 保留升級路徑。屆時把「每 fab 一個獨立庫存池」放寬成「跨 fab 候選池 + 調撥成本」，

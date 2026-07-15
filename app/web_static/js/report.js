@@ -153,16 +153,27 @@ function renderMatrix(report) {
     return `<tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>${tds}</tr>`;
   }).join("");
 
-  // The finance line: bought BMs per month across the shown fabs — and its
-  // running sum, which reads as "machines short by this month if NOTHING is
-  // bought" (each month's buys are exactly that month's marginal gap).
+  // The finance line: bought BMs per month across the shown fabs (real
+  // plans only) — and the cumulative no-buy gap, which ALSO accumulates
+  // failed months' what-if buys and turns into a "≥" lower bound from the
+  // first failure on (an earlier gap never disappears; a failed month may
+  // be short by more than its what-if says).
   const totals = periods.map((m) => shown.reduce((acc, f) => {
     const i = idx.get(`${f}|${m}`);
     const p = i == null ? null : report.by_fab_period[i];
     return acc + (p?.success ? p.bm_procurement_total || 0 : 0);
   }, 0));
-  let cumRun = 0;
-  const cum = totals.map((n) => (cumRun += n));
+  let cumRun = 0, cumLower = false;
+  const cum = periods.map((m) => {
+    for (const f of shown) {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) continue;
+      const p = report.by_fab_period[i];
+      cumRun += p.bm_procurement_total || 0;
+      if (!p.success) cumLower = true;
+    }
+    return `${cumLower ? "≥ " : ""}${fmt(cumRun)}`;
+  });
 
   $("grid-content").innerHTML = `
     <div class="table-wrap">
@@ -172,8 +183,10 @@ function renderMatrix(report) {
         <tfoot>
           <tr><th class="pivot-rowhead">BM buys total</th>
             ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr>
-          <tr><th class="pivot-rowhead">Cumulative gap (if not bought)</th>
-            ${cum.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr>
+          <tr><th class="pivot-rowhead"
+              title="running total incl. failed months' what-if buys; ≥ = true gap may be larger">
+              Cumulative gap (if not bought)</th>
+            ${cum.map((s) => `<td class="num">${s}</td>`).join("")}</tr>
         </tfoot>
       </table>
     </div>`;
@@ -285,54 +298,73 @@ function metricTable(report, metric) {
     </div>`;
 }
 
-/* Per-fab running sum of planned buys: "machines short by each month if
- * NOTHING is bought". Monthly buys are that month's marginal gap, so the
- * prefix sum is the accumulated one the user asked for. Unplanned months
- * carry the gap forward (muted); failed months show ✕ and stop
- * accumulating — there is no valid plan to accumulate past them. */
+/* Per-fab running sum of buys: "machines short by each month if NOTHING is
+ * bought". Monthly buys are that month's marginal gap, so the prefix sum is
+ * the accumulated gap. An earlier month's gap never disappears:
+ * - unplanned months carry the value forward (muted);
+ * - failed months keep accumulating — a SPACE month's what-if buys are a
+ *   quantified increment (the uncapped comparison), other causes may add
+ *   an unquantifiable amount — so from the first failure on, the value is
+ *   a LOWER BOUND and is shown as "≥N". This whole table is a what-if, so
+ *   including failed months' what-if numbers is consistent here (unlike
+ *   totals/budget, which count real plans only).
+ */
 function cumulativeGapTable(report) {
   const { periods, shown, idx } = pivotAxes(report);
-  const cells = new Map();   // `${f}|${m}` -> {kind: num|carry|dead|none, v}
+  const cells = new Map();   // `${f}|${m}` -> {v, lower, kind: num|carry|none}
   const finals = new Map();
   for (const f of shown) {
-    let running = 0, dead = false, planned = false;
+    let running = 0, lower = false, planned = false;
     for (const m of periods) {
       const i = idx.get(`${f}|${m}`);
-      if (dead) { cells.set(`${f}|${m}`, { kind: "dead" }); continue; }
       if (i == null) {
-        cells.set(`${f}|${m}`, planned ? { kind: "carry", v: running } : { kind: "none" });
+        cells.set(`${f}|${m}`, planned ? { kind: "carry", v: running, lower } : { kind: "none" });
         continue;
       }
       const p = report.by_fab_period[i];
-      if (!p.success) { dead = true; cells.set(`${f}|${m}`, { kind: "dead" }); continue; }
       planned = true;
+      // Failed months contribute their what-if buys (0 when nothing could
+      // be quantified, e.g. blocked stubs) and taint the tail as "at least".
       running += p.bm_procurement_total || 0;
-      cells.set(`${f}|${m}`, { kind: "num", v: running });
+      if (!p.success) lower = true;
+      cells.set(`${f}|${m}`, { kind: p.success ? "num" : "carry", v: running, lower });
     }
-    finals.set(f, running);
+    finals.set(f, { v: running, lower });
   }
 
+  const show = (v, lower) => `${lower ? "≥ " : ""}${fmt(v)}`;
   const td = (c) => {
-    if (c.kind === "num") return `<td class="num">${fmt(c.v)}</td>`;
+    if (c.kind === "num")
+      return `<td class="num${c.lower ? " muted" : ""}"${c.lower
+        ? ' title="lower bound — an earlier month failed, its true shortfall may be larger"' : ""}>${show(c.v, c.lower)}</td>`;
     if (c.kind === "carry")
-      return `<td class="num muted" title="no plan this month — gap carried forward">${fmt(c.v)}</td>`;
-    if (c.kind === "dead")
-      return `<td class="num muted" title="month failed — even buying does not produce a valid plan">✕</td>`;
+      return `<td class="num muted" title="${c.lower
+        ? "lower bound — gap persists; a failed month's own shortfall may be larger than its what-if buys"
+        : "no plan this month — gap carried forward"}">${show(c.v, c.lower)}</td>`;
     return `<td class="num muted">—</td>`;
   };
-  const rows = shown.map((f) => `
+  const rows = shown.map((f) => {
+    const fin = finals.get(f);
+    return `
     <tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>
       ${periods.map((m) => td(cells.get(`${f}|${m}`))).join("")}
-      <td class="num pivot-total">${fmt(finals.get(f))}</td></tr>`).join("");
-  const colTotals = periods.map((m) => shown.reduce((acc, f) => {
-    const c = cells.get(`${f}|${m}`);
-    return acc + (c.kind === "num" || c.kind === "carry" ? c.v : 0);
-  }, 0));
-  const grand = shown.reduce((a, f) => a + finals.get(f), 0);
+      <td class="num pivot-total">${show(fin.v, fin.lower)}</td></tr>`;
+  }).join("");
+  const colTotal = (m) => {
+    let sum = 0, lower = false;
+    for (const f of shown) {
+      const c = cells.get(`${f}|${m}`);
+      if (c.kind === "num" || c.kind === "carry") { sum += c.v; lower ||= c.lower; }
+    }
+    return { sum, lower };
+  };
+  const totals = periods.map(colTotal);
+  const grand = [...finals.values()].reduce(
+    (a, f) => ({ v: a.v + f.v, lower: a.lower || f.lower }), { v: 0, lower: false });
 
   return `
     <p class="subhead">Cumulative machine gap
-      <span class="muted" style="font-weight:400">· machines short by each month if nothing is bought · running total of planned buys</span></p>
+      <span class="muted" style="font-weight:400">· machines short by each month if nothing is bought · ≥ = a month failed, true gap may be larger</span></p>
     <div class="table-wrap" style="margin-bottom:18px">
       <table class="tbl pivot">
         <thead><tr><th>Fab</th>
@@ -340,8 +372,8 @@ function cumulativeGapTable(report) {
           <th class="num">Final</th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot><tr><th class="pivot-rowhead">Total</th>
-          ${colTotals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}
-          <td class="num pivot-total">${fmt(grand)}</td></tr></tfoot>
+          ${totals.map((t) => `<td class="num">${show(t.sum, t.lower)}</td>`).join("")}
+          <td class="num pivot-total">${show(grand.v, grand.lower)}</td></tr></tfoot>
       </table>
     </div>`;
 }
