@@ -212,6 +212,13 @@
         <h2 class="card__title">Fab × Month</h2>
         <span class="card__hint">Click a cell for the drill-down · absent months are unplanned, not zero-growth</span>
         <div class="card__header-right">
+          <button id="export-xlsx" type="button" class="btn btn--small hidden" title="Download the full report as an Excel workbook">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 10.5V2M8 10.5l-3-3M8 10.5l3-3"/>
+              <path d="M2.5 10.5v2A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5v-2"/>
+            </svg>
+            Export Excel
+          </button>
           <div class="segmented" role="radiogroup" aria-label="Grid view">
             <label><input type="radio" name="grid-view" value="matrix" checked><span>Matrix</span></label>
             <label><input type="radio" name="grid-view" value="list"><span>List</span></label>

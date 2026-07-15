@@ -8,6 +8,7 @@
 
 import { listExamples, getExample, planCapacity } from "./api.js";
 import { initForm, buildRequest, loadIntoForm } from "./report-form.js";
+import { buildXlsx } from "./xlsx.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -524,6 +525,102 @@ function renderBudget(report) {
   bindTooltips($("budget-strip"));
 }
 
+/* ── Excel export ── */
+
+/* Per-fab cumulative gap in long format (mirrors cumulativeGapTable's
+ * semantics: failed months keep accumulating what-if buys and taint the
+ * tail as a lower bound). */
+function cumulativeGapRows(report) {
+  const { periods, fabs, idx } = pivotAxes(report);
+  const rows = [["Fab", "Month", "Cumulative gap (if not bought)", "Is lower bound"]];
+  for (const f of fabs) {
+    let running = 0, lower = false, planned = false;
+    for (const m of periods) {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) {
+        if (planned) rows.push([fabLabel(f), m, running, lower ? "yes" : ""]);
+        continue;
+      }
+      const p = report.by_fab_period[i];
+      planned = true;
+      running += p.bm_procurement_total || 0;
+      if (!p.success) lower = true;
+      rows.push([fabLabel(f), m, running, lower ? "yes" : ""]);
+    }
+  }
+  return rows;
+}
+
+const mib2gib = (m) => Math.round((m ?? 0) / 1024);
+
+function reportToSheets(report) {
+  const t = report.totals || {};
+
+  const overview = [["Fab", "Month", "Status", "Cause", "Node adds",
+    "BM buys", "Committed used", "In-stock used", "Note"]];
+  for (const p of report.by_fab_period) {
+    overview.push([
+      p.fab || "(single fab)", p.period,
+      p.success ? "OK" : (periodChip(p).label),
+      p.success ? "" : (p.shortfalls?.[0]?.cause || "unknown"),
+      p.node_adds_total || 0, p.bm_procurement_total || 0,
+      p.committed_bm_used || 0, p.in_stock_bm_used || 0,
+      p.shortfalls?.[0]?.message || "",
+    ]);
+  }
+
+  const budget = [["Fab", "Bucket", "Network", "Month", "Model", "BM count"]];
+  for (const r of report.budget_view || [])
+    budget.push([r.fab || "", r.bucket || "", r.network || "", r.period,
+      r.type_id || "", r.bm_count || 0]);
+
+  const cells = [["Fab", "Month", "Bucket", "Network", "Node adds", "BM bought",
+    "Committed used", "In-stock used", "In-stock CPU total", "In-stock CPU free"]];
+  for (const p of report.by_fab_period)
+    for (const c of p.cells || [])
+      cells.push([p.fab || "", p.period, c.bucket || "", c.network || "",
+        c.node_adds || 0, c.bm_bought || 0, c.committed_used || 0,
+        c.in_stock_bm_used || 0,
+        c.in_stock_total?.cpu_cores || 0, c.in_stock_available?.cpu_cores || 0]);
+
+  const plan = [["Fab", "Month", "Role", "vCore", "Mem GiB", "Disk GB", "Node count"]];
+  for (const p of report.by_fab_period)
+    for (const d of p.split_decisions || [])
+      plan.push([p.fab || "", p.period, d.node_role,
+        d.vm_spec?.cpu_cores || 0, mib2gib(d.vm_spec?.memory_mib),
+        d.vm_spec?.storage_gb || 0, d.count || 0]);
+
+  const summary = [
+    ["Capacity plan summary"], [],
+    ["Plan status", report.success ? "OK — every planned fab-month succeeded" : "SHORTFALL"],
+    ["Fab-months planned", report.by_fab_period.length],
+    ["Fab-months OK", report.by_fab_period.filter((p) => p.success).length], [],
+    ["Node adds (total)", t.node_adds ?? 0],
+    ["BMs to buy (total)", t.bm_procurement ?? 0],
+    ["Committed used (total)", t.committed_bm_used ?? 0],
+    ["In-stock used (total)", t.in_stock_bm_used ?? 0], [],
+    ["Note", "Totals count successful months only; see the Cumulative gap sheet for the no-buy view."],
+  ];
+
+  return [
+    { name: "Summary", rows: summary },
+    { name: "Overview", rows: overview, header: true },
+    { name: "Budget", rows: budget, header: true },
+    { name: "Cumulative gap", rows: cumulativeGapRows(report), header: true },
+    { name: "Cells", rows: cells, header: true },
+    { name: "Node plan", rows: plan, header: true },
+  ];
+}
+
+function exportReportXlsx(report) {
+  const blob = buildXlsx(reportToSheets(report));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "capacity-plan.xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /* ── Orchestration ── */
 function rerenderViews() {
   if (!currentReport) return;
@@ -539,6 +636,7 @@ function renderReport(report) {
   view.fabs.clear();
   renderStats(report);
   rerenderViews();
+  $("export-xlsx").classList.toggle("hidden", !report.by_fab_period.length);
   $("detail-card").classList.add("hidden");
   // Auto-select the first non-OK month (the interesting one), else the first.
   if (report.by_fab_period.length) {
@@ -570,6 +668,9 @@ async function run() {
 async function init() {
   initForm();
   $("run-btn").addEventListener("click", run);
+  $("export-xlsx").addEventListener("click", () => {
+    if (currentReport) exportReportXlsx(currentReport);
+  });
 
   document.querySelectorAll('input[name="grid-view"]').forEach((r) =>
     r.addEventListener("change", () => {

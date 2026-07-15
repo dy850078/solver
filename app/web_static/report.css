@@ -64,7 +64,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 @media (max-width: 1100px) { .app-main { grid-template-columns: 1fr; } }
 
-.sidebar { display: flex; flex-direction: column; gap: 20px; position: sticky; top: calc(var(--header-h) + 24px); }
+.sidebar {
+  display: flex; flex-direction: column; gap: 20px;
+  position: sticky; top: calc(var(--header-h) + 24px);
+  /* Scroll the sidebar independently of the page (same as the Topology page). */
+  max-height: calc(100vh - var(--header-h) - 48px);
+  overflow-y: auto;
+}
+@media (max-width: 1100px) { .sidebar { position: static; max-height: none; } }
 .content { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 
 /* ── Cards ── */
