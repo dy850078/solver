@@ -9,11 +9,13 @@ const ROLES = ["master", "learner", "worker", "infra", "l4lb-storage", "bastion"
 
 const DEFAULTS = {
   clusters: 1,
-  roles: { master: 3, learner: 0, worker: 3, infra: 2, "l4lb-storage": 0, bastion: 0 },
-  ip_type: {
-    master: "routable", learner: "routable", worker: "routable",
-    infra: "non-routable", "l4lb-storage": "non-routable", bastion: "routable",
-  },
+  // Node groups: role stays constrained to NodeRole, but the same role may
+  // appear in several groups (e.g. two worker specs / ip_types).
+  node_groups: [
+    { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
+    { role: "worker", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
+    { role: "infra", count: 2, ip_type: "non-routable", spec: "", max_per_bm: "" },
+  ],
   racks: 4, ags: 3,
   anti_affinity: true,
   target_spread_ag: 3,
@@ -48,6 +50,7 @@ function numField(id, label, value, { step, min, placeholder } = {}) {
 
 let specRowsEl = null;
 let bmRowsEl = null;
+let groupRowsEl = null;
 
 // ─── VM spec catalog rows (name + cpu/mem/storage/gpu) ───
 
@@ -57,16 +60,40 @@ function getSpecNames() {
     .filter(Boolean);
 }
 
+function specOptions(selected) {
+  return [el("option", { value: "", text: "(default)" }),
+    ...getSpecNames().map((n) => el("option", { value: n, text: n, selected: n === selected }))];
+}
+
+// Keep every node group's spec dropdown in sync with the spec catalog.
 function refreshSpecDropdowns() {
+  if (!groupRowsEl) return;
   const names = getSpecNames();
-  for (const r of ROLES) {
-    const sel = document.getElementById(`mf-spec-${r}`);
-    if (!sel) continue;
+  for (const sel of groupRowsEl.querySelectorAll(".group-spec")) {
     const cur = sel.value;
     sel.innerHTML = "";
     sel.appendChild(el("option", { value: "", text: "(default)" }));
     for (const n of names) sel.appendChild(el("option", { value: n, text: n, selected: n === cur }));
   }
+}
+
+// ─── Node group rows (role · count · ip_type · spec · max/BM) ───
+
+function groupRow(p = {}) {
+  const role = el("select", { class: "select group-role" },
+    ROLES.map((r) => el("option", { value: r, text: r, selected: r === (p.role || "worker") })));
+  const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
+  const ip = el("select", { class: "select group-ip" },
+    IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));
+  const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
+  const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
+  if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
+  const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
+  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, remove]);
+  remove.addEventListener("click", () => {
+    if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
+  });
+  return row;
 }
 
 // A self-labeling field (label above input) that wraps within a .cap-row.
@@ -132,20 +159,17 @@ export function renderMockForm(container) {
     addSpec,
   ]));
 
-  // Roles table: count + ip_type + spec per role
-  const roleRows = ROLES.map((r) => {
-    const count = el("input", { id: `mf-role-${r}`, class: "input", type: "number", min: 0, value: DEFAULTS.roles[r] });
-    const ip = el("select", { id: `mf-ip-${r}`, class: "select" },
-      IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === DEFAULTS.ip_type[r] })));
-    const spec = el("select", { id: `mf-spec-${r}`, class: "select" },
-      [el("option", { value: "", text: "(default)" }), ...getSpecNames().map((n) => el("option", { value: n, text: n }))]);
-    const maxbm = el("input", { id: `mf-maxbm-${r}`, class: "input", type: "number", min: 1, placeholder: "∞" });
-    return el("div", { class: "role-row" }, [el("span", { class: "role-row__name", text: r }), count, ip, spec, maxbm]);
-  });
+  // Node groups: an addable list — the same role can appear in several rows
+  // (e.g. two worker specs, or a role split across ip_types).
+  groupRowsEl = el("div", { class: "group-rows" }, DEFAULTS.node_groups.map(groupRow));
+  const addGroup = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add node group" });
+  addGroup.addEventListener("click", () => groupRowsEl.appendChild(groupRow()));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Roles (count · ip_type · spec · max/BM per cluster)" }),
-    el("div", { class: "role-row role-row--head muted" }, [el("span", {}), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" })]),
-    ...roleRows,
+    el("label", { class: "field-label", text: "Node groups (role · count · ip_type · spec · max/BM per cluster)" }),
+    el("div", { class: "role-row role-row--group role-row--head muted" },
+      [el("span", { text: "role" }), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" }), el("span", {})]),
+    groupRowsEl,
+    addGroup,
   ]));
 
   // Baremetal profiles (dynamic rows)
@@ -226,20 +250,19 @@ export function readMockParams() {
   const vm_specs = {};
   for (const s of readCapacityRows(specRowsEl, ".spec-row", "spec", false)) vm_specs[s.name] = s.cap;
 
-  const roles = {};
-  const ipByRole = {};
-  const specByRole = {};
-  const maxByRole = {};
-  for (const r of ROLES) {
-    const c = num(`mf-role-${r}`);
-    if (!c || c <= 0) continue;
-    roles[r] = c;
-    const ip = document.getElementById(`mf-ip-${r}`).value;
-    if (ip) ipByRole[r] = ip;
-    const spec = document.getElementById(`mf-spec-${r}`).value;
-    if (spec) specByRole[ip ? `${r}:${ip}` : r] = spec;
-    const mx = num(`mf-maxbm-${r}`);
-    if (mx != null) maxByRole[r] = mx;
+  const node_groups = [];
+  for (const row of groupRowsEl.querySelectorAll(".group-row")) {
+    const count = Number(row.querySelector(".group-count").value);
+    if (!Number.isFinite(count) || count <= 0) continue;
+    const g = {
+      role: row.querySelector(".group-role").value,
+      count,
+      ip_type: row.querySelector(".group-ip").value,
+      spec: row.querySelector(".group-spec").value,
+    };
+    const mx = Number(row.querySelector(".group-maxbm").value);
+    if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
+    node_groups.push(g);
   }
 
   const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
@@ -252,11 +275,8 @@ export function readMockParams() {
 
   const params = {
     clusters: num("mf-clusters") ?? 1,
-    roles,
-    ip_type_by_role: ipByRole,
+    node_groups,
     vm_specs,
-    spec_by_role: specByRole,
-    max_per_bm_by_role: maxByRole,
     bm_profiles,
     // Default-1 dims sent only when set, so blank stays an implicit 1.
     sites: num("mf-sites") ?? undefined,
@@ -319,27 +339,46 @@ export function populateMockForm(preset) {
     : DEFAULTS.vm_specs;
   rebuildCapRows(specRowsEl, specRow, specItems, (s) => s);
 
-  // Roles + ip_type (string only; weighted dists go to advanced) + spec + max/BM
-  const presetRoles = p.roles ?? {};
-  const ipMap = p.ip_type_by_role ?? {};
-  const specMap = p.spec_by_role ?? {};
-  const maxMap = p.max_per_bm_by_role ?? {};
-  const advIp = {};
-  for (const r of ROLES) {
-    setVal(`mf-role-${r}`, presetRoles[r] ?? 0);
-    const ip = ipMap[r];
-    let ipVal = "";
-    if (typeof ip === "string") ipVal = ip;
-    else if (ip !== undefined) advIp[r] = ip;
-    setVal(`mf-ip-${r}`, ipVal);
-    setVal(`mf-maxbm-${r}`, maxMap[r] ?? "");
+  // Node groups: prefer an explicit node_groups list; otherwise convert the
+  // legacy role-keyed dicts (a weighted ip_type distribution becomes one
+  // group per ip_type, counts split by weight) so old presets still load.
+  let groups = [];
+  if (Array.isArray(p.node_groups) && p.node_groups.length) {
+    groups = p.node_groups.map((g) => ({
+      role: g.role, count: g.count, ip_type: g.ip_type ?? "",
+      spec: g.spec ?? "", max_per_bm: g.max_per_bm ?? "",
+    }));
+  } else {
+    const presetRoles = p.roles ?? {};
+    const ipMap = p.ip_type_by_role ?? {};
+    const specMap = p.spec_by_role ?? {};
+    const maxMap = p.max_per_bm_by_role ?? {};
+    const specFor = (r, ip) => specMap[ip ? `${r}:${ip}` : r] || specMap[r] || "";
+    for (const [role, count] of Object.entries(presetRoles)) {
+      if (!count || count <= 0) continue;
+      const ip = ipMap[role];
+      if (ip && typeof ip === "object") {
+        const ips = Object.keys(ip);
+        const total = ips.reduce((a, k) => a + ip[k], 0) || 1;
+        let assigned = 0;
+        ips.forEach((ipv, i) => {
+          const c = i === ips.length - 1 ? count - assigned : Math.round(count * ip[ipv] / total);
+          assigned += c;
+          if (c > 0) groups.push({ role, count: c, ip_type: ipv, spec: specFor(role, ipv), max_per_bm: maxMap[role] ?? "" });
+        });
+      } else {
+        const ipv = typeof ip === "string" ? ip : "";
+        groups.push({ role, count, ip_type: ipv, spec: specFor(role, ipv), max_per_bm: maxMap[role] ?? "" });
+      }
+    }
   }
+  if (!groups.length) groups = DEFAULTS.node_groups;
+  groupRowsEl.innerHTML = "";
+  for (const g of groups) groupRowsEl.appendChild(groupRow(g));
   refreshSpecDropdowns();
-  for (const r of ROLES) {
-    const ipVal = document.getElementById(`mf-ip-${r}`).value;
-    const assigned = specMap[ipVal ? `${r}:${ipVal}` : r] || specMap[r] || "";
-    setVal(`mf-spec-${r}`, assigned);
-  }
+  groupRowsEl.querySelectorAll(".group-row").forEach((row, i) => {
+    if (groups[i].spec) row.querySelector(".group-spec").value = groups[i].spec;
+  });
 
   // Baremetal profiles
   const profs = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
@@ -356,6 +395,5 @@ export function populateMockForm(preset) {
     delete extra.ag;
     if (Object.keys(extra).length) adv.target_spread = p.target_spread;
   }
-  if (Object.keys(advIp).length) adv.ip_type_by_role = advIp;
   document.getElementById("mock-advanced").value = Object.keys(adv).length ? JSON.stringify(adv, null, 2) : "";
 }
