@@ -269,3 +269,84 @@ def test_endpoint_rejects_missing_ip_type():
     client = TestClient(api, raise_server_exceptions=False)
     r = client.post("/api/mock/generate", json={"roles": {"master": 3}})
     assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# node_groups: the same role in several groups (different spec / ip_type)
+# ---------------------------------------------------------------------------
+
+_SPECS = {
+    "big": Resources(cpu_cores=16, memory_mib=64_000, storage_gb=200),
+    "small": Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+}
+
+
+def test_node_groups_same_role_two_specs():
+    """Two worker groups, same ip_type, different specs — unrepresentable in
+    the role-keyed dicts, expressible via node_groups."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, vm_specs=_SPECS,
+        node_groups=[
+            {"role": "worker", "count": 2, "ip_type": "routable", "spec": "big"},
+            {"role": "worker", "count": 3, "ip_type": "routable", "spec": "small"},
+            {"role": "master", "count": 3, "ip_type": "routable", "spec": "big"},
+        ],
+    ))
+    assert resp.feasibility == "verified"
+    workers = [v for v in resp.request.vms if v.node_role.value == "worker"]
+    cpus = sorted(v.demand.cpu_cores for v in workers)
+    assert cpus == [4, 4, 4, 16, 16]      # 3 small + 2 big, same role & ip_type
+
+
+def test_node_groups_split_role_across_ip_types():
+    """One role, two ip_types with different specs → two auto-AA groups."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, vm_specs=_SPECS, anti_affinity=True,
+        node_groups=[
+            {"role": "worker", "count": 3, "ip_type": "routable", "spec": "big"},
+            {"role": "worker", "count": 3, "ip_type": "non-routable", "spec": "small"},
+            {"role": "master", "count": 3, "ip_type": "routable"},
+        ],
+    ))
+    assert resp.feasibility == "verified"
+    ips = {(v.node_role.value, v.ip_type) for v in resp.request.vms}
+    assert ("worker", "routable") in ips and ("worker", "non-routable") in ips
+
+
+def test_node_groups_max_per_bm_rule_emitted():
+    """max_per_bm on a group becomes a MaxPerBaremetalRule scoped to
+    (role, ip_type)."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=8, vm_specs=_SPECS,
+        node_groups=[
+            {"role": "worker", "count": 4, "ip_type": "routable", "spec": "small",
+             "max_per_bm": 1},
+        ],
+    ))
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 1
+    r = rules[0]
+    assert (r.selector.node_role.value, r.selector.ip_type, r.max_per_bm) == \
+        ("worker", "routable", 1)
+
+
+def test_node_groups_empty_ip_with_anti_affinity_rejected():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(GenerateRequest(
+            anti_affinity=True,
+            node_groups=[{"role": "worker", "count": 3, "ip_type": ""}]))
+    assert exc.value.status_code == 400
+    assert "node group" in exc.value.detail
+
+
+def test_node_groups_unknown_role_rejected():
+    with pytest.raises(Exception) as exc:
+        GenerateRequest(node_groups=[{"role": "gpu-worker", "count": 1}])
+    assert "role" in str(exc.value)
+
+
+def test_node_groups_unknown_spec_rejected():
+    with pytest.raises(Exception) as exc:
+        GenerateRequest(node_groups=[{"role": "worker", "count": 1, "spec": "nope"}])
+    assert "unknown vm_specs" in str(exc.value)

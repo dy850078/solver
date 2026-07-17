@@ -229,7 +229,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mock-grid .input:placeholder-shown { background: var(--bg-subtle); }
 
 .role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 5px; align-items: center; }
+/* Node-group rows add a role select up front and a remove button at the end. */
+.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 46px 26px; }
+.group-rows { display: flex; flex-direction: column; gap: 6px; }
+.role-row--group .cap-remove { height: 26px; padding: 0; font-size: 11px; }
 .role-row + .role-row { margin-top: 6px; }
+.group-rows .role-row + .role-row { margin-top: 0; }
 .role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role-row--head { margin-bottom: 2px; font-size: 11px; }
 .role-row--head span { padding-left: 2px; }

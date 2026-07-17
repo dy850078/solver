@@ -92,14 +92,45 @@ class BmProfile(BaseModel):
         return v
 
 
+class NodeGroup(BaseModel):
+    """One demand group: `count` VMs of `role`, all sharing an ip_type and
+    spec. The same role may appear in several groups (e.g. two worker pools
+    with different specs, or a role split across ip_types) — something the
+    role-keyed dict fields below cannot express. When node_groups is set it
+    is the sole source of demand; the roles/ip_type_by_role/spec_by_role/
+    max_per_bm_by_role dicts are ignored."""
+    role: str
+    count: int = Field(default=0, ge=0)
+    ip_type: str = ""
+    spec: str = ""                 # name in vm_specs; "" = built-in baseline
+    max_per_bm: int | None = None
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v: str) -> str:
+        valid = {r.value for r in NodeRole}
+        if v not in valid:
+            raise ValueError(f"unknown role {v!r}; valid: {sorted(valid)}")
+        return v
+
+    @field_validator("max_per_bm")
+    @classmethod
+    def _valid_max(cls, v: int | None) -> int | None:
+        if v is not None and v < 1:
+            raise ValueError("max_per_bm must be >= 1")
+        return v
+
+
 class GenerateRequest(BaseModel):
     """High-level knobs for generating a PlacementRequest. All have defaults."""
     seed: int | None = None
     target: Literal["solve"] = "solve"
     verify: bool = True
 
-    # Cluster / VM
+    # Cluster / VM. node_groups (when set) is the source of demand; otherwise
+    # the role-keyed dicts below are used (backward compatible).
     clusters: int = 1
+    node_groups: list[NodeGroup] = Field(default_factory=list)
     roles: dict[str, int] = Field(default_factory=lambda: {"master": 3, "worker": 3, "infra": 2})
     # value: a single ip_type string, or a weighted distribution {ip_type: weight}
     ip_type_by_role: dict[str, str | dict[str, float]] = Field(default_factory=dict)
@@ -178,6 +209,13 @@ class GenerateRequest(BaseModel):
                 f"spec_by_role references unknown vm_specs {bad}; "
                 f"defined specs: {sorted(self.vm_specs)}"
             )
+        gbad = sorted({g.spec for g in self.node_groups
+                       if g.spec and g.spec not in self.vm_specs})
+        if gbad:
+            raise ValueError(
+                f"node_groups reference unknown vm_specs {gbad}; "
+                f"defined specs: {sorted(self.vm_specs)}"
+            )
         return self
 
 
@@ -197,6 +235,13 @@ class _Generator:
         self.req = req
         self.rng = random.Random(req.seed)
         self.diag: dict[str, Any] = {}
+        # Per-(role, ip_type) max-per-BM cap from node_groups (min wins when
+        # two groups share the key). Empty in the legacy dict path.
+        self._group_caps: dict[tuple[str, str], int] = {}
+        for g in req.node_groups:
+            if g.max_per_bm is not None:
+                k = (g.role, g.ip_type)
+                self._group_caps[k] = min(self._group_caps.get(k, g.max_per_bm), g.max_per_bm)
 
     # -- topology -----------------------------------------------------------
 
@@ -252,6 +297,8 @@ class _Generator:
         return self.rng.choices(choices, weights=weights, k=1)[0]
 
     def _build_vms(self) -> list[VM]:
+        if self.req.node_groups:
+            return self._build_vms_from_groups()
         req = self.req
         vms: list[VM] = []
         for c in range(1, req.clusters + 1):
@@ -269,10 +316,52 @@ class _Generator:
                     ))
         return vms
 
+    def _build_vms_from_groups(self) -> list[VM]:
+        """One VM stream per (cluster, node_group). Ids stay contiguous per
+        (cluster, role) even when a role spans several groups."""
+        req = self.req
+        vms: list[VM] = []
+        for c in range(1, req.clusters + 1):
+            cluster_id = f"cluster-{c}"
+            seq: dict[str, int] = {}
+            for g in req.node_groups:
+                demand = req.vm_specs.get(g.spec) if g.spec else None
+                if demand is None:
+                    demand = _ROLE_BASELINE.get(g.role, _ROLE_BASELINE[NodeRole.WORKER.value])
+                for _ in range(g.count):
+                    n = seq.get(g.role, 0) + 1
+                    seq[g.role] = n
+                    vms.append(VM(
+                        id=f"{cluster_id}-{g.role}-{n}",
+                        hostname=f"{g.role}-{n}.{cluster_id}",
+                        demand=demand,
+                        node_role=NodeRole(g.role),
+                        ip_type=g.ip_type,
+                        cluster_id=cluster_id,
+                    ))
+        return vms
+
     def _validate_ip_for_anti_affinity(self, vms: list[VM]) -> None:
         """auto-AA groups by (cluster, ip_type, role); empty ip_type is silently
         dropped by the solver. Reject up front so rules can't silently no-op."""
         if not self.req.anti_affinity:
+            return
+        if self.req.node_groups:
+            # A (role, ip_type) may be split over several groups — aggregate.
+            agg: dict[tuple[str, str], int] = {}
+            for g in self.req.node_groups:
+                agg[(g.role, g.ip_type)] = agg.get((g.role, g.ip_type), 0) + g.count
+            offending = sorted({role for (role, ip), n in agg.items() if n >= 2 and not ip})
+            if offending:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"anti_affinity=true but node group(s) for role(s) {offending} "
+                        f"have no ip_type and >=2 VMs per cluster; the solver's auto "
+                        f"anti-affinity silently skips empty-ip_type groups. Give those "
+                        f"groups an ip_type."
+                    ),
+                )
             return
         counts: dict[tuple[str, str], int] = {}
         for vm in vms:
@@ -411,9 +500,8 @@ class _Generator:
     def _place(self, vms: list[VM], bms: list[Baremetal]) -> list[PlacementAssignment]:
         bm_by_id = {bm.id: bm for bm in bms}
         remaining = {bm.id: bm.total_capacity for bm in bms}
-        # per-BM, per group counts (for max_per_bm_by_role)
+        # per-BM, per group counts (for the max-per-BM cap)
         group_on_bm: dict[tuple[str, str], int] = {}
-        caps = self.req.max_per_bm_by_role
 
         assignments: list[PlacementAssignment] = []
 
@@ -440,7 +528,7 @@ class _Generator:
 
         for (cluster_id, ip_type, role), members in groups.items():
             group_key = f"{cluster_id}/{ip_type}/{role}"
-            role_cap = caps.get(role)
+            role_cap = self._cap_for(role, ip_type)
             # Candidate BMs shared by the group (VMs in a group share candidates).
             cand_ids = members[0].candidate_baremetals
             cand_ags = sorted({bm_by_id[i].topology.ag for i in cand_ids})
@@ -505,10 +593,28 @@ class _Generator:
             ))
         return rules
 
+    def _cap_for(self, role: str, ip_type: str) -> int | None:
+        """Max-per-BM cap for a placement group, from node_groups (keyed on
+        (role, ip_type)) or the legacy per-role dict."""
+        if self.req.node_groups:
+            return self._group_caps.get((role, ip_type))
+        return self.req.max_per_bm_by_role.get(role)
+
     def _build_max_per_bm_rules(self) -> list[MaxPerBaremetalRule]:
-        """Per-role cap → one MaxPerBaremetalRule per cluster, scoped to the
-        role (and its declared ip_type when it's a single string)."""
+        """Per-(role[, ip_type]) cap → one MaxPerBaremetalRule per cluster,
+        scoped to the role and (when known) its ip_type."""
         rules: list[MaxPerBaremetalRule] = []
+        if self.req.node_groups:
+            for (role, ip), cap in self._group_caps.items():
+                for c in range(1, self.req.clusters + 1):
+                    cid = f"cluster-{c}"
+                    rules.append(MaxPerBaremetalRule(
+                        group_id=f"maxbm/{cid}/{ip or '*'}/{role}",
+                        selector=GroupSelector(cluster_id=cid, ip_type=(ip or None),
+                                               node_role=NodeRole(role)),
+                        max_per_bm=cap,
+                    ))
+            return rules
         for role, cap in self.req.max_per_bm_by_role.items():
             if self.req.roles.get(role, 0) < 1:
                 continue

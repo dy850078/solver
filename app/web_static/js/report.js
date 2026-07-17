@@ -8,6 +8,7 @@
 
 import { listExamples, getExample, planCapacity } from "./api.js";
 import { initForm, buildRequest, loadIntoForm } from "./report-form.js";
+import { buildXlsx } from "./xlsx.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -153,20 +154,41 @@ function renderMatrix(report) {
     return `<tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>${tds}</tr>`;
   }).join("");
 
-  // The finance line: bought BMs per month across the shown fabs.
+  // The finance line: bought BMs per month across the shown fabs (real
+  // plans only) — and the cumulative no-buy gap, which ALSO accumulates
+  // failed months' what-if buys and turns into a "≥" lower bound from the
+  // first failure on (an earlier gap never disappears; a failed month may
+  // be short by more than its what-if says).
   const totals = periods.map((m) => shown.reduce((acc, f) => {
     const i = idx.get(`${f}|${m}`);
     const p = i == null ? null : report.by_fab_period[i];
     return acc + (p?.success ? p.bm_procurement_total || 0 : 0);
   }, 0));
+  let cumRun = 0, cumLower = false;
+  const cum = periods.map((m) => {
+    for (const f of shown) {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) continue;
+      const p = report.by_fab_period[i];
+      cumRun += p.bm_procurement_total || 0;
+      if (!p.success) cumLower = true;
+    }
+    return `${cumLower ? "≥ " : ""}${fmt(cumRun)}`;
+  });
 
   $("grid-content").innerHTML = `
     <div class="table-wrap">
       <table class="tbl pivot">
         <thead><tr><th>Fab</th>${periods.map((m) => `<th>${esc(m)}</th>`).join("")}</tr></thead>
         <tbody>${body}</tbody>
-        <tfoot><tr><th class="pivot-rowhead">BM buys total</th>
-          ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr></tfoot>
+        <tfoot>
+          <tr><th class="pivot-rowhead">BM buys total</th>
+            ${totals.map((n) => `<td class="num">${fmt(n)}</td>`).join("")}</tr>
+          <tr><th class="pivot-rowhead"
+              title="running total incl. failed months' what-if buys; ≥ = true gap may be larger">
+              Cumulative gap (if not bought)</th>
+            ${cum.map((s) => `<td class="num">${s}</td>`).join("")}</tr>
+        </tfoot>
       </table>
     </div>`;
   $("grid-content").querySelectorAll(".pivot-cell--click").forEach((td) =>
@@ -277,8 +299,89 @@ function metricTable(report, metric) {
     </div>`;
 }
 
+/* Per-fab running sum of buys: "machines short by each month if NOTHING is
+ * bought". Monthly buys are that month's marginal gap, so the prefix sum is
+ * the accumulated gap. An earlier month's gap never disappears:
+ * - unplanned months carry the value forward (muted);
+ * - failed months keep accumulating — a SPACE month's what-if buys are a
+ *   quantified increment (the uncapped comparison), other causes may add
+ *   an unquantifiable amount — so from the first failure on, the value is
+ *   a LOWER BOUND and is shown as "≥N". This whole table is a what-if, so
+ *   including failed months' what-if numbers is consistent here (unlike
+ *   totals/budget, which count real plans only).
+ */
+function cumulativeGapTable(report) {
+  const { periods, shown, idx } = pivotAxes(report);
+  const cells = new Map();   // `${f}|${m}` -> {v, lower, kind: num|carry|none}
+  const finals = new Map();
+  for (const f of shown) {
+    let running = 0, lower = false, planned = false;
+    for (const m of periods) {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) {
+        cells.set(`${f}|${m}`, planned ? { kind: "carry", v: running, lower } : { kind: "none" });
+        continue;
+      }
+      const p = report.by_fab_period[i];
+      planned = true;
+      // Failed months contribute their what-if buys (0 when nothing could
+      // be quantified, e.g. blocked stubs) and taint the tail as "at least".
+      running += p.bm_procurement_total || 0;
+      if (!p.success) lower = true;
+      cells.set(`${f}|${m}`, { kind: p.success ? "num" : "carry", v: running, lower });
+    }
+    finals.set(f, { v: running, lower });
+  }
+
+  const show = (v, lower) => `${lower ? "≥ " : ""}${fmt(v)}`;
+  const td = (c) => {
+    if (c.kind === "num")
+      return `<td class="num${c.lower ? " muted" : ""}"${c.lower
+        ? ' title="lower bound — an earlier month failed, its true shortfall may be larger"' : ""}>${show(c.v, c.lower)}</td>`;
+    if (c.kind === "carry")
+      return `<td class="num muted" title="${c.lower
+        ? "lower bound — gap persists; a failed month's own shortfall may be larger than its what-if buys"
+        : "no plan this month — gap carried forward"}">${show(c.v, c.lower)}</td>`;
+    return `<td class="num muted">—</td>`;
+  };
+  const rows = shown.map((f) => {
+    const fin = finals.get(f);
+    return `
+    <tr><th class="pivot-rowhead">${esc(fabLabel(f))}</th>
+      ${periods.map((m) => td(cells.get(`${f}|${m}`))).join("")}
+      <td class="num pivot-total">${show(fin.v, fin.lower)}</td></tr>`;
+  }).join("");
+  const colTotal = (m) => {
+    let sum = 0, lower = false;
+    for (const f of shown) {
+      const c = cells.get(`${f}|${m}`);
+      if (c.kind === "num" || c.kind === "carry") { sum += c.v; lower ||= c.lower; }
+    }
+    return { sum, lower };
+  };
+  const totals = periods.map(colTotal);
+  const grand = [...finals.values()].reduce(
+    (a, f) => ({ v: a.v + f.v, lower: a.lower || f.lower }), { v: 0, lower: false });
+
+  return `
+    <p class="subhead">Cumulative machine gap
+      <span class="muted" style="font-weight:400">· machines short by each month if nothing is bought · ≥ = a month failed, true gap may be larger</span></p>
+    <div class="table-wrap" style="margin-bottom:18px">
+      <table class="tbl pivot">
+        <thead><tr><th>Fab</th>
+          ${periods.map((m) => `<th class="num">${esc(m)}</th>`).join("")}
+          <th class="num">Final</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><th class="pivot-rowhead">Total</th>
+          ${totals.map((t) => `<td class="num">${show(t.sum, t.lower)}</td>`).join("")}
+          <td class="num pivot-total">${show(grand.v, grand.lower)}</td></tr></tfoot>
+      </table>
+    </div>`;
+}
+
 function renderMetrics(report) {
-  $("metrics-content").innerHTML = METRICS.map((m) => metricTable(report, m)).join("");
+  $("metrics-content").innerHTML =
+    METRICS.map((m) => metricTable(report, m)).join("") + cumulativeGapTable(report);
   $("metrics-card").classList.remove("hidden");
 }
 
@@ -422,6 +525,102 @@ function renderBudget(report) {
   bindTooltips($("budget-strip"));
 }
 
+/* ── Excel export ── */
+
+/* Per-fab cumulative gap in long format (mirrors cumulativeGapTable's
+ * semantics: failed months keep accumulating what-if buys and taint the
+ * tail as a lower bound). */
+function cumulativeGapRows(report) {
+  const { periods, fabs, idx } = pivotAxes(report);
+  const rows = [["Fab", "Month", "Cumulative gap (if not bought)", "Is lower bound"]];
+  for (const f of fabs) {
+    let running = 0, lower = false, planned = false;
+    for (const m of periods) {
+      const i = idx.get(`${f}|${m}`);
+      if (i == null) {
+        if (planned) rows.push([fabLabel(f), m, running, lower ? "yes" : ""]);
+        continue;
+      }
+      const p = report.by_fab_period[i];
+      planned = true;
+      running += p.bm_procurement_total || 0;
+      if (!p.success) lower = true;
+      rows.push([fabLabel(f), m, running, lower ? "yes" : ""]);
+    }
+  }
+  return rows;
+}
+
+const mib2gib = (m) => Math.round((m ?? 0) / 1024);
+
+function reportToSheets(report) {
+  const t = report.totals || {};
+
+  const overview = [["Fab", "Month", "Status", "Cause", "Node adds",
+    "BM buys", "Committed used", "In-stock used", "Note"]];
+  for (const p of report.by_fab_period) {
+    overview.push([
+      p.fab || "(single fab)", p.period,
+      p.success ? "OK" : (periodChip(p).label),
+      p.success ? "" : (p.shortfalls?.[0]?.cause || "unknown"),
+      p.node_adds_total || 0, p.bm_procurement_total || 0,
+      p.committed_bm_used || 0, p.in_stock_bm_used || 0,
+      p.shortfalls?.[0]?.message || "",
+    ]);
+  }
+
+  const budget = [["Fab", "Bucket", "Network", "Month", "Model", "BM count"]];
+  for (const r of report.budget_view || [])
+    budget.push([r.fab || "", r.bucket || "", r.network || "", r.period,
+      r.type_id || "", r.bm_count || 0]);
+
+  const cells = [["Fab", "Month", "Bucket", "Network", "Node adds", "BM bought",
+    "Committed used", "In-stock used", "In-stock CPU total", "In-stock CPU free"]];
+  for (const p of report.by_fab_period)
+    for (const c of p.cells || [])
+      cells.push([p.fab || "", p.period, c.bucket || "", c.network || "",
+        c.node_adds || 0, c.bm_bought || 0, c.committed_used || 0,
+        c.in_stock_bm_used || 0,
+        c.in_stock_total?.cpu_cores || 0, c.in_stock_available?.cpu_cores || 0]);
+
+  const plan = [["Fab", "Month", "Role", "vCore", "Mem GiB", "Disk GB", "Node count"]];
+  for (const p of report.by_fab_period)
+    for (const d of p.split_decisions || [])
+      plan.push([p.fab || "", p.period, d.node_role,
+        d.vm_spec?.cpu_cores || 0, mib2gib(d.vm_spec?.memory_mib),
+        d.vm_spec?.storage_gb || 0, d.count || 0]);
+
+  const summary = [
+    ["Capacity plan summary"], [],
+    ["Plan status", report.success ? "OK — every planned fab-month succeeded" : "SHORTFALL"],
+    ["Fab-months planned", report.by_fab_period.length],
+    ["Fab-months OK", report.by_fab_period.filter((p) => p.success).length], [],
+    ["Node adds (total)", t.node_adds ?? 0],
+    ["BMs to buy (total)", t.bm_procurement ?? 0],
+    ["Committed used (total)", t.committed_bm_used ?? 0],
+    ["In-stock used (total)", t.in_stock_bm_used ?? 0], [],
+    ["Note", "Totals count successful months only; see the Cumulative gap sheet for the no-buy view."],
+  ];
+
+  return [
+    { name: "Summary", rows: summary },
+    { name: "Overview", rows: overview, header: true },
+    { name: "Budget", rows: budget, header: true },
+    { name: "Cumulative gap", rows: cumulativeGapRows(report), header: true },
+    { name: "Cells", rows: cells, header: true },
+    { name: "Node plan", rows: plan, header: true },
+  ];
+}
+
+function exportReportXlsx(report) {
+  const blob = buildXlsx(reportToSheets(report));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "capacity-plan.xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 /* ── Orchestration ── */
 function rerenderViews() {
   if (!currentReport) return;
@@ -437,6 +636,7 @@ function renderReport(report) {
   view.fabs.clear();
   renderStats(report);
   rerenderViews();
+  $("export-xlsx").classList.toggle("hidden", !report.by_fab_period.length);
   $("detail-card").classList.add("hidden");
   // Auto-select the first non-OK month (the interesting one), else the first.
   if (report.by_fab_period.length) {
@@ -468,6 +668,9 @@ async function run() {
 async function init() {
   initForm();
   $("run-btn").addEventListener("click", run);
+  $("export-xlsx").addEventListener("click", () => {
+    if (currentReport) exportReportXlsx(currentReport);
+  });
 
   document.querySelectorAll('input[name="grid-view"]').forEach((r) =>
     r.addEventListener("change", () => {
