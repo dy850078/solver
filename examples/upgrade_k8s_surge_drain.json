@@ -1,0 +1,94 @@
+{
+  "_description": "Scenario 2 — K8s-only upgrade (blue-green node pool): no BM is cordoned. Cluster A rolls its workers to a new K8s version — old workers are pinned to_be_removed, replacements carry replaces + prefer_bm_labels {k8s_pool: v2} steering them onto the labeled BMs (soft preference, w_label_preference). Cluster B shares bm-01 and is untouched (lifecycle=keep). Expected: A-nw1/A-nw2 → bm-03/bm-04 (labeled), B-w1 stays on bm-01.",
+  "vms": [
+    {
+      "id": "A-w1",
+      "hostname": "a-worker-01",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-A",
+      "lifecycle": "to_be_removed",
+      "pinned_bm": "bm-01"
+    },
+    {
+      "id": "A-w2",
+      "hostname": "a-worker-02",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-A",
+      "lifecycle": "to_be_removed",
+      "pinned_bm": "bm-02"
+    },
+    {
+      "id": "B-w1",
+      "hostname": "b-worker-01",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-B",
+      "lifecycle": "keep",
+      "pinned_bm": "bm-01"
+    },
+    {
+      "id": "A-nw1",
+      "hostname": "a-worker-01r",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-A",
+      "replaces": "A-w1",
+      "prefer_bm_labels": {"k8s_pool": "v2"},
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03", "bm-04"]
+    },
+    {
+      "id": "A-nw2",
+      "hostname": "a-worker-02r",
+      "demand": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-A",
+      "replaces": "A-w2",
+      "prefer_bm_labels": {"k8s_pool": "v2"},
+      "candidate_baremetals": ["bm-01", "bm-02", "bm-03", "bm-04"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
+    },
+    {
+      "id": "bm-03",
+      "hostname": "bare-003.rack3",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-3", "ag": "ag-1"},
+      "labels": {"k8s_pool": "v2"}
+    },
+    {
+      "id": "bm-04",
+      "hostname": "bare-004.rack4",
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-4", "ag": "ag-2"},
+      "labels": {"k8s_pool": "v2"}
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": true,
+    "target_spread": {"ag": 2}
+  }
+}

@@ -1229,3 +1229,496 @@ class TestAntiAffinitySelector:
         assert r.success
         ags = {a.ag for a in r.assignments}
         assert len(ags) == 3
+
+
+# ===========================================================================
+# 12. Upgrade workflows: pinned VMs (C6), lifecycle, transitional capacity,
+#     cordon, eviction_blocked, replaces, label preference
+# ===========================================================================
+
+def _pin_used(*vms):
+    """used_capacity kwargs for a BM hosting these pinned VMs (contract:
+    used_capacity INCLUDES pinned demand)."""
+    return dict(
+        used_cpu=sum(vm.demand.cpu_cores for vm in vms),
+        used_mem=sum(vm.demand.memory_mib for vm in vms),
+        used_disk=sum(vm.demand.storage_gb for vm in vms),
+    )
+
+
+class TestPinnedAssignment:
+    """C6: pinned VMs stay on their pinned BM."""
+
+    def test_pinned_vm_stays_on_pinned_bm(self):
+        kept = make_vm("kept-1", lifecycle="keep", pinned="bm-1")
+        bms = [make_bm("bm-1", **_pin_used(kept)), make_bm("bm-2")]
+        r = solve([kept, make_vm("new-1")], bms)
+        assert r.success
+        assert amap(r)["kept-1"] == "bm-1"
+
+    def test_pinned_ignores_candidates(self):
+        """A pinned VM with empty candidate_baremetals is NOT an INPUT_ERROR."""
+        kept = make_vm("kept-1", lifecycle="keep", pinned="bm-1", candidates=[])
+        bms = [make_bm("bm-1", **_pin_used(kept))]
+        request = PlacementRequest(
+            vms=[kept], baremetals=bms,
+            config=SolverConfig(max_solve_time_seconds=10),
+        )
+        r = VMPlacementSolver(request).solve()
+        assert r.success
+        assert amap(r)["kept-1"] == "bm-1"
+
+    def test_pinned_unknown_bm_input_error(self):
+        kept = make_vm("kept-1", lifecycle="keep", pinned="bm-x")
+        r = solve([kept], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "bm-x" in r.solver_status
+
+    def test_pinned_with_lifecycle_new_input_error(self):
+        vm = make_vm("vm-1", lifecycle="new", pinned="bm-1")
+        r = solve([vm], [make_bm("bm-1", **_pin_used(vm))])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_keep_without_pinned_bm_input_error(self):
+        vm = make_vm("vm-1", lifecycle="keep", candidates=["bm-1"])
+        r = solve([vm], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert any("pinned_bm" in e for e in r.diagnostics["input_errors"])
+
+
+class TestTransitionalCapacity:
+    """C2 is validated on the transitional state (old + new co-exist)."""
+
+    def test_surge_overlap_counts_old_and_new(self):
+        """Old (to_be_removed) still consumes capacity: 6 + 6 > 10 cores."""
+        old = make_vm("old-1", cpu=6, lifecycle="to_be_removed", pinned="bm-1")
+        new = make_vm("new-1", cpu=6, candidates=["bm-1"])
+        bm = make_bm("bm-1", cpu=10, **_pin_used(old))
+        r = solve([old, new], [bm])
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+
+    def test_no_double_count_of_pinned_demand(self):
+        """used_capacity includes pinned demand; the solver must subtract it
+        before re-adding via the fixed var. 4 (pinned) + 6 (new) fits in 10
+        exactly — fails if pinned demand is counted twice."""
+        kept = make_vm("kept-1", cpu=4, lifecycle="keep", pinned="bm-1")
+        new = make_vm("new-1", cpu=6, candidates=["bm-1"])
+        bm = make_bm("bm-1", cpu=10, **_pin_used(kept))
+        r = solve([kept, new], [bm])
+        assert r.success
+        assert amap(r)["new-1"] == "bm-1"
+
+    def test_pinned_demand_exceeds_used_input_error(self):
+        """Drift check: pinned VM list and inventory aggregate disagree."""
+        kept = make_vm("kept-1", cpu=4, lifecycle="keep", pinned="bm-1")
+        bm = make_bm("bm-1", used_cpu=2, used_mem=16_000, used_disk=100)
+        r = solve([kept], [bm])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "used_capacity" in r.solver_status
+
+
+class TestSchedulable:
+    """Cordon: schedulable=False blocks NEW VMs only."""
+
+    def test_cordoned_bm_gets_no_new_vms(self):
+        bms = [make_bm("bm-1", schedulable=False), make_bm("bm-2")]
+        r = solve([make_vm("vm-1"), make_vm("vm-2")], bms)
+        assert r.success
+        assert set(amap(r).values()) == {"bm-2"}
+
+    def test_cordoned_bm_keeps_pinned_vms(self):
+        kept = make_vm("kept-1", lifecycle="keep", pinned="bm-1")
+        bms = [make_bm("bm-1", schedulable=False, **_pin_used(kept)),
+               make_bm("bm-2")]
+        r = solve([kept], bms)
+        assert r.success
+        assert amap(r)["kept-1"] == "bm-1"
+
+    def test_all_cordoned_infeasible_with_diagnostics(self):
+        bms = [make_bm("bm-1", schedulable=False),
+               make_bm("bm-2", schedulable=False)]
+        r = solve([make_vm("vm-1")], bms)
+        assert not r.success
+        assert r.diagnostics["vms_with_no_eligible_bm"] == ["vm-1"]
+
+
+class TestPinnedAntiAffinity:
+    """C3 on the final state, with pinned members as constant occupancy."""
+
+    def test_new_vm_avoids_bucket_with_pinned_peer(self):
+        """A kept master in ag-1 forces the two new masters into ag-2/ag-3."""
+        kept = make_vm("m-kept", role=NodeRole.MASTER,
+                       lifecycle="keep", pinned="bm-1")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(kept)),
+            make_bm("bm-2", ag="ag-1"),
+            make_bm("bm-3", ag="ag-2"),
+            make_bm("bm-4", ag="ag-3"),
+        ]
+        news = [make_vm(f"m-new-{i}", role=NodeRole.MASTER) for i in range(2)]
+        r = solve([kept] + news, bms, auto_generate_anti_affinity=True)
+        assert r.success
+        by_vm = {a.vm_id: a.ag for a in r.assignments}
+        assert {by_vm["m-new-0"], by_vm["m-new-1"]} == {"ag-2", "ag-3"}
+
+    def test_to_be_removed_excluded_from_group_size(self):
+        """Final-state N: the old master neither counts toward ⌈N/buckets⌉
+        nor occupies its bucket — a new master may enter ag-1 even though
+        the old one is still (transiently) there."""
+        old = make_vm("m-old", role=NodeRole.MASTER,
+                      lifecycle="to_be_removed", pinned="bm-1")
+        kept = make_vm("m-kept", role=NodeRole.MASTER,
+                       lifecycle="keep", pinned="bm-3")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(old)),
+            make_bm("bm-2", ag="ag-1"),
+            make_bm("bm-3", ag="ag-2", **_pin_used(kept)),
+            make_bm("bm-4", ag="ag-3"),
+        ]
+        news = [make_vm(f"m-new-{i}", role=NodeRole.MASTER) for i in range(2)]
+        r = solve([old, kept] + news, bms, auto_generate_anti_affinity=True)
+        assert r.success
+        by_vm = {a.vm_id: a.ag for a in r.assignments}
+        # Final members: kept (ag-2) + 2 new → cap 1/bucket → new take ag-1, ag-3
+        assert {by_vm["m-new-0"], by_vm["m-new-1"]} == {"ag-1", "ag-3"}
+
+    def test_preexisting_violation_relaxed_with_advisory(self):
+        """Two kept masters already share ag-1 under cap 1: the solve must
+        not fail (the solver can't move them) but must report it, and the
+        new master must not worsen ag-1."""
+        k1 = make_vm("m-k1", role=NodeRole.MASTER, lifecycle="keep", pinned="bm-1")
+        k2 = make_vm("m-k2", role=NodeRole.MASTER, lifecycle="keep", pinned="bm-2")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(k1)),
+            make_bm("bm-2", ag="ag-1", **_pin_used(k2)),
+            make_bm("bm-3", ag="ag-2"),
+        ]
+        rule = AntiAffinityRule(
+            group_id="masters", vm_ids=["m-k1", "m-k2", "m-new"],
+            spread_on=["ag"], cap_per_bucket={"ag": 1},
+        )
+        r = solve([k1, k2, make_vm("m-new", role=NodeRole.MASTER)], bms,
+                  rules=[rule])
+        assert r.success
+        by_vm = {a.vm_id: a.ag for a in r.assignments}
+        assert by_vm["m-new"] == "ag-2"
+        advisories = r.diagnostics["advisories"]
+        assert any(a["type"] == "pinned_spread_violation" for a in advisories)
+
+    def test_explicit_selector_rule_skips_to_be_removed(self):
+        old = make_vm("m-old", role=NodeRole.MASTER,
+                      lifecycle="to_be_removed", pinned="bm-1")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(old)),
+            make_bm("bm-2", ag="ag-2"),
+        ]
+        rule = AntiAffinityRule(
+            group_id="masters",
+            selector=GroupSelector(node_role=NodeRole.MASTER),
+            spread_on=["ag"], cap_per_bucket={"ag": 1},
+        )
+        news = [make_vm(f"m-new-{i}", role=NodeRole.MASTER) for i in range(2)]
+        r = solve([old] + news, bms, rules=[rule])
+        assert r.success
+        by_vm = {a.vm_id: a.ag for a in r.assignments}
+        assert {by_vm["m-new-0"], by_vm["m-new-1"]} == {"ag-1", "ag-2"}
+
+
+class TestPinnedMaxPerBm:
+    """C4 on the final state, pinned members count, relaxation on violation."""
+
+    def test_pinned_counts_toward_max_per_bm(self):
+        kept = make_vm("w-kept", lifecycle="keep", pinned="bm-1")
+        bms = [make_bm("bm-1", **_pin_used(kept)), make_bm("bm-2")]
+        rule = MaxPerBaremetalRule(
+            group_id="g", vm_ids=["w-kept", "w-new"], max_per_bm=1,
+        )
+        r = _solve_with_bm_rules([kept, make_vm("w-new")], bms, bm_rules=[rule])
+        assert r.success
+        assert amap(r)["w-new"] == "bm-2"
+
+    def test_preexisting_max_per_bm_violation_relaxed(self):
+        k1 = make_vm("w-k1", lifecycle="keep", pinned="bm-1")
+        k2 = make_vm("w-k2", lifecycle="keep", pinned="bm-1")
+        bms = [make_bm("bm-1", **_pin_used(k1, k2)), make_bm("bm-2")]
+        rule = MaxPerBaremetalRule(
+            group_id="g", vm_ids=["w-k1", "w-k2", "w-new"], max_per_bm=1,
+        )
+        r = _solve_with_bm_rules([k1, k2, make_vm("w-new")], bms, bm_rules=[rule])
+        assert r.success
+        assert amap(r)["w-new"] == "bm-2"
+        advisories = r.diagnostics["advisories"]
+        assert any(a["type"] == "pinned_max_per_bm_violation" for a in advisories)
+
+
+class TestPinnedFailover:
+    """C5 on the final state with pinned members."""
+
+    def test_failover_counts_pinned_backups(self):
+        l1 = make_vm("l-1", role=NodeRole.LEARNER, lifecycle="keep", pinned="bm-1")
+        l2 = make_vm("l-2", role=NodeRole.LEARNER, lifecycle="keep", pinned="bm-3")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(l1)),
+            make_bm("bm-2", ag="ag-1"),
+            make_bm("bm-3", ag="ag-2", **_pin_used(l2)),
+            make_bm("bm-4", ag="ag-2"),
+        ]
+        masters = [make_vm(f"m-{i}", role=NodeRole.MASTER) for i in range(2)]
+        rule = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(node_role=NodeRole.MASTER),
+            backup=GroupSelector(node_role=NodeRole.LEARNER),
+            fault_domain="ag",
+        )
+        r = solve([l1, l2] + masters, bms, failover_rules=[rule])
+        assert r.success
+        # Per AG bucket: masters_in_b + learners_in_b <= 2; each AG already
+        # holds one pinned learner, so at most 1 master per AG.
+        by_ag = {}
+        for a in r.assignments:
+            if a.vm_id.startswith("m-"):
+                by_ag[a.ag] = by_ag.get(a.ag, 0) + 1
+        assert all(count <= 1 for count in by_ag.values())
+
+    def test_failover_excludes_to_be_removed_backup(self):
+        """A backup on its way out doesn't count toward |backup| — the
+        final state would violate N-1, so the pre-flight rejects it."""
+        l1 = make_vm("l-1", role=NodeRole.LEARNER, lifecycle="keep", pinned="bm-1")
+        l2 = make_vm("l-2", role=NodeRole.LEARNER,
+                     lifecycle="to_be_removed", pinned="bm-3")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(l1)),
+            make_bm("bm-2", ag="ag-1"),
+            make_bm("bm-3", ag="ag-2", **_pin_used(l2)),
+        ]
+        masters = [make_vm(f"m-{i}", role=NodeRole.MASTER) for i in range(2)]
+        rule = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(node_role=NodeRole.MASTER),
+            backup=GroupSelector(node_role=NodeRole.LEARNER),
+            fault_domain="ag",
+        )
+        r = solve([l1, l2] + masters, bms, failover_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+
+class TestEvictionBlocked:
+    """PDB-blocked VMs: keep-only, and surfaced when a cordoned BM can't empty."""
+
+    def test_blocked_on_to_be_removed_input_error(self):
+        vm = make_vm("v-1", lifecycle="to_be_removed", pinned="bm-1",
+                     eviction_blocked=True)
+        r = solve([vm], [make_bm("bm-1", **_pin_used(vm))])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_blocked_requires_keep_input_error(self):
+        vm = make_vm("v-1", eviction_blocked=True, candidates=["bm-1"])
+        r = solve([vm], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_unschedulable_bm_advisory_lists_blocking_vms(self):
+        blocked = make_vm("v-blocked", lifecycle="keep", pinned="bm-1",
+                          eviction_blocked=True)
+        bms = [make_bm("bm-1", schedulable=False, **_pin_used(blocked)),
+               make_bm("bm-2")]
+        r = solve([blocked, make_vm("v-new")], bms)
+        assert r.success
+        advisories = r.diagnostics["advisories"]
+        adv = next(a for a in advisories if a["type"] == "bm_not_evictable")
+        assert adv["details"]["bm_id"] == "bm-1"
+        assert adv["details"]["eviction_blocked_vm_ids"] == ["v-blocked"]
+
+
+class TestReplaces:
+    """Replacement pairing: validation only (no placement effect yet)."""
+
+    def test_replaces_unknown_vm_input_error(self):
+        r = solve([make_vm("v-new", replaces="ghost")], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_replaces_target_not_removed_input_error(self):
+        kept = make_vm("v-kept", lifecycle="keep", pinned="bm-1")
+        r = solve(
+            [kept, make_vm("v-new", replaces="v-kept")],
+            [make_bm("bm-1", **_pin_used(kept))],
+        )
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_replaces_on_non_new_input_error(self):
+        old = make_vm("v-old", lifecycle="to_be_removed", pinned="bm-1")
+        kept = make_vm("v-kept", lifecycle="keep", pinned="bm-1",
+                       replaces="v-old")
+        r = solve([old, kept], [make_bm("bm-1", **_pin_used(old, kept))])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_valid_replaces_passthrough(self):
+        old = make_vm("v-old", lifecycle="to_be_removed", pinned="bm-1")
+        new = make_vm("v-new", replaces="v-old")
+        bms = [make_bm("bm-1", **_pin_used(old)), make_bm("bm-2")]
+        r = solve([old, new], bms)
+        assert r.success
+
+
+class TestLabelPreference:
+    """Soft preference for BMs matching prefer_bm_labels."""
+
+    def test_prefers_matching_labeled_bm(self):
+        bms = [make_bm("bm-old"), make_bm("bm-up", labels={"os": "u24"})]
+        vm = make_vm("v-1", prefer_labels={"os": "u24"})
+        r = solve([vm], bms)
+        assert r.success
+        assert amap(r)["v-1"] == "bm-up"
+
+    def test_label_preference_beats_consolidation(self):
+        """Placing on the matching BM opens a second BM (+w_consolidation=10)
+        but avoids the mismatch penalty (w_label_preference=50) — match wins."""
+        bms = [make_bm("bm-old"), make_bm("bm-up", labels={"os": "u24"})]
+        plain = make_vm("v-plain")
+        pref = make_vm("v-pref", prefer_labels={"os": "u24"})
+        r = solve([plain, pref], bms)
+        assert r.success
+        assert amap(r)["v-pref"] == "bm-up"
+
+    def test_soft_falls_back_when_only_mismatch_fits(self):
+        bms = [make_bm("bm-old", cpu=8), make_bm("bm-up", cpu=2,
+                                                 labels={"os": "u24"})]
+        vm = make_vm("v-1", cpu=4, prefer_labels={"os": "u24"})
+        r = solve([vm], bms)
+        assert r.success
+        assert amap(r)["v-1"] == "bm-old"
+
+    def test_zero_weight_disables(self):
+        bms = [make_bm("bm-old"), make_bm("bm-up", labels={"os": "u24"})]
+        plain = make_vm("v-plain")
+        pref = make_vm("v-pref", prefer_labels={"os": "u24"})
+        r = solve([plain, pref], bms, w_label_preference=0)
+        assert r.success
+        # Consolidation alone decides: both VMs share one BM.
+        assert len(set(amap(r).values())) == 1
+
+
+class TestObjectiveWithPinned:
+
+    def test_bm_with_only_pinned_counts_as_used(self):
+        kept = make_vm("kept-1", lifecycle="keep", pinned="bm-1")
+        bms = [make_bm("bm-1", **_pin_used(kept)), make_bm("bm-2")]
+        r = solve([kept], bms)
+        assert r.success
+        assert r.bm_used_count == 1
+        assert len(r.assignments) == 1
+
+    def test_headroom_on_transitional_load(self):
+        """Headroom sees old + new together: with the to_be_removed VM still
+        on bm-1, adding the new VM there would hit 80% (> bound 50) — the
+        solver pays +10 consolidation to use bm-2 instead of +240 headroom.
+        If headroom were computed on the final load, it would consolidate
+        onto bm-1."""
+        old = make_vm("v-old", cpu=4, lifecycle="to_be_removed", pinned="bm-1")
+        new = make_vm("v-new", cpu=4)
+        bms = [make_bm("bm-1", cpu=10, **_pin_used(old)),
+               make_bm("bm-2", cpu=10)]
+        r = solve([old, new], bms, headroom_upper_bound_pct=50)
+        assert r.success
+        assert amap(r)["v-new"] == "bm-2"
+
+
+class TestUpgradeDegenerate:
+    """The three upgrade scenarios run through the SAME code path; simpler
+    scenarios are degenerate configurations, never special cases."""
+
+    def test_legacy_request_behavior_unchanged(self):
+        """No upgrade fields at all — pre-upgrade contract still works."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
+        vms = [make_vm(f"m-{i}", role=NodeRole.MASTER) for i in range(3)]
+        r = solve(vms, bms, auto_generate_anti_affinity=True)
+        assert r.success
+        assert len({a.ag for a in r.assignments}) == 3
+
+    def test_bm_only_upgrade(self):
+        """Scenario 1: cordon bm-a, surge replacements elsewhere. The new
+        master must land in ag-1 (spread with the kept masters) but NOT on
+        the cordoned bm-a."""
+        old_m = make_vm("m-old", role=NodeRole.MASTER,
+                        lifecycle="to_be_removed", pinned="bm-a")
+        old_w = make_vm("w-old", lifecycle="to_be_removed", pinned="bm-a")
+        kept_m2 = make_vm("m-2", role=NodeRole.MASTER,
+                          lifecycle="keep", pinned="bm-c")
+        kept_m3 = make_vm("m-3", role=NodeRole.MASTER,
+                          lifecycle="keep", pinned="bm-d")
+        bms = [
+            make_bm("bm-a", ag="ag-1", schedulable=False,
+                    **_pin_used(old_m, old_w)),
+            make_bm("bm-b", ag="ag-1"),
+            make_bm("bm-c", ag="ag-2", **_pin_used(kept_m2)),
+            make_bm("bm-d", ag="ag-3", **_pin_used(kept_m3)),
+        ]
+        new_m = make_vm("m-new", role=NodeRole.MASTER, replaces="m-old")
+        new_w = make_vm("w-new", replaces="w-old")
+        r = solve([old_m, old_w, kept_m2, kept_m3, new_m, new_w], bms,
+                  auto_generate_anti_affinity=True)
+        assert r.success
+        a = amap(r)
+        assert a["m-new"] == "bm-b"          # ag-1, and not the cordoned bm-a
+        assert a["m-old"] == "bm-a"          # old VMs echoed where they sit
+        assert a["w-old"] == "bm-a"
+        assert a["w-new"] != "bm-a"
+
+    def test_k8s_only_upgrade(self):
+        """Scenario 2: no cordon; per-cluster surge steered onto upgraded
+        BMs by label preference, other clusters untouched."""
+        old_w1 = make_vm("A-w1", cluster="A", lifecycle="to_be_removed",
+                         pinned="bm-1")
+        old_w2 = make_vm("A-w2", cluster="A", lifecycle="to_be_removed",
+                         pinned="bm-2")
+        b_kept = make_vm("B-w1", cluster="B", lifecycle="keep", pinned="bm-1")
+        bms = [
+            make_bm("bm-1", ag="ag-1", **_pin_used(old_w1, b_kept)),
+            make_bm("bm-2", ag="ag-2", **_pin_used(old_w2)),
+            make_bm("bm-3", ag="ag-1", labels={"k8s_pool": "v2"}),
+            make_bm("bm-4", ag="ag-2", labels={"k8s_pool": "v2"}),
+        ]
+        news = [
+            make_vm("A-nw1", cluster="A", replaces="A-w1",
+                    prefer_labels={"k8s_pool": "v2"}),
+            make_vm("A-nw2", cluster="A", replaces="A-w2",
+                    prefer_labels={"k8s_pool": "v2"}),
+        ]
+        r = solve([old_w1, old_w2, b_kept] + news, bms,
+                  auto_generate_anti_affinity=True)
+        assert r.success
+        a = amap(r)
+        assert {a["A-nw1"], a["A-nw2"]} <= {"bm-3", "bm-4"}
+        assert a["B-w1"] == "bm-1"
+
+    def test_combined_upgrade(self):
+        """Scenario 3: cordoned BM + labeled upgraded BMs + a PDB-blocked
+        VM that keeps its BM from emptying (advisory, not failure)."""
+        old_w = make_vm("A-w1", cluster="A", lifecycle="to_be_removed",
+                        pinned="bm-a")
+        blocked = make_vm("B-w1", cluster="B", lifecycle="keep",
+                          pinned="bm-a", eviction_blocked=True)
+        bms = [
+            make_bm("bm-a", ag="ag-1", schedulable=False,
+                    **_pin_used(old_w, blocked)),
+            make_bm("bm-b", ag="ag-2", labels={"os": "u24"}),
+        ]
+        new_w = make_vm("A-nw1", cluster="A", replaces="A-w1",
+                        prefer_labels={"os": "u24"})
+        r = solve([old_w, blocked, new_w], bms,
+                  auto_generate_anti_affinity=True)
+        assert r.success
+        assert amap(r)["A-nw1"] == "bm-b"
+        advisories = r.diagnostics["advisories"]
+        adv = next(a for a in advisories if a["type"] == "bm_not_evictable")
+        assert adv["details"]["eviction_blocked_vm_ids"] == ["B-w1"]

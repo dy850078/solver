@@ -97,6 +97,14 @@ class Baremetal(BaseModel):
     # attribute, not a spread dimension — clusters live entirely inside one
     # domain and never spread across domains. "" = untagged.
     network: str = ""
+    # Cordon flag (upgrade workflows): False = this BM accepts no NEW VMs;
+    # VMs already pinned here stay and keep consuming capacity. A filter
+    # attribute like `network`, applied in Step A eligibility.
+    schedulable: bool = True
+    # Free-form key/value tags (e.g. {"os": "ubuntu-24", "k8s_pool": "v2"}).
+    # Soft-matched against VM.prefer_bm_labels in the objective; hard
+    # filtering remains the scheduler's job via candidate_baremetals.
+    labels: dict[str, str] = Field(default_factory=dict)
 
     @property
     def available_capacity(self) -> Resources:
@@ -129,6 +137,34 @@ class VM(BaseModel):
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
       anti-affinity rules.
+
+    Upgrade workflow fields (surge-then-drain):
+
+    lifecycle: "new" — a VM to be placed by this solve (default; the only
+      form that existed before upgrades). "keep" — an existing VM that stays
+      where it is. "to_be_removed" — an existing VM that will be drained and
+      deleted after this solve's new VMs are up. Existing VMs ("keep" /
+      "to_be_removed") must carry `pinned_bm`.
+
+      Constraint semantics: capacity (C2) is validated on the TRANSITIONAL
+      state (keep + to_be_removed + new all consume simultaneously — the
+      surge overlap), while anti-affinity / max-per-BM / failover (C3/C4/C5)
+      are validated on the FINAL state (to_be_removed excluded); a group may
+      transiently exceed its spread cap while old VMs await drain.
+
+    pinned_bm: the BM this existing VM currently occupies. The assignment is
+      fixed (CONSTRAINT C6) and candidate_baremetals is ignored. Contract:
+      Baremetal.used_capacity INCLUDES the demand of VMs pinned to it — the
+      solver subtracts pinned demand and re-adds it through the fixed
+      assignment, so the scheduler passes raw inventory aggregates untouched.
+
+    replaces: for a "new" VM, the id of the "to_be_removed" VM it replaces
+      (pairing info for the scheduler's create→drain→delete ordering).
+
+    eviction_blocked: set by the scheduler when draining this VM would
+      violate a PodDisruptionBudget. Only valid on lifecycle="keep"; the
+      solver reports a `bm_not_evictable` advisory when an unschedulable BM
+      still hosts such VMs, so the scheduler can notify the user.
     """
     id: str
     hostname: str = ""
@@ -137,6 +173,24 @@ class VM(BaseModel):
     ip_type: str = ""
     cluster_id: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
+    lifecycle: Literal["new", "keep", "to_be_removed"] = "new"
+    pinned_bm: str | None = None
+    replaces: str | None = None
+    eviction_blocked: bool = False
+    # Soft preference: BMs whose labels match all these key/values are
+    # preferred (w_label_preference penalty on mismatched placements).
+    # Typical use: steer new-k8s VMs onto already-upgraded BMs so they
+    # won't need a second migration when the old-OS BMs get upgraded.
+    prefer_bm_labels: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def is_pinned(self) -> bool:
+        return self.pinned_bm is not None
+
+    @property
+    def in_final_state(self) -> bool:
+        """Will this VM still exist after the surge-then-drain completes?"""
+        return self.lifecycle != "to_be_removed"
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +373,12 @@ class SolverConfig(BaseModel):
     vm_specs: list[Resources] = Field(default_factory=list)
     # Requirement splitter: penalize over-allocation waste
     w_resource_waste: int = 5
+    # Label preference (upgrade workflows): penalty per placed VM whose BM
+    # does not match all of the VM's prefer_bm_labels. Deliberately above
+    # w_consolidation (matching an upgraded BM beats opening one fewer BM)
+    # and below w_committed_stock/w_procurement. Inert unless some VM
+    # carries prefer_bm_labels.
+    w_label_preference: int = 50
     # Pod-count dimension (capacity planning Phase 1): a single global cap on
     # how many pods one VM-as-K8s-node can hold. Because the cap is global and
     # spec-independent, a pod-count requirement reduces to a floor on the node

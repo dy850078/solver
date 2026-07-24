@@ -71,12 +71,48 @@ def get_eligible_baremetals(
 
     This is a module-level function so both the solver and diagnostics
     can share the same eligibility logic.
+
+    Pinned VMs (upgrade workflows): a VM with pinned_bm is already running
+    on that BM — its only eligible BM is the pinned one, candidate_baremetals
+    is ignored, and neither the fits check nor the schedulable filter applies
+    (the VM is physically there; cordoning blocks NEW VMs only).
+
+    Non-pinned VMs skip unschedulable (cordoned) BMs. The fits check stays
+    against available_capacity (total - used): used_capacity includes pinned
+    demand by contract, and under transitional C2 the space a new VM can
+    claim is exactly total - used — pinned demand cancels out of both sides.
     """
+    if vm.pinned_bm is not None:
+        return [vm.pinned_bm] if vm.pinned_bm in bm_map else []
     return [
         bm_id
         for bm_id in vm.candidate_baremetals
-        if bm_id in bm_map and vm.demand.fits_in(bm_map[bm_id].available_capacity)
+        if bm_id in bm_map
+        and bm_map[bm_id].schedulable
+        and vm.demand.fits_in(bm_map[bm_id].available_capacity)
     ]
+
+
+def pinned_count_in_bucket(
+    vm_ids: list[str],
+    bm_ids: set[str] | frozenset[str],
+    vm_map: dict[str, VM],
+) -> int:
+    """
+    How many of these VMs are pinned to a BM inside this bucket?
+
+    Pinned assignments are fixed (C6), so this count is a constant floor on
+    the bucket's occupancy. C3/C4/C5 builders — and the diagnostics layer
+    check, which must mirror them — use it to relax per-bucket caps so a
+    pre-existing layout can never make the model INFEASIBLE ("don't worsen,
+    but don't fail on what the solver cannot move").
+    """
+    count = 0
+    for vid in vm_ids:
+        vm = vm_map.get(vid)
+        if vm is not None and vm.pinned_bm is not None and vm.pinned_bm in bm_ids:
+            count += 1
+    return count
 
 
 class VMPlacementSolver:
@@ -108,6 +144,10 @@ class VMPlacementSolver:
                 seen_bm_ids.add(bm.id)
 
         for vm in request.vms:
+            if vm.pinned_bm is not None:
+                # Pinned VMs: candidate_baremetals is ignored (eligibility is
+                # the pinned BM itself), so candidate checks don't apply.
+                continue
             if not vm.candidate_baremetals:
                 self._input_errors.append(
                     f"VM '{vm.id}' has empty candidate_baremetals — "
@@ -123,6 +163,49 @@ class VMPlacementSolver:
                 else:
                     seen_candidates.add(cand)
 
+        # Validate upgrade-workflow fields (lifecycle / pinning / replaces).
+        # All contract violations are INPUT_ERROR — never silently fixed.
+        for vm in request.vms:
+            if vm.pinned_bm is not None:
+                if vm.pinned_bm not in self.bm_map:
+                    self._input_errors.append(
+                        f"VM '{vm.id}' is pinned to unknown BM '{vm.pinned_bm}'"
+                    )
+                if vm.lifecycle == "new":
+                    self._input_errors.append(
+                        f"VM '{vm.id}' has pinned_bm but lifecycle='new' — "
+                        f"existing VMs must be 'keep' or 'to_be_removed'"
+                    )
+            elif vm.lifecycle != "new":
+                self._input_errors.append(
+                    f"VM '{vm.id}' has lifecycle='{vm.lifecycle}' but no "
+                    f"pinned_bm — existing VMs must say where they are"
+                )
+            if vm.eviction_blocked and vm.lifecycle != "keep":
+                self._input_errors.append(
+                    f"VM '{vm.id}' has eviction_blocked=True but "
+                    f"lifecycle='{vm.lifecycle}' — a PDB-blocked VM must be "
+                    f"kept (scheduler decides removal only after the user "
+                    f"adjusts the PDB or disables eviction)"
+                )
+            if vm.replaces is not None:
+                target = self.vm_map.get(vm.replaces)
+                if target is None:
+                    self._input_errors.append(
+                        f"VM '{vm.id}' replaces unknown VM '{vm.replaces}'"
+                    )
+                elif target.lifecycle != "to_be_removed":
+                    self._input_errors.append(
+                        f"VM '{vm.id}' replaces '{vm.replaces}' whose "
+                        f"lifecycle is '{target.lifecycle}', expected "
+                        f"'to_be_removed'"
+                    )
+                if vm.lifecycle != "new":
+                    self._input_errors.append(
+                        f"VM '{vm.id}' has replaces but lifecycle="
+                        f"'{vm.lifecycle}' — only new VMs replace old ones"
+                    )
+
         # Group baremetals by each topology dimension (needed for multi-dim
         # anti-affinity constraints C3 and failover constraints C5).
         # Shape: dim_to_bms[dim_name][bucket_value] = [bm_id, ...]
@@ -136,6 +219,69 @@ class VMPlacementSolver:
         # Non-fatal advisories collected during rule resolution (e.g. policy
         # target not met). Surfaced via PlacementResult.diagnostics["advisories"].
         self.advisories: list[dict] = []
+
+        # Pinned occupancy and effective capacity (upgrade workflows).
+        # Contract: used_capacity INCLUDES pinned VM demand. The model
+        # re-adds pinned demand through fixed assign vars (C6), so every
+        # model-facing capacity read must use effective_used/-available
+        # (= aggregate usage by VMs NOT listed in the request) or pinned
+        # demand would be counted twice. The drift check below is the
+        # reason this contract direction was chosen: the solver can verify
+        # inventory vs VM-list consistency; the reverse direction cannot.
+        self.pinned_vms_by_bm: dict[str, list[VM]] = defaultdict(list)
+        for vm in request.vms:
+            if vm.pinned_bm is not None and vm.pinned_bm in self.bm_map:
+                self.pinned_vms_by_bm[vm.pinned_bm].append(vm)
+
+        self.effective_used: dict[str, Resources] = {}
+        self.effective_available: dict[str, Resources] = {}
+        for bm in request.baremetals:
+            pinned_demand = Resources()
+            for vm in self.pinned_vms_by_bm.get(bm.id, []):
+                pinned_demand = pinned_demand + vm.demand
+            eff_used = bm.used_capacity - pinned_demand
+            negative = [
+                field for field in RESOURCE_FIELDS
+                if getattr(eff_used, field) < 0
+            ]
+            if negative:
+                self._input_errors.append(
+                    f"BM '{bm.id}': pinned VM demand exceeds used_capacity "
+                    f"on {negative} — inventory and pinned VM list disagree"
+                )
+            self.effective_used[bm.id] = eff_used
+            self.effective_available[bm.id] = bm.total_capacity - eff_used
+
+        # PDB / eviction advisory: a cordoned BM that still hosts VMs the
+        # scheduler must keep can never be fully evicted for its upgrade.
+        # Emitted here (not in a builder) so it rides every return path.
+        for bm in request.baremetals:
+            if bm.schedulable:
+                continue
+            keep_vms = [
+                vm for vm in self.pinned_vms_by_bm.get(bm.id, [])
+                if vm.lifecycle == "keep"
+            ]
+            if not keep_vms:
+                continue
+            blocked_ids = [vm.id for vm in keep_vms if vm.eviction_blocked]
+            self.advisories.append({
+                "type": "bm_not_evictable",
+                "severity": "warning",
+                "message": (
+                    f"BM '{bm.id}' is unschedulable but still hosts "
+                    f"{len(keep_vms)} kept VM(s) — it cannot be emptied"
+                    + (
+                        f"; {len(blocked_ids)} blocked by PDB"
+                        if blocked_ids else ""
+                    )
+                ),
+                "details": {
+                    "bm_id": bm.id,
+                    "blocking_vm_ids": [vm.id for vm in keep_vms],
+                    "eviction_blocked_vm_ids": blocked_ids,
+                },
+            })
 
         # Validate selector/vm_ids exclusivity on incoming rules (fatal).
         self._validate_rule_inputs()
@@ -247,19 +393,31 @@ class VMPlacementSolver:
         - Malformed rules (both/neither vm_ids and selector) return [];
           they've already been recorded in self._input_errors which causes
           solve() to abort with INPUT_ERROR before any constraint is added.
+
+        FINAL-STATE semantics (upgrade workflows): to_be_removed VMs are
+        excluded on both forms — C3/C4/C5 constrain the state after the
+        drain completes, and group sizes (⌈N/buckets⌉) must not be
+        inflated by VMs that are on their way out.
         """
         if rule.vm_ids:
             seen: set[str] = set()
             out: list[str] = []
             for vid in rule.vm_ids:
-                if vid not in seen:
-                    seen.add(vid)
-                    out.append(vid)
+                if vid in seen:
+                    continue
+                seen.add(vid)
+                vm = self.vm_map.get(vid)
+                if vm is not None and not vm.in_final_state:
+                    continue
+                out.append(vid)
             return out
         if rule.selector is None:
             return []
         sel: GroupSelector = rule.selector
-        return [vm.id for vm in self.request.vms if sel.matches(vm)]
+        return [
+            vm.id for vm in self.request.vms
+            if vm.in_final_state and sel.matches(vm)
+        ]
 
     # ------------------------------------------------------------------
     # Step B (cont.): Auto-generate anti-affinity rules
@@ -310,9 +468,14 @@ class VMPlacementSolver:
 
         # Group remaining VMs by (cluster_id, ip_type, role). Cluster is part of
         # the key so two clusters with the same role/ip_type spread independently.
+        # Final-state membership: to_be_removed VMs never join a group; pinned
+        # "keep" VMs join like any other — a new master must avoid the bucket
+        # where a kept master already sits.
         groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
         for vm in self.request.vms:
             if vm.id in covered:
+                continue
+            if not vm.in_final_state:
                 continue
             if not vm.ip_type or not vm.cluster_id:
                 continue
@@ -388,9 +551,12 @@ class VMPlacementSolver:
         self._input_errors and excluded from constraint building.
         """
         resolved: list[tuple[FailoverRule, list[str], list[str]]] = []
+        # Final-state membership: a to_be_removed backup must not count
+        # toward |backup| — after the drain it can't take over anything.
+        final_vms = [vm for vm in self.request.vms if vm.in_final_state]
         for f in self.request.failover_rules:
-            primary_ids = [vm.id for vm in self.request.vms if f.primary.matches(vm)]
-            backup_ids = [vm.id for vm in self.request.vms if f.backup.matches(vm)]
+            primary_ids = [vm.id for vm in final_vms if f.primary.matches(vm)]
+            backup_ids = [vm.id for vm in final_vms if f.backup.matches(vm)]
 
             if not primary_ids:
                 self._input_errors.append(
@@ -487,6 +653,8 @@ class VMPlacementSolver:
         for vm in self.request.vms:
             if vm.id in covered:
                 continue
+            if not vm.in_final_state:
+                continue
             if not vm.cluster_id or not vm.ip_type:
                 continue
             groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
@@ -581,6 +749,27 @@ class VMPlacementSolver:
             else:
                 self.model.add(sum(vm_vars) == 1)
 
+    def _add_pinned_assignment_constraints(self):
+        """
+        CONSTRAINT C6: A pinned VM stays on its pinned BM.
+
+            assign[vm, vm.pinned_bm] == 1        for every pinned VM
+
+        Fixing the variable (instead of folding pinned VMs into constants)
+        lets every other builder — C2 sums, C3/C4/C5 bucket sums, bm_used,
+        headroom, extraction — treat pinned VMs uniformly with zero special
+        cases; CP-SAT's presolve substitutes fixed Booleans away at no cost.
+        Eligibility (Step A) already restricted a pinned VM to exactly its
+        pinned BM, so the single variable always exists here (pinned_bm
+        membership in bm_map is validated as INPUT_ERROR in __init__).
+        """
+        for vm in self.request.vms:
+            if vm.pinned_bm is None:
+                continue
+            var = self.assign.get((vm.id, vm.pinned_bm))
+            if var is not None:
+                self.model.add(var == 1)
+
     def _add_capacity_constraints(self):
         """
         CONSTRAINT: Total VM demand on each BM must not exceed its available capacity.
@@ -592,9 +781,16 @@ class VMPlacementSolver:
           VM-A needs 16 cores, VM-B needs 8 cores, VM-C needs 32 cores.
           If all three are assigned here: 16+8+32 = 56 <= 64 ✓
           If we also add VM-D (16 cores): 56+16 = 72 > 64 ✗
+
+        TRANSITIONAL-state semantics (upgrade workflows): the usage sum
+        includes pinned VMs via their fixed assign vars (C6) — keep,
+        to_be_removed and new VMs all consume simultaneously during the
+        surge overlap. The RHS is therefore the EFFECTIVE available
+        capacity (total − usage by VMs not listed in the request); using
+        bm.available_capacity here would count pinned demand twice.
         """
         for bm in self.request.baremetals:
-            avail = bm.available_capacity
+            avail = self.effective_available[bm.id]
 
             # Collect all (vm_id, assign_var) pairs for VMs eligible on this BM
             assigned_vars = [
@@ -619,6 +815,31 @@ class VMPlacementSolver:
                 # The constraint: total usage <= capacity
                 self.model.add(usage <= capacity)
 
+    def _note_pinned_relaxation(self, advisory_type: str, group_id: str,
+                                **details) -> None:
+        """
+        Record that a pre-existing pinned layout forced a per-bucket cap
+        relaxation (C3/C4/C5). Non-fatal by design: the alternative — hard
+        INFEASIBLE on machines the solver cannot move — would make upgrade
+        solves unusable on real legacy layouts. The scheduler surfaces
+        these to the user.
+        """
+        self.advisories.append({
+            "type": advisory_type,
+            "severity": "warning",
+            "group_id": group_id,
+            "message": (
+                f"{advisory_type}: pre-existing pinned layout of group "
+                f"'{group_id}' exceeds the cap; cap relaxed to the pinned "
+                f"count so the solve stays feasible ({details})"
+            ),
+            "details": details,
+        })
+        logger.warning(
+            "Pinned relaxation (%s) on group %s: %s",
+            advisory_type, group_id, details,
+        )
+
     def _add_anti_affinity_constraints(self):
         """
         CONSTRAINT C3: VMs in the same anti-affinity group are spread across
@@ -640,6 +861,18 @@ class VMPlacementSolver:
           count_in_bucket * |B_d| <= total_active + (|B_d| - 1)
         which is equivalent to:
           count_in_bucket <= ceil(total_active / |B_d|)
+
+        Pinned relaxation (upgrade workflows): pinned group members are a
+        constant floor on their bucket's sum (C6 fixes their vars to 1), so
+        a pre-existing layout that already violates cap_d would make the
+        model INFEASIBLE through no fault of this solve. Per bucket the cap
+        is relaxed to max(cap_d, pinned_in_bucket) — the solver never
+        worsens the violation (the bucket is saturated by fixed vars, no
+        new VM can enter) — and a pinned_spread_violation advisory reports
+        it. The dynamic path gets the additive equivalent: relax_b =
+        max(0, pinned_in_b·|B| − explicit_count − (|B|−1)), derived from
+        requiring feasibility at the worst case total_active =
+        explicit_count (all synthetic slots inactive).
         """
         import math
 
@@ -689,18 +922,34 @@ class VMPlacementSolver:
                     # Trivially true when |B| == 1 (reduces to count <= total).
                     if num_buckets <= 1:
                         continue
-                    for bm_ids in buckets.values():
+                    for bucket_name, bm_ids in buckets.items():
                         vars_in_bucket = [
                             self.assign[(vm_id, bm_id)]
                             for vm_id in vm_ids
                             for bm_id in bm_ids
                             if (vm_id, bm_id) in self.assign
                         ]
-                        if vars_in_bucket:
-                            self.model.add(
-                                sum(vars_in_bucket) * num_buckets
-                                <= total_active + (num_buckets - 1)
+                        if not vars_in_bucket:
+                            continue
+                        pinned_in_b = pinned_count_in_bucket(
+                            vm_ids, set(bm_ids), self.vm_map
+                        )
+                        relax_b = max(
+                            0,
+                            pinned_in_b * num_buckets
+                            - explicit_count - (num_buckets - 1),
+                        )
+                        if relax_b > 0:
+                            self._note_pinned_relaxation(
+                                "pinned_spread_violation", rule.group_id,
+                                dimension=dim, bucket=bucket_name,
+                                cap=f"ceil(total_active/{num_buckets})",
+                                pinned_count=pinned_in_b,
                             )
+                        self.model.add(
+                            sum(vars_in_bucket) * num_buckets
+                            <= total_active + (num_buckets - 1) + relax_b
+                        )
                 else:
                     static_cap = cap_overrides.get(
                         dim, math.ceil(N / num_buckets)
@@ -709,15 +958,28 @@ class VMPlacementSolver:
                     # anyway (it's bounded by |rule.vm_ids|).
                     if static_cap >= N:
                         continue
-                    for bm_ids in buckets.values():
+                    for bucket_name, bm_ids in buckets.items():
                         vars_in_bucket = [
                             self.assign[(vm_id, bm_id)]
                             for vm_id in vm_ids
                             for bm_id in bm_ids
                             if (vm_id, bm_id) in self.assign
                         ]
-                        if vars_in_bucket:
-                            self.model.add(sum(vars_in_bucket) <= static_cap)
+                        if not vars_in_bucket:
+                            continue
+                        pinned_in_b = pinned_count_in_bucket(
+                            vm_ids, set(bm_ids), self.vm_map
+                        )
+                        if pinned_in_b > static_cap:
+                            self._note_pinned_relaxation(
+                                "pinned_spread_violation", rule.group_id,
+                                dimension=dim, bucket=bucket_name,
+                                cap=static_cap, pinned_count=pinned_in_b,
+                            )
+                        self.model.add(
+                            sum(vars_in_bucket)
+                            <= max(static_cap, pinned_in_b)
+                        )
 
     def _add_failover_constraints(self):
         """
@@ -735,11 +997,17 @@ class VMPlacementSolver:
 
         Pre-flight check (|P| > |L|) already happened in
         _resolve_failover_rules — only well-formed rules reach this method.
+
+        Membership is FINAL-state (to_be_removed VMs excluded at resolve
+        time); pinned members contribute through fixed vars. When the
+        pinned layout alone already breaks the invariant in some bucket,
+        the RHS is relaxed to the pinned occupancy (don't worsen, don't
+        fail) and a pinned_failover_violation advisory reports it.
         """
         for f, primary_ids, backup_ids in self.failover_resolved:
             buckets = self.dim_to_bms[f.fault_domain]
             backup_total = len(backup_ids)
-            for bm_ids in buckets.values():
+            for bucket_name, bm_ids in buckets.items():
                 primary_in_b = [
                     self.assign[(vm_id, bm_id)]
                     for vm_id in primary_ids
@@ -752,10 +1020,23 @@ class VMPlacementSolver:
                     for bm_id in bm_ids
                     if (vm_id, bm_id) in self.assign
                 ]
-                if primary_in_b or backup_in_b:
-                    self.model.add(
-                        sum(primary_in_b) + sum(backup_in_b) <= backup_total
+                if not (primary_in_b or backup_in_b):
+                    continue
+                bm_id_set = set(bm_ids)
+                pinned_in_b = (
+                    pinned_count_in_bucket(primary_ids, bm_id_set, self.vm_map)
+                    + pinned_count_in_bucket(backup_ids, bm_id_set, self.vm_map)
+                )
+                if pinned_in_b > backup_total:
+                    self._note_pinned_relaxation(
+                        "pinned_failover_violation", f.rule_id,
+                        fault_domain=f.fault_domain, bucket=bucket_name,
+                        cap=backup_total, pinned_count=pinned_in_b,
                     )
+                self.model.add(
+                    sum(primary_in_b) + sum(backup_in_b)
+                    <= max(backup_total, pinned_in_b)
+                )
 
     def _add_max_per_bm_constraints(self):
         """
@@ -768,6 +1049,10 @@ class VMPlacementSolver:
         Synthetic VMs (splitter slots) need no special handling — the C1
         constraint sum(assign[vm, *]) == active_var forces inactive synthetic
         VMs' assign vars to 0, so they naturally drop out of this sum.
+
+        Membership is FINAL-state (to_be_removed excluded at resolve time).
+        A BM whose pinned group members already exceed max_per_bm gets its
+        cap relaxed to the pinned count (advisory: don't worsen, don't fail).
         """
         for rule in self.max_per_bm_rules:
             for bm_id in self.bm_map:
@@ -776,8 +1061,20 @@ class VMPlacementSolver:
                     for vm_id in rule.vm_ids
                     if (vm_id, bm_id) in self.assign
                 ]
-                if vars_on_bm:
-                    self.model.add(sum(vars_on_bm) <= rule.max_per_bm)
+                if not vars_on_bm:
+                    continue
+                pinned_on_bm = pinned_count_in_bucket(
+                    rule.vm_ids, {bm_id}, self.vm_map
+                )
+                if pinned_on_bm > rule.max_per_bm:
+                    self._note_pinned_relaxation(
+                        "pinned_max_per_bm_violation", rule.group_id,
+                        bm_id=bm_id, cap=rule.max_per_bm,
+                        pinned_count=pinned_on_bm,
+                    )
+                self.model.add(
+                    sum(vars_on_bm) <= max(rule.max_per_bm, pinned_on_bm)
+                )
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -829,6 +1126,11 @@ class VMPlacementSolver:
         3. Take the max across dimensions (worst-case determines penalty)
 
         Returns a list of penalty variables, one per BM.
+
+        Headroom is computed on the TRANSITIONAL load (old + new VMs during
+        the surge overlap) — that is the window the safety margin protects.
+        used_d must be the EFFECTIVE used (pinned demand excluded), because
+        pinned VMs re-enter new_usage through their fixed assign vars.
         """
         penalties = []
         for bm in self.request.baremetals:
@@ -838,7 +1140,7 @@ class VMPlacementSolver:
                 if total_d == 0:
                     continue  # skip zero-total dimensions (e.g. gpu_count=0)
 
-                used_d = getattr(bm.used_capacity, field)
+                used_d = getattr(self.effective_used[bm.id], field)
 
                 assigned_vars = [
                     (vm_id, self.assign[(vm_id, bm.id)])
@@ -926,7 +1228,9 @@ class VMPlacementSolver:
                         continue  # no demand on this dimension, not a bottleneck
 
                     total_d = getattr(bm.total_capacity, field)
-                    used_d = getattr(bm.used_capacity, field)
+                    # Effective used: pinned demand re-enters via fixed vars
+                    # in new_usage below (same reasoning as headroom).
+                    used_d = getattr(self.effective_used[bm.id], field)
 
                     # New VM usage on this BM
                     new_usage = sum(
@@ -1047,6 +1351,18 @@ class VMPlacementSolver:
         if waste_terms and self.config.w_resource_waste > 0:
             terms.append(self.config.w_resource_waste * sum(waste_terms))
 
+        # Label preference (upgrade workflows): penalize placing a VM on a
+        # BM that doesn't match its prefer_bm_labels. Range check: at most
+        # w_label_preference per placed VM — deliberately above one BM's
+        # consolidation cost (matching an upgraded BM beats opening one
+        # fewer BM) and far below w_procurement/w_committed_stock.
+        if self.config.w_label_preference > 0:
+            mismatch_terms = self._compute_label_mismatch_terms()
+            if mismatch_terms:
+                terms.append(
+                    self.config.w_label_preference * sum(mismatch_terms)
+                )
+
         # Procurement: minimize how many buyable BMs are used (Phase 2). The
         # high weight ensures in-stock BMs are preferred and buying is minimal.
         if self.procurement_bm_ids and self.config.w_procurement > 0:
@@ -1073,6 +1389,28 @@ class VMPlacementSolver:
 
         if terms:
             self.model.minimize(sum(terms))
+
+    def _compute_label_mismatch_terms(self) -> list[cp_model.IntVar]:
+        """
+        One assign var per (VM with prefer_bm_labels, eligible BM that does
+        NOT match all of them). Soft preference only — a mismatched BM is
+        penalized, never forbidden (hard filtering is the scheduler's job
+        via candidate_baremetals). Pinned VMs are skipped: their placement
+        is fixed, so a penalty would be a constant that can't steer anything.
+        Pure linear over existing BoolVars — no new variables.
+        """
+        terms = []
+        for (vm_id, bm_id), var in self.assign.items():
+            vm = self.vm_map[vm_id]
+            if vm.pinned_bm is not None or not vm.prefer_bm_labels:
+                continue
+            bm_labels = self.bm_map[bm_id].labels
+            if any(
+                bm_labels.get(k) != v
+                for k, v in vm.prefer_bm_labels.items()
+            ):
+                terms.append(var)
+        return terms
 
     def _compute_procurement_balance_terms(self) -> list:
         """
@@ -1123,7 +1461,9 @@ class VMPlacementSolver:
                 if bm.id in conditional:
                     expr += bm.total_capacity.cpu_cores * self.bm_used[bm.id]
                 else:
-                    expr += bm.available_capacity.cpu_cores
+                    # Effective available: placed_on includes pinned fixed
+                    # vars, so pinned demand must not also sit in the base.
+                    expr += self.effective_available[bm.id].cpu_cores
                 expr -= sum(placed_on.get(bm.id, []))
             v = self.model.new_int_var(0, hi, f"bal_avail_{bucket}")
             self.model.add(v == expr)
@@ -1164,6 +1504,7 @@ class VMPlacementSolver:
             # Build the model
             self._build_variables()
             self._add_one_bm_per_vm_constraint()
+            self._add_pinned_assignment_constraints()
             self._add_capacity_constraints()
             self._add_anti_affinity_constraints()
             self._add_failover_constraints()
@@ -1243,6 +1584,7 @@ class VMPlacementSolver:
             failover_resolved=self.failover_resolved,
             config=self.config,
             num_variables=len(self.assign),
+            effective_available=self.effective_available,
         ).build()
 
     def _extract_solution(

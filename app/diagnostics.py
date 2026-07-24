@@ -20,10 +20,15 @@ from .models import (
     Baremetal,
     FailoverRule,
     MaxPerBaremetalRule,
+    Resources,
     VM,
     SolverConfig,
 )
-from .solver import get_eligible_baremetals, RESOURCE_FIELDS
+from .solver import (
+    RESOURCE_FIELDS,
+    get_eligible_baremetals,
+    pinned_count_in_bucket,
+)
 
 
 def status_name(status: cp_model.CpSolverStatus) -> str:
@@ -54,6 +59,7 @@ class DiagnosticsBuilder:
         failover_resolved: list[tuple[FailoverRule, list[str], list[str]]],
         config: SolverConfig,
         num_variables: int,
+        effective_available: dict[str, Resources] | None = None,
     ):
         self.request = request
         self.vm_map = vm_map
@@ -64,6 +70,14 @@ class DiagnosticsBuilder:
         self.failover_resolved = failover_resolved
         self.config = config
         self.num_variables = num_variables
+        # Capacity RHS for the layer check. The throwaway models below give
+        # pinned VMs a single (vm, pinned_bm) var forced to 1 by the
+        # one-bm-per-vm layer, so their demand is IN the usage sums — the
+        # RHS must exclude it (effective) or pinned demand double-counts
+        # and the capacity layer reports a false INFEASIBLE.
+        self.effective_available = effective_available or {
+            bm.id: bm.available_capacity for bm in request.baremetals
+        }
 
     def _eligible(self, vm: VM) -> list[str]:
         return get_eligible_baremetals(vm, self.bm_map, self.request.baremetals)
@@ -104,6 +118,12 @@ class DiagnosticsBuilder:
             "variables": self.num_variables,
             "rules": len(self.effective_rules),
             "max_per_bm_rules": len(self.max_per_bm_rules),
+            "pinned_vms": sum(
+                1 for vm in self.request.vms if vm.pinned_bm is not None
+            ),
+            "to_be_removed_vms": sum(
+                1 for vm in self.request.vms if not vm.in_final_state
+            ),
         }
 
         return diag
@@ -248,9 +268,16 @@ class DiagnosticsBuilder:
                 else:
                     model.add(sum(vm_vars) == 1)
 
+        # NOTE: these layer builders must mirror the real builders in
+        # solver.py, including the pinned relaxations — otherwise a layer
+        # would report INFEASIBLE for a cap the real model relaxed and
+        # `failed_at` would point at the wrong layer. Pinned VMs need no
+        # dedicated layer: their eligibility is [pinned_bm], so the
+        # one_bm_per_vm layer's ==1 already fixes them (C6 equivalent).
+
         def add_capacity(model, assign):
             for bm in self.request.baremetals:
-                avail = bm.available_capacity
+                avail = self.effective_available[bm.id]
                 avars = [(vid, assign[(vid, bm.id)]) for vid in self.vm_map
                          if (vid, bm.id) in assign]
                 if not avars:
@@ -278,7 +305,10 @@ class DiagnosticsBuilder:
                         vbucket = [assign[(vid, bid)] for vid in rule.vm_ids
                                    for bid in bm_ids if (vid, bid) in assign]
                         if vbucket:
-                            model.add(sum(vbucket) <= cap)
+                            pinned_b = pinned_count_in_bucket(
+                                rule.vm_ids, set(bm_ids), self.vm_map
+                            )
+                            model.add(sum(vbucket) <= max(cap, pinned_b))
 
         def add_max_per_bm(model, assign):
             for rule in self.max_per_bm_rules:
@@ -286,7 +316,12 @@ class DiagnosticsBuilder:
                     vbm = [assign[(vid, bm_id)] for vid in rule.vm_ids
                            if (vid, bm_id) in assign]
                     if vbm:
-                        model.add(sum(vbm) <= rule.max_per_bm)
+                        pinned_b = pinned_count_in_bucket(
+                            rule.vm_ids, {bm_id}, self.vm_map
+                        )
+                        model.add(
+                            sum(vbm) <= max(rule.max_per_bm, pinned_b)
+                        )
 
         def add_failover(model, assign):
             for f, primary_ids, backup_ids in self.failover_resolved:
@@ -297,7 +332,17 @@ class DiagnosticsBuilder:
                     bin_ = [assign[(vid, bid)] for vid in backup_ids
                             for bid in bm_ids if (vid, bid) in assign]
                     if pin or bin_:
-                        model.add(sum(pin) + sum(bin_) <= len(backup_ids))
+                        bm_id_set = set(bm_ids)
+                        pinned_b = (
+                            pinned_count_in_bucket(
+                                primary_ids, bm_id_set, self.vm_map)
+                            + pinned_count_in_bucket(
+                                backup_ids, bm_id_set, self.vm_map)
+                        )
+                        model.add(
+                            sum(pin) + sum(bin_)
+                            <= max(len(backup_ids), pinned_b)
+                        )
 
         def quick_solve(model) -> str:
             s = cp_model.CpSolver()

@@ -18,18 +18,23 @@ def client():
 
 def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
             used_cpu=0, used_mem=0, used_disk=0,
-            ag="ag-1", dc="dc-1", room="room-1", rack="rack-1"):
+            ag="ag-1", dc="dc-1", room="room-1", rack="rack-1",
+            schedulable=True, labels=None):
     return Baremetal(
         id=bm_id,
         total_capacity=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
         used_capacity=Resources(cpu_cores=used_cpu, memory_mib=used_mem, storage_gb=used_disk),
         topology=Topology(site="site-a", phase="p1", datacenter=dc, room=room, rack=rack, ag=ag),
+        schedulable=schedulable,
+        labels=labels or {},
     )
 
 
 def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
             role=NodeRole.WORKER, cluster="cluster-1",
-            ip_type="routable", candidates=None):
+            ip_type="routable", candidates=None,
+            lifecycle="new", pinned=None, replaces=None,
+            eviction_blocked=False, prefer_labels=None):
     return VM(
         id=vm_id,
         demand=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
@@ -37,6 +42,11 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
         ip_type=ip_type,
         cluster_id=cluster,
         candidate_baremetals=candidates or [],
+        lifecycle=lifecycle,
+        pinned_bm=pinned,
+        replaces=replaces,
+        eviction_blocked=eviction_blocked,
+        prefer_bm_labels=prefer_labels or {},
     )
 
 

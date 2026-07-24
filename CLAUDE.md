@@ -43,8 +43,26 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   - **C4** — max-per-BM: no single BM hosts more than `max_per_bm` VMs of a group.
   - **C5** — failover N-1: per bucket b of `fault_domain`:
     `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
-  - New constraints get the next label (C6, C7, …), a `CONSTRAINT Cn:` comment
+  - **C6** — pinned assignment (upgrade workflows): `assign[vm, vm.pinned_bm] == 1`
+    for every VM with `pinned_bm` set (an existing VM; its assign var is fixed
+    so C2–C5 count it with zero special-casing).
+  - New constraints get the next label (C7, C8, …), a `CONSTRAINT Cn:` comment
     with the math in the builder method, and dedicated tests.
+- **Upgrade workflows (surge-then-drain / 先加後減)** — VM `lifecycle`
+  (`new`/`keep`/`to_be_removed`; non-new requires `pinned_bm`), `replaces`
+  (pairing info), `eviction_blocked` (PDB-blocked, keep-only); BM
+  `schedulable` (cordon = no NEW VMs; pinned stay) and `labels` (soft-matched
+  by `VM.prefer_bm_labels` via `w_label_preference`). Semantics that must not
+  drift: **C2 validates the TRANSITIONAL state** (keep + to_be_removed + new
+  all consume at once) while **C3/C4/C5 validate the FINAL state**
+  (to_be_removed excluded from membership and group-size N). Capacity
+  contract: `used_capacity` INCLUDES pinned VM demand — the solver subtracts
+  it (`effective_used/-available`) and re-adds it through the fixed vars, so
+  every model-facing capacity read must use the effective maps or pinned
+  demand double-counts. A pre-existing pinned layout that violates C3/C4/C5
+  relaxes the affected bucket cap to the pinned count (never INFEASIBLE from
+  what the solver cannot move) and emits a `pinned_*_violation` advisory;
+  cordoned BMs still hosting kept VMs emit `bm_not_evictable`.
 - **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
   — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
 - **Solver flow** in `solver.py` is staged: Step A (eligibility = candidate
