@@ -8,12 +8,12 @@ Run: pytest tests/test_solver.py -v
 import json
 
 from app.models import (
-    Resources, NodeRole,
+    NodeRole,
     AntiAffinityRule,
     FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
-    PlacementRequest, PlacementResult,
+    PlacementRequest,
     SolverConfig,
 )
 from app.solver import VMPlacementSolver
@@ -1066,7 +1066,6 @@ class TestMaxPerBaremetalAutoGen:
 
     def test_auto_gen_skips_when_covered_by_explicit(self):
         """Explicit selector rule prevents auto-gen from re-covering its VMs."""
-        bms = [make_bm(f"bm-{i}", ag="ag-1") for i in range(2)]
         vms = [
             make_vm(f"m-{i}", role=NodeRole.MASTER, cluster="A", ip_type="non-routable")
             for i in range(2)

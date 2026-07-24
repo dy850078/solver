@@ -31,7 +31,6 @@ from ortools.sat.python import cp_model
 
 from .models import (
     Baremetal,
-    NodeRole,
     Resources,
     ResourceRequirement,
     SolverConfig,

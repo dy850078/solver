@@ -1,6 +1,6 @@
 """Tests for the diagnostics module (app/diagnostics.py)."""
 
-from app.models import AntiAffinityRule, NodeRole
+from app.models import AntiAffinityRule
 
 from .conftest import make_bm, make_vm, solve
 

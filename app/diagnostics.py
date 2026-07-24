@@ -10,8 +10,6 @@ which constraint layer first causes INFEASIBLE.
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from ortools.sat.python import cp_model
 
 from .models import (

@@ -4,7 +4,6 @@ Run: pytest tests/test_splitter.py -v
 """
 
 from app.models import (
-    AntiAffinityRule,
     GroupSelector,
     MaxPerBaremetalRule,
     NodeRole,
