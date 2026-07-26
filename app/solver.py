@@ -46,7 +46,6 @@ from .models import (
     PlacementAssignment,
     PlacementRequest,
     PlacementResult,
-    Resources,
 )
 
 logger = logging.getLogger(__name__)
