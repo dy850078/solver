@@ -1,9 +1,11 @@
 # Enhancement Proposal — K8s 資源擴充需求計算 (Capacity Planning)
 
 > **作者**: Claude (claude-code)
-> **日期**: 2026-06-30
-> **狀態**: Design — 待 review，尚未實作
-> **相關元件**: `app/splitter.py`、`app/split_solver.py`、`app/solver.py`、`app/models.py`、`app/diagnostics.py`
+> **日期**: 2026-06-30（2026-07-27 審閱勘誤，見〈實作對照勘誤〉）
+> **狀態**: Phase 1–3 已實作（`app/capacity_planner.py`、`/v1/capacity/procure`、
+> `/v1/capacity/plan`）；**缺口 3e/3f 僅完成設計、尚未實作**；backlog 見文末。
+> **相關元件**: `app/capacity_planner.py`、`app/splitter.py`、`app/split_solver.py`、
+> `app/solver.py`、`app/models.py`、`app/diagnostics.py`
 
 ---
 
@@ -257,6 +259,17 @@ resulting_available[b] = in_stock_available[b] + added_resources[b] − demand_p
 > **關鍵**：碎片化「和」拓撲擋不下，兩者都被吸進「可落地可用量」這一個數字。
 > 不需為了拓撲再開一堆維度去解釋 —— solver 跑出 INFEASIBLE / partial 就是舉證。
 > 採買理由從「需求 vs 名目」改成 **「需求 vs 可落地」**，數字才誠實。
+>
+> **實作勘誤（2026-07-27）**：`placeable_available` / `fragmentation_loss` /
+> `shortfall_vms` 三個草案欄位**未做成獨立報表欄位**。實作的分工是：
+> - 「可落地」的舉證由 **joint solve 結果本身**承擔（success / `shortfalls` /
+>   `procurement` —— 需求真的放進去了沒、缺在哪），不另跑一次「bin-pack 參考 VM 至
+>   INFEASIBLE」的探測 solve。
+> - 儀表欄位為 `nominal_available` / `remaining_node_slots` / `stranded_available` /
+>   `balance_after`（`models.py:600-604`）。注意 `remaining_node_slots` 是
+>   **per-BM 貪婪 `_fits_count` 加總**（`capacity_planner.py:582`），**不含 anti-affinity
+>   與跨 BM 交互** —— 它是尺標值（本節「純參考」的定位），不是表格中定義的那個
+>   「帶 anti-affinity bin-pack」的可落地量，兩者勿混。
 
 #### 報表對象與粒度（決議）
 
@@ -435,6 +448,11 @@ class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一
 
 ### 缺口 3e — 新舊節點一起打散（整個 cluster 的 anti-affinity）
 
+> ⚠️ **實作狀態（2026-07-27）：設計已定、尚未實作。** `ExistingDistribution` 不存在於
+> `models.py`，`CapacityPlanRequest` 也沒有 `existing_distributions` 欄位。目前規劃 solve
+> 的 anti-affinity 只作用在「本次新增的節點」上，現有節點分佈不參與 —— 使用時要知道
+> 這個限制（歷史傾斜的 cluster 可能被規劃出「新批平衡、全域仍傾斜」的結果）。
+
 **決議（岔路 B）：anti-affinity 作用範圍是「整個 cluster」，不是「這批新節點」。** 新長出來的
 節點要與**現有節點一起**滿足打散，否則會長出全域傾斜的 cluster（且報表假綠燈）。
 
@@ -472,6 +490,9 @@ class ExistingDistribution(BaseModel):
 > 決策 E）。本設計以「聚合基線數」的輕量形式補上，避免引入完整 `existing_vms` 模型。
 
 ### 缺口 3f — 現有 BM 上的 VM 佔用（per-BM，給 max_per_bm 用）
+
+> ⚠️ **實作狀態（2026-07-27）：設計已定、尚未實作。** `ExistingBmOccupancy` 不存在於
+> `models.py`。目前 max_per_bm 約束只計「本次新增的 VM」，不含既有 VM 的 per-BM 佔用。
 
 缺口 3e 的「每 AG 聚合數」只夠**跨 AG 打散**。但「**同一台 BM 上同 type VM 的數量上限**」
 （`MaxPerBaremetalRule` / `auto_generate_max_per_bm`，`models.py:271`）是 **per-BM 粒度**，
@@ -553,10 +574,15 @@ class ProcurementCap(BaseModel):
 ### 缺口 3h — 已採購庫存 (pre-committed stock)｜已納入（effort 低）
 
 情境：某廠已買好兩種機型各 100 台，想確認「夠不夠、不夠各再買多少」。這是既有採買模型的
-自然延伸 —— **把已購庫存當成「零成本的採買層」**：
+自然延伸 —— **把已購庫存當成「近零成本的採買層」**：
 
-- 已購池：每型上限 = 已購台數，**成本權重 0**；新買 = 一般採買，權重 1。
-- 目標 `minimize`：**先用完免費的、才買新的**（owned 權重 0、new 權重 1）。
+- 已購池：每型上限 = 已購台數，成本權重**低但非 0**；新買 = 一般採買，權重高。
+- 目標 `minimize`：**先用 in-stock、再用已購、最後才買新的**。
+- **實作勘誤（vs 原設計「權重 0」）**：實際是三層權重 in-stock (0) →
+  committed (`w_committed_stock=100`) → buy (`w_procurement=10_000`)（`models.py:339-343`）。
+  已購權重若真設 0，solver 會把已購機和 in-stock 視為無差別，可能留著 in-stock 空間
+  不用、先開已購機；設一個遠小於 `w_procurement` 的小權重才能保住
+  「先填滿現有、再拆封已購、最後才花錢」的順序。
 - 報表直接回答：**「用掉 100 台裡的 X 台、還缺 → 各機型再買 Y 台」**（`bm_procurement.from_committed`）。
 
 ```python
@@ -572,6 +598,13 @@ class CommittedStock(BaseModel):      # 選填輸入（空=不啟用）；已採
 （受 cluster BGP 限制）。**effort 低，已納入範圍**（`committed_stock` 為空時等同不啟用）。
 
 ### 核心資料模型 (草案)
+
+> ⚠️ **本節是設計時的草案，與最終實作有出入；以 `app/models.py` 為準。** 主要差異：
+> `CapacityPlanRequest` 無 `existing_distributions` / `existing_bm_occupancy`（3e/3f 未實作）；
+> `BucketMonthCell` 的 `node_adds` / `bm_bought` 是**計數**而非 list（spec 細分在 period 層
+> `split_decisions`）；`ShortfallDetail.cause` 實際有六值（另有 `unknown` / `input_error` /
+> `blocked`）；`budget_view` 是 `list[BudgetRow]` 且**含 `type_id`**（財務看得到買什麼機型）。
+> 完整落差清單見〈實作對照勘誤〉。
 
 ```python
 # models.py 新增
@@ -714,6 +747,64 @@ POST /v1/capacity/plan
 
 **回滾策略**：各 Phase 都是 additive（新欄位預設停用 / 新 endpoint）。
 回滾 = 不呼叫新 endpoint、`max_pods_per_node=0`，既有行為完全不受影響。
+
+---
+
+## 實作對照勘誤（2026-07-27 審閱）
+
+逐節核對本文件與 `app/capacity_planner.py` / `app/models.py` / `app/solver.py` 的結果。
+分三類：**(A) 文件說了、code 沒做**；**(B) 文件與 code 不一致（以 code 為準）**；
+**(C) code 做了、文件沒寫（補充）**。
+
+### A. 設計已定、尚未實作
+
+| 項目 | 現況 | 影響 |
+|---|---|---|
+| 缺口 3e `ExistingDistribution` | 類別不存在；`CapacityPlanRequest` 無此欄位 | 規劃 solve 的打散只作用在新增節點；歷史傾斜 cluster 可能得到「新批平衡、全域仍斜」的假綠燈 |
+| 缺口 3f `ExistingBmOccupancy` | 類別不存在 | max_per_bm 只計新 VM；規劃結果可能與 Go scheduler 真實 max_per_bm 打架 |
+| 3c graceful partial | 失敗月無部分放置結果（Phase 2 註已載明） | 缺口量化靠 what-if 數字，非逐 VM partial |
+
+### B. 文件與程式碼不一致（以程式碼為準）
+
+| 文件敘述 | 程式碼現況 |
+|---|---|
+| 3h：已購庫存「成本權重 0」 | 三層權重 in-stock (0) → committed (`w_committed_stock=100`) → buy (`w_procurement=10_000`)；權重 0 會讓已購與 in-stock 無差別（`models.py:339-343`、`solver.py:1049-1068`）|
+| 3c：報表欄位 `placeable_available` / `fragmentation_loss` / `shortfall_vms` | 未實作；改由 solve 結果本身舉證 + `nominal_available` / `remaining_node_slots` / `stranded_available` / `balance_after` 四個儀表（`models.py:600-604`）|
+| `ShortfallDetail.cause` 三值 | 六值：另有 `unknown`（時限未證明 INFEASIBLE）、`input_error`、`blocked`（`models.py:726-727`）|
+| `ShortfallDetail.bucket`「指到哪個桶」 | 欄位存在但**目前從未被填**（`capacity_planner.py::_shortfall_details`）——`space` 成因還說不出「哪個桶機位用罄」，是已知待補項 |
+| 草案 `w_procurement_balance: int = 3` | 預設 **0**（opt-in；`models.py:349`），要平衡目標需顯式開啟 |
+| 草案 `budget_view: [{fab, dc, month, bm_count}]` | `BudgetRow{fab, bucket, network, period, type_id, bm_count}` —— 按機型細分（`models.py:736`）|
+| Phase 3 註「失敗月需求不帶入下月」 | 更強：失敗月**之後該 fab 的所有已規劃月份不再求解**，回 `BLOCKED` stub（`capacity_planner.py::_blocked_report`），理由是結構性污染 —— 缺了失敗月需求的後續解會過度樂觀 |
+| `models.py:522` `ProcurementCap.network` docstring「reserved; unused」 | **已過時**：network 實際參與 cell 推導、機位計數、roll-forward 遞減。待 follow-up 修正（動 `models.py` 需走 ADR 流程，故本次僅記錄）|
+
+### C. 程式碼有、文件未載的實作細節（補充）
+
+- **`space` 判定的兩道守則**（`capacity_planner.py:117-137`）：只有**證明 INFEASIBLE** 才
+  進入成因分類；UNKNOWN（時限到）回 `unknown`，不亂扣帽子。Pass-2（拿掉 caps 重解）只在
+  請求真的帶 `procurement_caps` 時才跑。
+- **虛擬 BM 的合成 rack（vrack）**：每台可採買/已購 BM 掛獨立 `vrack-<id>`（新買機器總能
+  分開上架，rack 落點是 DC Hardware Team 的事，決議 #29），避免 rack 級 anti-affinity 把
+  同 cell 的採買機誤判為同 rack。roll-forward materialize 時 id 加 `acq-<period>-` 前綴、
+  vrack 同步改名，防止下月重新生成的虛擬 BM 撞名/撞 rack（`capacity_planner.py:187-204,822-830`）。
+- **worst-case 槽位上界是「sound」的**：每 cell 生成幾台虛擬 BM，用
+  `spec_count_upper_bound`（已含 pod floor / min-max 台數）÷ per-BM 可裝數（再被
+  max_per_bm / rack-spread cap 收緊）逐 spec 加總；naive `ceil(總需求/機型容量)` 會低估
+  （64c 機只裝得下一台 40c VM），把可行方案誤判成缺口（`capacity_planner.py::_worst_case_counts`）。
+- **機位上限的實作機制**：`max_bm` 不是逐台約束，而是 `solver.bm_group_caps` ——
+  對一組 BM 的 `bm_used` 指示變數加 `Σ used ≤ cap`，同一機制同時管「桶機位（跨機型 +
+  已購共同計數）」與「浮動已購池總量 ≤ count」（`solver.py:788-797`）。
+- **balance 目標的桶播種**：只用**真實 in-stock BM** 播種桶集合；純虛擬桶會貢獻 avail=0
+  把 min 釘死在 0，讓 (max−min) 退化成「minimize max」（`solver.py:1091-1106`）。
+- **顯式 VM pass-through**：`ProcurementRequest.vms` 的候選清單不動、永不落在虛擬 BM 上
+  （scheduler 的過濾是權威）；會驅動採買的需求一律走 `requirements`（`models.py:556-559`）。
+- **`fab=""` 單廠模式**：demand book 全空 fab = 整池規劃；混用空/具名 fab 會被
+  validator 拒絕（同批機器被兩個獨立滾動狀態賣兩次）；具名模式下 caps / committed
+  必須具名 fab，機型目錄可不具名（`models.py:688-721`）。
+- **已購池精準 drain**：`committed_entry_used` 按 committed_stock **entry index** 記帳，
+  roll-forward 扣的正是 solver 實際抽用的那筆（`models.py:579-582`）。
+- **INPUT_ERROR 前置檢查**：committed / allowed_bm_types 引用不存在機型、需求無任何可達
+  候選（含 network 沒有任何 cell 宣告過的情形）→ 帶可行動訊息的 INPUT_ERROR，
+  不會靜默當成 capacity 缺口（`capacity_planner.py:63-111,372-396`）。
 
 ---
 
