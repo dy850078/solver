@@ -403,6 +403,26 @@ DemandEntry.pool: str = ""        # 由 cluster 註冊資訊帶入（provenance 
   1. **by-池採買擴充**：池 owner 的殘量採買進池（虛擬 BM 掛 pool 標籤）。
   2. **spill 設定**：允許獨佔池 user 溢出吃共用池（per-cluster/pool config）。
 
+### Pool 是報表切面，不是平行功能
+
+「有池之後很多功能要不要 by 池看？」—— 要，但**不是每個功能各做一套 by-池
+邏輯**。pool 進了三個源頭之後，所有下游視圖**自動繼承**這個維度：
+
+| 源頭（一次實作）| 下游繼承（零額外設計）|
+|---|---|
+| cell key 加 pool 維度（`(fab, AG/DC, BGP[, pool])`）| 水位/容量報表 by 池展開、容量預測誤差 by 池、reconcile drifts 指到池 |
+| `DemandEntry.pool`（系統帶入）| 需求單 view 的 pool 標籤、承諾兌現率/計畫外比率 group by pool |
+| PO / committed / 採買虛擬 BM 掛 pool 標籤 | 採買 view 按池分列、供給命中率 by 池 |
+
+兩條紀律：
+
+1. **共用池的可落地可用量不含獨佔池容量**（誠實頭條的延伸：池只對 owner
+   可見，混算=系統性高估共用容量）。
+2. **無池的 fab 報表形狀完全不變**（pool 維度只在有池處展開）。
+
+反面原則：**不為池另開平行功能頁**。「檢視各池水位」是水位報表的一個
+group-by，不是新功能；「池的命中率」是四指標的一個切面，不是第五個指標。
+
 **Alternatives**：
 - (a) 池模擬成 pseudo-fab（利用 per-fab 自給自足迴圈隔離）—— 否決：池與本 fab
   其他機器共享 AG 拓撲與實體機位（`max_bm` 是物理的、跨池共用），假 fab 會把
@@ -517,6 +537,7 @@ E1 先於 E2（帳本是 demand_id 之根）；fleet events 提前到 E2.5（早
 | 18 | **獨佔池規劃期必須納入**：pool 標籤比照 BGP filter 模式（#36/#37 同構延伸）；計量單位 (AG/DC, BGP[, pool])；池內打散靠既有 reachable_buckets；池滿=雙開關（by-池採買 / spill 設定）| 不納入=系統性高估共用容量（D1 最惡性形態）；pseudo-fab 會算錯共用機位帳 | S6 併入 E2；spill 細部列 OQ |
 | 19 | **Roadmap E0–E5**：功能面先於命中率；E1 帳本先於 E2 快照；fleet events 提前至 E2.5 | 帳本是 demand_id 之根；機隊漂移早入模讓 E4 指標更準 | 各階段獨立交付可回滾 |
 | 20 | **名詞對齊**：採買落點語言=AG（虛擬 DC，實體至少散 3 櫃）；PO 表無桶沒關係（committed 浮動）| 對齊 #29/#10；rack 級屬 DC HW Team | — |
+| 21 | **Pool 是報表切面不是平行功能**：pool 進三個源頭（cell key / DemandEntry / PO·採買標籤），所有視圖與四指標自動繼承 by-池切面；共用可落地不含池容量；無池 fab 形狀不變；不為池另開功能頁 | 一次實作全域繼承，避免 by-池邏輯散落各功能各自為政 | S6 實作時落地三源頭 |
 
 ---
 
