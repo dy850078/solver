@@ -6,6 +6,8 @@
 > `/v1/capacity/plan`）；**缺口 3e/3f 僅完成設計、尚未實作**；backlog 見文末。
 > **相關元件**: `app/capacity_planner.py`、`app/splitter.py`、`app/split_solver.py`、
 > `app/solver.py`、`app/models.py`、`app/diagnostics.py`
+> **實作走讀**: 本文記錄「為什麼這樣設計」；程式碼從頭到尾怎麼運作
+> （變數/約束/目標/滾動流程的教學走讀）見 `docs/reading-guide-capacity-planner.md`。
 
 ---
 
