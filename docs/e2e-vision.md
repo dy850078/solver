@@ -513,6 +513,32 @@ E1 先於 E2（帳本是 demand_id 之根）；fleet events 提前到 E2.5（早
 
 ---
 
+## 附錄 — UI Mock（設計輔助，非實作）
+
+為了讓設計討論「有感覺」，本文附一份互動式 UI mock：
+**`docs/mockups/e2e-ui-mock.html`**（單檔、無依賴，瀏覽器直接開啟；
+頂部 Demand Orders / Procurement 分頁可切換，資料皆為示意）。
+深色樣式比照現有 `/ui/report.html`。
+
+### 需求單 view（demand_id 一條龍）
+
+展示設計主題 1：需求單狀態鏈、覆蓋來源三色條（in-stock / committed / 新採買）、
+展開的生命週期時間軸、計畫外執行、committed 池（`available_from` 人工維護）、
+reconcile 漂移列表與四個頭條指標（含週對帳點 sparkline）。
+
+![需求單 view](images/e2e-ui-demand.png)
+
+### 採買 view（同一份 plan 的採買投影）
+
+展示設計主題 1 的「兩個 view 分開」與決議 #43：fab ×（年,月）矩陣
+（大字=新採買 BM 台數、小字=需求 nodes、卡關月 what-if `≥` 下界、未規劃月
+「—」三態）、逐月採買長條圖、需求/供給/採買明細（node 與 BM 台數分欄）、
+池水位面板（決議 #21 的 by-池切面）。
+
+![採買 view](images/e2e-ui-procurement.png)
+
+---
+
 ## Decision Log
 
 | # | Decision | Reason | Follow-ups |

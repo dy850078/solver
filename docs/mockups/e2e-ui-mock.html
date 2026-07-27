@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Demand Orders — E2E Sample UI (mock)</title>
+<style>
+  :root{
+    --bg:#0b0e13; --card:#12161d; --card2:#171c25; --border:#232a35; --border2:#2d3644;
+    --text:#e6e9ef; --muted:#8b95a5; --subtle:#5b6472;
+    --accent:#3987e5;
+    --c-instock:#3987e5; --c-committed:#199e70; --c-newbuy:#d95926;
+    --f03:#3987e5; --f07:#d95926; --f12:#199e70;
+    --s-good:#0ca30c; --s-warn:#fab219; --s-serious:#ec835a; --s-crit:#d03b3b;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;}
+  .num{font-variant-numeric:tabular-nums}
+  a{color:var(--accent);text-decoration:none}
+
+  /* top nav */
+  .topbar{display:flex;align-items:center;gap:24px;padding:10px 28px;border-bottom:1px solid var(--border);
+    background:var(--card);position:sticky;top:0;z-index:5}
+  .brand{font-weight:600;font-size:13px;letter-spacing:.02em;color:var(--muted)}
+  .brand b{color:var(--text)}
+  nav{display:flex;gap:4px}
+  nav a{padding:6px 12px;border-radius:6px;color:var(--muted);font-size:13px;cursor:pointer}
+  nav a:hover{background:var(--card2);color:var(--text)}
+  nav a.on{background:var(--card2);color:var(--text);font-weight:600}
+  .plan-ctx{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}
+  .ctx-chip{border:1px solid var(--border2);border-radius:999px;padding:2px 10px;background:var(--card2)}
+  .ctx-chip code{color:var(--text);font-size:11px}
+
+  main{max-width:1180px;margin:0 auto;padding:24px 28px 64px;display:flex;flex-direction:column;gap:20px}
+  main[hidden]{display:none}
+  tr[hidden]{display:none}
+
+  .pagehead{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+  h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.01em}
+  .pagehead p{margin:2px 0 0;color:var(--muted);font-size:13px}
+  .actions{margin-left:auto;display:flex;gap:8px}
+  .btn{border:1px solid var(--border2);background:var(--card2);color:var(--text);border-radius:7px;
+    padding:7px 14px;font-size:13px;cursor:pointer}
+  .btn:hover{border-color:var(--subtle)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn:focus-visible,nav a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+  .tile{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .tile .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .tile .val{font-size:26px;font-weight:650;margin-top:4px;letter-spacing:-.01em}
+  .tile .sub{font-size:12px;color:var(--muted);margin-top:2px}
+  .tile .row{display:flex;align-items:flex-end;gap:12px}
+  .spark{margin-left:auto;flex:0 0 auto}
+  .delta-up{color:var(--s-good)}
+
+  section.card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .card-h{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .card-h h2{font-size:14px;margin:0;font-weight:650}
+  .card-h .hint{color:var(--muted);font-size:12px}
+  .legend{margin-left:auto;display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--subtle);
+    text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);font-weight:600}
+  td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+  tbody tr:hover{background:var(--card2)}
+  tr.expanded, tr.expanded:hover{background:var(--card2)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .dim{color:var(--muted)} .dimmer{color:var(--subtle)}
+  .tblwrap{overflow-x:auto}
+
+  .chip{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:2px 9px;
+    font-size:12px;font-weight:600;border:1px solid transparent;white-space:nowrap}
+  .st-ready   {color:var(--s-good);   border-color:color-mix(in srgb,var(--s-good) 45%,transparent);   background:color-mix(in srgb,var(--s-good) 12%,transparent)}
+  .st-building{color:var(--accent);   border-color:color-mix(in srgb,var(--accent) 45%,transparent);   background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .st-waitbuy {color:var(--s-warn);   border-color:color-mix(in srgb,var(--s-warn) 45%,transparent);   background:color-mix(in srgb,var(--s-warn) 10%,transparent)}
+  .st-waitship{color:var(--s-serious);border-color:color-mix(in srgb,var(--s-serious) 45%,transparent);background:color-mix(in srgb,var(--s-serious) 10%,transparent)}
+  .st-blocked {color:var(--s-crit);   border-color:color-mix(in srgb,var(--s-crit) 50%,transparent);   background:color-mix(in srgb,var(--s-crit) 12%,transparent)}
+  .st-done    {color:var(--muted);    border-color:var(--border2); background:var(--card2)}
+  .st-unplanned{color:var(--muted);border:1px dashed var(--subtle);background:transparent}
+
+  .covbar{display:flex;width:150px;height:8px;border-radius:4px;overflow:hidden;gap:2px}
+  .covbar i{display:block;height:100%}
+  .cov-instock{background:var(--c-instock)} .cov-committed{background:var(--c-committed)} .cov-newbuy{background:var(--c-newbuy)}
+  .covwrap{display:flex;align-items:center;gap:8px}
+  .covwrap .pct{font-size:11px;color:var(--muted)}
+
+  .progress{display:flex;align-items:center;gap:8px}
+  .pbar{width:70px;height:6px;border-radius:3px;background:var(--border);overflow:hidden}
+  .pbar i{display:block;height:100%;background:var(--accent);border-radius:3px}
+  .pbar i.hot{background:var(--s-serious)}
+
+  td.detail{padding:16px 20px 20px;background:var(--card2)}
+  .detail-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:24px}
+  @media (max-width:820px){.detail-grid{grid-template-columns:1fr}}
+  .timeline{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column}
+  .timeline li{position:relative;padding:0 0 14px 26px;font-size:13px}
+  .timeline li::before{content:"";position:absolute;left:7px;top:16px;bottom:-2px;width:2px;background:var(--border2)}
+  .timeline li:last-child::before{display:none}
+  .timeline .dot{position:absolute;left:0;top:2px;width:16px;height:16px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;font-size:10px;background:var(--card);
+    border:1.5px solid var(--border2);color:var(--muted)}
+  .timeline .done .dot{border-color:var(--s-good);color:var(--s-good)}
+  .timeline .now .dot{border-color:var(--s-warn);color:var(--s-warn)}
+  .timeline .t{color:var(--text)} .timeline small{color:var(--subtle);margin-left:6px}
+  .kv{margin:8px 0 0;font-size:13px}
+  .kv dt{color:var(--subtle);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-top:10px}
+  .kv dd{margin:2px 0 0}
+  .note{margin-top:14px;padding:10px 12px;border:1px solid var(--border2);border-left:3px solid var(--accent);
+    border-radius:6px;font-size:12px;color:var(--muted);background:var(--card)}
+
+  .drift-cat{font-size:11px;font-weight:700;border-radius:4px;padding:1px 7px;letter-spacing:.03em}
+  .dc-supply{color:var(--c-newbuy);background:color-mix(in srgb,var(--c-newbuy) 14%,transparent)}
+  .dc-demand{color:var(--c-instock);background:color-mix(in srgb,var(--c-instock) 14%,transparent)}
+  .dc-place{color:var(--c-committed);background:color-mix(in srgb,var(--c-committed) 14%,transparent)}
+
+  .explain{padding:10px 16px;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--muted);
+    background:var(--card2)}
+  .explain b{color:var(--text)}
+  footer{color:var(--subtle);font-size:12px;text-align:center;padding-top:8px}
+
+  /* fab filter */
+  .fabfilter{display:flex;gap:6px}
+  .fabfilter button{border:1px solid var(--border2);background:var(--card2);color:var(--muted);
+    border-radius:999px;padding:3px 12px;font-size:12px;cursor:pointer}
+  .fabfilter button.sel{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .fabfilter button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  .chartwrap{padding:14px 16px 8px;overflow-x:auto}
+
+  /* fab × month matrix */
+  table.matrix th, table.matrix td{text-align:center}
+  table.matrix th:first-child, table.matrix td:first-child{text-align:left}
+  table.matrix thead tr:first-child th{border-bottom:none;padding-bottom:2px}
+  table.matrix thead tr+tr th{padding-top:2px}
+  table.matrix thead th.yr{color:var(--muted);letter-spacing:.12em}
+  table.matrix thead th.yr:not(:first-child){border-left:1px solid var(--border2)}
+  table.matrix td.ynew{border-left:1px solid var(--border2)}
+  .mx .b{font-size:16px;font-weight:650;line-height:1.2}
+  .mx .s{font-size:11px;color:var(--muted)}
+  td.mx-block{background:color-mix(in srgb,var(--s-crit) 9%,transparent)}
+  td.mx-block .b{color:var(--s-crit)}
+  td.mx-idle{color:var(--subtle)}
+  tr.mx-total td{background:var(--card2);font-weight:600;border-top:2px solid var(--border2)}
+  .fab-dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  .pool-tag{font-size:11px;font-weight:600;border:1px solid var(--border2);border-radius:4px;
+    padding:1px 6px;color:var(--muted);background:var(--card2)}
+  .pool-tag.ded{color:var(--s-warn);border-color:color-mix(in srgb,var(--s-warn) 40%,transparent)}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand"><b>K8s Auto API</b> · Capacity</span>
+  <nav>
+    <a>Planner</a><a>Report</a><a>Topology</a>
+    <a class="on" data-view="demand" href="#">Demand Orders</a>
+    <a data-view="procure" href="#">Procurement</a>
+  </nav>
+  <div class="plan-ctx">
+    <span class="ctx-chip">計畫 <code>v2026-08.2</code></span>
+    <span class="ctx-chip">config fp <code>a3f9c2</code></span>
+    <span class="ctx-chip">上次對帳 <code>08-14 09:20</code></span>
+  </div>
+</div>
+
+<!-- ══════════════ VIEW 1 · DEMAND ORDERS ══════════════ -->
+<main data-view="demand">
+  <div class="pagehead">
+    <div>
+      <h1>需求單 Demand Orders</h1>
+      <p>由 demand_id 貫串：開單 → 納入計畫 → 採買/到貨 → 建置 → 對帳。滿足路徑每期重算，不綁定開單時的判定。</p>
+    </div>
+    <div class="actions">
+      <button class="btn">立即對帳</button>
+      <button class="btn">重跑規劃</button>
+      <button class="btn primary">＋ 開需求單</button>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="lbl">承諾兌現率（本月至今）</div>
+      <div class="row">
+        <div><div class="val num">92.4%</div>
+        <div class="sub num"><span class="delta-up">▲ 1.8</span> vs 上週 · 週對帳點</div></div>
+        <svg class="spark" width="86" height="34" viewBox="0 0 86 34" aria-label="近六週承諾兌現率走勢">
+          <polyline points="4,22 20,18 36,24 52,14 68,12 82,8" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="82" cy="8" r="3" fill="var(--accent)"/>
+        </svg>
+      </div>
+    </div>
+    <div class="tile">
+      <div class="lbl">容量預測誤差（月中 burn-down）</div>
+      <div class="val num">4.8%</div>
+      <div class="sub">可落地量 · 月底為正式成績</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">供給命中率</div>
+      <div class="val num">78%</div>
+      <div class="sub num">計畫生效 17 台 · 實際 ready 13 台</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">計畫外比率</div>
+      <div class="val num">11%</div>
+      <div class="sub num">3 筆執行未帶需求單（隕石）</div>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>需求單</h2><span class="hint">8 筆 · 2026-08 ~ 2026-10</span>
+      <div class="legend">
+        <span><i class="sw" style="background:var(--c-instock)"></i>in-stock</span>
+        <span><i class="sw" style="background:var(--c-committed)"></i>committed</span>
+        <span><i class="sw" style="background:var(--c-newbuy)"></i>需新採買</span>
+      </div>
+    </div>
+    <div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>demand_id</th><th>cluster / role</th><th>fab</th><th>月份</th>
+        <th>需求</th><th>狀態</th><th>覆蓋來源</th><th>建置進度</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">DMD-2608-003</td><td>cluster-core / <span class="dim">master</span></td>
+          <td>F07</td><td class="num">2026-08</td>
+          <td class="dim num">24c · 96Gi</td>
+          <td><span class="chip st-ready">● 可執行</span></td>
+          <td><div class="covwrap"><div class="covbar"><i class="cov-instock" style="width:100%"></i></div><span class="pct">現貨 100%</span></div></td>
+          <td class="progress num"><div class="pbar"><i style="width:0%"></i></div>0 / 3</td>
+        </tr>
+        <tr>
+          <td class="mono">DMD-2608-007</td><td>cluster-web / <span class="dim">worker</span></td>
+          <td>F12</td><td class="num">2026-08</td>
+          <td class="dim num">160c · 640Gi</td>
+          <td><span class="chip st-building">◐ 建置中</span></td>
+          <td><div class="covwrap"><div class="covbar"><i class="cov-instock" style="width:100%"></i></div><span class="pct">現貨 100%</span></div></td>
+          <td class="progress num"><div class="pbar"><i style="width:60%"></i></div>6 / 10</td>
+        </tr>
+        <tr class="expanded">
+          <td class="mono">DMD-2609-014</td><td>cluster-ml-a / <span class="dim">worker</span> <span class="pool-tag ded">pool-ml</span></td>
+          <td>F12</td><td class="num">2026-09</td>
+          <td class="dim num">128c · 512Gi · 600 pod</td>
+          <td><span class="chip st-waitbuy">⧗ 等待採買</span></td>
+          <td><div class="covwrap"><div class="covbar">
+            <i class="cov-instock" style="width:62%"></i><i class="cov-committed" style="width:25%"></i><i class="cov-newbuy" style="width:13%"></i>
+          </div><span class="pct num">10 / 4 / 2 台</span></div></td>
+          <td class="progress num"><div class="pbar"><i style="width:0%"></i></div>0 / 16</td>
+        </tr>
+        <tr class="expanded"><td class="detail" colspan="8">
+          <div class="detail-grid">
+            <div>
+              <div class="lbl" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--subtle)">生命週期</div>
+              <ul class="timeline">
+                <li class="done"><span class="dot">✓</span><span class="t">開單</span><small>07-28 · PM/大臣 · 增量 128c/512Gi/600pod</small></li>
+                <li class="done"><span class="dot">✓</span><span class="t">納入計畫 <span class="mono">v2026-08.2</span></span><small>08-01 · canonical run</small></li>
+                <li class="done"><span class="dot">✓</span><span class="t">採買提單</span><small>08-05 · 併入 F12 批次（BM 台數為多單合買，僅列關聯 PO）→ <span class="mono">PO-11834</span></small></li>
+                <li class="now"><span class="dot">⧗</span><span class="t">等待到貨</span><small>available_from 2026-09（人工維護，可調）</small></li>
+                <li><span class="dot">·</span><span class="t">可執行</span><small>全部 VM 落在 ready 機器後轉入</small></li>
+                <li><span class="dot">·</span><span class="t">建置</span><small>0 / 16 VM</small></li>
+              </ul>
+            </div>
+            <div>
+              <dl class="kv">
+                <dt>覆蓋拆解（計畫 v2026-08.2）</dt>
+                <dd class="num"><i class="sw" style="background:var(--c-instock)"></i>in-stock 10 台 VM（pool-ml · ag-0/ag-2 · bgp1）</dd>
+                <dd class="num"><i class="sw" style="background:var(--c-committed)"></i>committed 4 台 VM（PO-11790 池）</dd>
+                <dd class="num"><i class="sw" style="background:var(--c-newbuy)"></i>需新採買 2 台 VM（虛擬 BM · pool-ml · ag-1/bgp1）</dd>
+                <dt>關聯</dt>
+                <dd class="mono">plan v2026-08.2 · PO-11834 · executions —</dd>
+              </dl>
+              <div class="note">滿足路徑是每期重算的<b style="color:var(--text)">衍生屬性</b>：若下期 in-stock 騰出（如 release 事件），本單可能全轉現貨、採買建議自動歸零，無需人工改單。</div>
+            </div>
+          </div>
+        </td></tr>
+        <tr>
+          <td class="mono">DMD-2609-020</td><td>cluster-edge / <span class="dim">master</span></td>
+          <td>F03</td><td class="num">2026-09</td>
+          <td class="dim num">12c · 48Gi</td>
+          <td><span class="chip st-blocked">✕ 卡關</span></td>
+          <td><span class="dim" style="font-size:12px">anti_affinity：需 3 AG 打散，F03 只有 2 個</span></td>
+          <td class="progress num"><div class="pbar"><i style="width:0%"></i></div>0 / 3</td>
+        </tr>
+        <tr>
+          <td class="mono">DMD-2610-002</td><td>cluster-ml-b / <span class="dim">worker</span></td>
+          <td>F12</td><td class="num">2026-10</td>
+          <td class="dim num">256c · 1Ti</td>
+          <td><span class="chip st-waitship">⧗ 等待到貨</span></td>
+          <td><div class="covwrap"><div class="covbar">
+            <i class="cov-instock" style="width:30%"></i><i class="cov-committed" style="width:70%"></i>
+          </div><span class="pct num">6 / 14 台</span></div></td>
+          <td class="progress num"><div class="pbar"><i style="width:0%"></i></div>0 / 20</td>
+        </tr>
+        <tr>
+          <td class="mono">DMD-2607-001</td><td>cluster-web / <span class="dim">worker</span></td>
+          <td>F12</td><td class="num">2026-07</td>
+          <td class="dim num">96c · 384Gi</td>
+          <td><span class="chip st-done">✓ 已完成</span></td>
+          <td><div class="covwrap"><div class="covbar"><i class="cov-instock" style="width:100%"></i></div><span class="pct">現貨 100%</span></div></td>
+          <td class="progress num"><div class="pbar"><i style="width:100%"></i></div>10 / 10</td>
+        </tr>
+        <tr>
+          <td class="mono dimmer">EXEC-0812-2</td><td>cluster-lab / <span class="dim">worker</span></td>
+          <td>F07</td><td class="num">2026-08</td>
+          <td class="dim num">32c · 128Gi</td>
+          <td><span class="chip st-unplanned">◌ 計畫外執行</span></td>
+          <td><span class="dimmer" style="font-size:12px">未帶 demand_id · 計入計畫外比率</span></td>
+          <td class="progress num"><div class="pbar"><i style="width:100%"></i></div>4 / 4</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h2>Committed Stock（已購池）</h2><span class="hint">3 批 · F12</span></div>
+    <div class="explain">
+      <b>已下單採購、尚未被規劃消化的機器池。</b>對引擎是「零成本供給」：規劃永遠先用 in-stock、再消化這裡、最後才建議新買。
+      <b>available_from</b>（生效月）由人工維護——到貨時程受供貨/人為因素浮動，不做自動 ETA。
+    </div>
+    <div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>PO</th><th>機型</th><th>fab</th><th>台數</th><th>available_from</th><th>規劃消化</th><th>到貨狀態</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">PO-11834</td><td>XM-64</td><td>F12</td><td class="num">100</td>
+          <td><span class="ctx-chip num">2026-09 <span class="dimmer">✎ 人工維護</span></span></td>
+          <td class="progress num"><div class="pbar"><i style="width:16%"></i></div>16 / 100</td>
+          <td><span class="chip st-waitship">⧗ 未到貨</span></td>
+        </tr>
+        <tr>
+          <td class="mono">PO-11790</td><td>XM-64</td><td>F12</td><td class="num">100</td>
+          <td><span class="ctx-chip num">2026-08</span></td>
+          <td class="progress num"><div class="pbar"><i style="width:62%"></i></div>62 / 100</td>
+          <td><span class="chip st-ready">● ready 84</span> <span class="chip st-waitbuy">⧗ OS 中 16</span></td>
+        </tr>
+        <tr>
+          <td class="mono">PO-11655</td><td>HM-32</td><td>F12</td><td class="num">60</td>
+          <td><span class="ctx-chip num">2026-07</span></td>
+          <td class="progress num"><div class="pbar"><i style="width:100%"></i></div>60 / 60</td>
+          <td><span class="chip st-done">✓ 已用罄</span></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h"><h2>最近漂移（Reconcile 08-14）</h2><span class="hint">plan v2026-08.2 vs 實際快照</span></div>
+    <div class="tblwrap">
+    <table>
+      <thead><tr><th>類別</th><th>位置</th><th>說明</th><th>影響</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="drift-cat dc-supply">供給</span></td>
+          <td class="mono">F12</td>
+          <td><span class="mono">PO-11834</span> 到貨延遲，available_from 已改 2026-09</td>
+          <td class="dim num">9 月供給命中率預估 → 71%</td>
+        </tr>
+        <tr>
+          <td><span class="drift-cat dc-demand">需求</span></td>
+          <td class="mono">F12 / cluster-ml-a</td>
+          <td>8 月實際加 12 台，帳本寫 10 台（<span class="mono">DMD-2608-011</span>）</td>
+          <td class="dim num">需求漂移 +20%</td>
+        </tr>
+        <tr>
+          <td><span class="drift-cat dc-place">放置</span></td>
+          <td class="mono">F07 / ag-2 · bgp1</td>
+          <td>實際桶內佔用高於 roll-forward 預測</td>
+          <td class="dim num">可落地可用量 −6%</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <footer>Sample UI mock — 資料皆為示意，非真實環境。深色樣式比照現有 /ui/report.html。</footer>
+</main>
+
+<!-- ══════════════ VIEW 2 · PROCUREMENT ══════════════ -->
+<main data-view="procure" hidden>
+  <div class="pagehead">
+    <div>
+      <h1>採買 Procurement</h1>
+      <p>同一份計畫（v2026-08.2）的採買投影：每月 × 每 fab 的需求量、in-stock 可落地、committed 消化與新採買建議。</p>
+    </div>
+    <div class="actions">
+      <button class="btn">匯出 Excel</button>
+      <button class="btn primary">重跑規劃</button>
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="lbl">未來三月新採買建議</div>
+      <div class="val num">≥ 23 台 BM</div>
+      <div class="sub num">F12 14 · F07 6 · F03 ≥3（卡關月 what-if）</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">Committed 未消化</div>
+      <div class="val num">122 台</div>
+      <div class="sub num">其中已 ready 84 · 未到貨 84（PO-11834）</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">2026-09 需求</div>
+      <div class="val num">49 nodes</div>
+      <div class="sub num">缺口 3 nodes（F03 · anti-affinity）</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">不買累計缺口（至 2026-10）</div>
+      <div class="val num">≥ 23 台</div>
+      <div class="sub">= 每月採買量前綴和（決議 #43）</div>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>逐月新採買 BM 台數</h2><span class="hint">by fab · 2026-08 ~ 2026-10</span>
+      <div class="legend">
+        <span><i class="fab-dot" style="background:var(--f03)"></i>F03</span>
+        <span><i class="fab-dot" style="background:var(--f07)"></i>F07</span>
+        <span><i class="fab-dot" style="background:var(--f12)"></i>F12</span>
+        <span class="dimmer">虛線 = 卡關月 what-if 台數（下界 ≥）</span>
+      </div>
+    </div>
+    <div class="chartwrap">
+      <svg width="540" height="192" viewBox="0 0 540 192" role="img" aria-label="逐月新採買 BM 台數，依 fab 分組長條圖">
+        <!-- gridlines -->
+        <line x1="40" y1="150" x2="520" y2="150" stroke="var(--border2)" stroke-width="1"/>
+        <line x1="40" y1="90"  x2="520" y2="90"  stroke="var(--border)" stroke-width="1"/>
+        <line x1="40" y1="30"  x2="520" y2="30"  stroke="var(--border)" stroke-width="1"/>
+        <text x="32" y="154" fill="var(--subtle)" font-size="10" text-anchor="end" class="num">0</text>
+        <text x="32" y="94"  fill="var(--subtle)" font-size="10" text-anchor="end" class="num">4</text>
+        <text x="32" y="34"  fill="var(--subtle)" font-size="10" text-anchor="end" class="num">8</text>
+        <!-- 2026-08: all zero -->
+        <text x="120" y="144" fill="var(--subtle)" font-size="10" text-anchor="middle" class="num">0 · 0 · 0</text>
+        <text x="120" y="170" fill="var(--muted)" font-size="11" text-anchor="middle">2026-08</text>
+        <!-- 2026-09 cluster: F03 3(what-if) F07 4 F12 6 -->
+        <g>
+          <rect x="240" y="105" width="26" height="45" rx="3" fill="var(--f03)" fill-opacity=".3"
+                stroke="var(--f03)" stroke-width="1.5" stroke-dasharray="4 3"><title>F03 · 2026-09 · what-if ≥3 台（卡關月）</title></rect>
+          <text x="253" y="98" fill="var(--muted)" font-size="10" text-anchor="middle" class="num">≥3</text>
+          <rect x="272" y="90" width="26" height="60" rx="3" fill="var(--f07)"><title>F07 · 2026-09 · 4 台</title></rect>
+          <text x="285" y="83" fill="var(--muted)" font-size="10" text-anchor="middle" class="num">4</text>
+          <rect x="304" y="60" width="26" height="90" rx="3" fill="var(--f12)"><title>F12 · 2026-09 · 6 台</title></rect>
+          <text x="317" y="53" fill="var(--muted)" font-size="10" text-anchor="middle" class="num">6</text>
+          <text x="285" y="170" fill="var(--muted)" font-size="11" text-anchor="middle">2026-09</text>
+        </g>
+        <!-- 2026-10 cluster: F03 0 F07 2 F12 8 -->
+        <g>
+          <text x="423" y="144" fill="var(--subtle)" font-size="10" text-anchor="middle" class="num">0</text>
+          <rect x="439" y="120" width="26" height="30" rx="3" fill="var(--f07)"><title>F07 · 2026-10 · 2 台</title></rect>
+          <text x="452" y="113" fill="var(--muted)" font-size="10" text-anchor="middle" class="num">2</text>
+          <rect x="471" y="30" width="26" height="120" rx="3" fill="var(--f12)"><title>F12 · 2026-10 · 8 台</title></rect>
+          <text x="484" y="23" fill="var(--muted)" font-size="10" text-anchor="middle" class="num">8</text>
+          <text x="452" y="170" fill="var(--muted)" font-size="11" text-anchor="middle">2026-10</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>Fab × 月 矩陣</h2><span class="hint">大字 = 新採買 BM 台數 · 小字 = 需求 nodes</span>
+      <div class="legend">
+        <span><span class="chip st-blocked" style="font-size:11px;padding:1px 7px">✕ 卡關</span></span>
+        <span class="dimmer">「—」= 該月未規劃（非 0，月份三態）</span>
+      </div>
+    </div>
+    <div class="tblwrap">
+    <table class="matrix">
+      <thead>
+        <tr>
+          <th rowspan="2">fab</th>
+          <th class="yr" colspan="5">2026</th>
+          <th class="yr" colspan="1">2027</th>
+        </tr>
+        <tr><th>08</th><th>09</th><th>10</th><th>11</th><th>12</th><th>01</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f03)"></i>F03</td>
+          <td class="mx num"><div class="b">0</div><div class="s">6 nodes</div></td>
+          <td class="mx mx-block num"><div class="b">≥3</div><div class="s">3 nodes · AA 卡關</div></td>
+          <td class="mx mx-idle num"><div class="b">—</div><div class="s">未規劃</div></td>
+          <td class="mx mx-idle num"><div class="b">—</div></td>
+          <td class="mx mx-idle num"><div class="b">—</div></td>
+          <td class="mx mx-idle num ynew"><div class="b">—</div></td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td>
+          <td class="mx num"><div class="b">0</div><div class="s">12 nodes</div></td>
+          <td class="mx num"><div class="b">4</div><div class="s">30 nodes</div></td>
+          <td class="mx num"><div class="b">2</div><div class="s">8 nodes</div></td>
+          <td class="mx num"><div class="b">0</div><div class="s">6 nodes</div></td>
+          <td class="mx mx-idle num"><div class="b">—</div></td>
+          <td class="mx mx-idle num ynew"><div class="b">—</div></td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
+          <td class="mx num"><div class="b">0</div><div class="s">18 nodes</div></td>
+          <td class="mx num"><div class="b">6</div><div class="s">16 nodes</div></td>
+          <td class="mx num"><div class="b">8</div><div class="s">20 nodes</div></td>
+          <td class="mx mx-idle num"><div class="b">—</div><div class="s">未規劃</div></td>
+          <td class="mx num"><div class="b">5</div><div class="s">12 nodes</div></td>
+          <td class="mx num ynew"><div class="b">3</div><div class="s">8 nodes</div></td>
+        </tr>
+        <tr class="mx-total">
+          <td>合計</td>
+          <td class="num">0</td>
+          <td class="num">≥13</td>
+          <td class="num">10</td>
+          <td class="num">0</td>
+          <td class="num">5</td>
+          <td class="num ynew">3</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>需求 / 供給 / 採買明細</h2><span class="hint">fab × 月 · node 與 BM 兩種台數分開（決議 #23）</span>
+      <div class="fabfilter" role="group" aria-label="fab 篩選">
+        <button class="sel" data-fab="all">全部</button>
+        <button data-fab="F03">F03</button>
+        <button data-fab="F07">F07</button>
+        <button data-fab="F12">F12</button>
+      </div>
+    </div>
+    <div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>fab</th><th>月份</th><th>需求 (nodes)</th><th>in-stock 可落地 (nodes)</th>
+        <th>committed 消化 (台)</th><th>新採買 (BM 台)</th><th>不買累計 (台)</th><th>狀態</th>
+      </tr></thead>
+      <tbody>
+        <tr data-fab="F03">
+          <td><i class="fab-dot" style="background:var(--f03)"></i>F03</td><td class="num">2026-08</td>
+          <td class="num">6</td><td class="num dim">9</td><td class="num dim">0</td>
+          <td class="num">0</td><td class="num dim">0</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F03">
+          <td><i class="fab-dot" style="background:var(--f03)"></i>F03</td><td class="num">2026-09</td>
+          <td class="num">3</td><td class="num dim">6</td><td class="num dim">0</td>
+          <td class="num dim">what-if ≥3</td><td class="num">≥3</td>
+          <td><span class="chip st-blocked">✕ ANTI-AFFINITY</span></td>
+        </tr>
+        <tr data-fab="F03">
+          <td><i class="fab-dot" style="background:var(--f03)"></i>F03</td><td class="num">2026-10</td>
+          <td class="num dimmer">未規劃</td><td class="num dim">6</td><td class="num dim">0</td>
+          <td class="num dimmer">—</td><td class="num dimmer">≥3（攜前值）</td>
+          <td><span class="chip st-done">– 無成長</span></td>
+        </tr>
+        <tr data-fab="F07">
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td><td class="num">2026-08</td>
+          <td class="num">12</td><td class="num dim">20</td><td class="num dim">0</td>
+          <td class="num">0</td><td class="num dim">0</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F07">
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td><td class="num">2026-09</td>
+          <td class="num">30</td><td class="num dim">10</td><td class="num dim">0</td>
+          <td class="num">4</td><td class="num">4</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F07">
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td><td class="num">2026-10</td>
+          <td class="num">8</td><td class="num dim">4</td><td class="num dim">0</td>
+          <td class="num">2</td><td class="num">6</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F12">
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td><td class="num">2026-08</td>
+          <td class="num">18</td><td class="num dim">30</td><td class="num dim">62</td>
+          <td class="num">0</td><td class="num dim">0</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F12">
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td><td class="num">2026-09</td>
+          <td class="num">16</td><td class="num dim">8</td><td class="num dim">16</td>
+          <td class="num">6</td><td class="num">6</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+        <tr data-fab="F12">
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td><td class="num">2026-10</td>
+          <td class="num">20</td><td class="num dim">2</td><td class="num dim">20</td>
+          <td class="num">8</td><td class="num">14</td>
+          <td><span class="chip st-ready">● OK</span></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="explain" style="border-top:1px solid var(--border);border-bottom:none">
+      <b>讀法</b>：「需求」與「in-stock 可落地」是 <b>node 台數</b>（可落地 = 以參考 VM 尺標的 remaining_node_slots，非名目加總）；
+      「committed 消化」與「新採買」是 <b>BM 台數</b>。「不買累計」= 每月採買量的 per-fab 前綴和；
+      卡關月（F03 2026-09）繼續累計其 what-if 台數並從此標 <b>≥</b>（下界）。
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-h">
+      <h2>池水位 Pool Water Levels</h2><span class="hint">獨佔池 by (fab, pool) · 2026-08 現況</span>
+    </div>
+    <div class="explain">
+      <b>共用池的「可落地」不含獨佔池容量</b>——池只對 owner cluster 可見，混算會系統性高估共用容量。
+      pool 是報表的一個切面（cell key 多一維），不是平行功能。
+    </div>
+    <div class="tblwrap">
+    <table>
+      <thead><tr>
+        <th>fab</th><th>pool</th><th>範圍 (AG)</th><th>可落地 (nodes)</th><th>CPU 利用率</th><th>spill 設定</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
+          <td><span class="pool-tag ded">pool-ml（獨佔）</span> <span class="dim">cluster-ml-a/b</span></td>
+          <td class="mono dim">ag-0 / ag-1 / ag-2</td><td class="num">12</td>
+          <td class="progress num"><div class="pbar"><i style="width:68%"></i></div>68%</td>
+          <td><span class="chip st-done">off</span></td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
+          <td><span class="pool-tag ded">pool-db（獨佔）</span> <span class="dim">cluster-db</span></td>
+          <td class="mono dim">ag-0 / ag-1</td><td class="num">3</td>
+          <td class="progress num"><div class="pbar"><i class="hot" style="width:82%"></i></div>82%</td>
+          <td><span class="chip st-ready">● on（可溢出共用池）</span></td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
+          <td><span class="pool-tag">shared（共用）</span></td>
+          <td class="mono dim">ag-0 / ag-1 / ag-2</td><td class="num">41</td>
+          <td class="progress num"><div class="pbar"><i style="width:55%"></i></div>55%</td>
+          <td class="dimmer">—</td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td>
+          <td><span class="pool-tag ded">pool-cache（獨佔）</span> <span class="dim">cluster-cache</span></td>
+          <td class="mono dim">ag-0 / ag-2</td><td class="num">6</td>
+          <td class="progress num"><div class="pbar"><i style="width:74%"></i></div>74%</td>
+          <td><span class="chip st-done">off</span></td>
+        </tr>
+        <tr>
+          <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td>
+          <td><span class="pool-tag">shared（共用）</span></td>
+          <td class="mono dim">ag-0 / ag-1 / ag-2</td><td class="num">28</td>
+          <td class="progress num"><div class="pbar"><i style="width:48%"></i></div>48%</td>
+          <td class="dimmer">—</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <footer>Sample UI mock — 資料皆為示意，非真實環境。深色樣式比照現有 /ui/report.html。</footer>
+</main>
+
+<script>
+  const tabs = document.querySelectorAll('nav a[data-view]');
+  function show(v) {
+    tabs.forEach(x => x.classList.toggle('on', x.dataset.view === v));
+    document.querySelectorAll('main[data-view]').forEach(m => m.hidden = (m.dataset.view !== v));
+  }
+  tabs.forEach(t => t.addEventListener('click', e => { e.preventDefault(); show(t.dataset.view); }));
+  show(location.hash === '#procure' ? 'procure' : 'demand');
+  document.querySelectorAll('.fabfilter button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.fabfilter button').forEach(x => x.classList.toggle('sel', x === b));
+    const f = b.dataset.fab;
+    document.querySelectorAll('tr[data-fab]').forEach(r => r.hidden = (f !== 'all' && r.dataset.fab !== f));
+  }));
+</script>
+
+</body>
+</html>
