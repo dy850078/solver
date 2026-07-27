@@ -115,6 +115,24 @@ PlacementRequest / SplitPlacementRequest
 
 因此「還剩幾台 BM」無法回答「我還能不能滿足下一批需求」。需要換成**資源貨幣 + 有效剩餘量**。
 
+### 缺口總覽（design review 首場用：先需求、後實作）
+
+| 缺口 | 需求（一句話） | 為什麼需要（沒有它會怎樣） | 處理方式（設計摘要） | 狀態 |
+|---|---|---|---|---|
+| **1** Pod 維度 | 一台 node 的 Pod 有上限，sizing 要保證節點數容得下總 Pod 需求 | K8s 有 max-pods-per-node 實限；只按 CPU/Mem 算出的台數可能資源夠、Pod 塞不下 | 全域 `max_pods_per_node` → 節點數下限 `⌈pods/max⌉` 併入 splitter count 下限；placement 端零改動 | ✅ |
+| **2** 規劃模式（採買）| 還沒買機器時也要算得出「該買幾台」 | 既有引擎只能放進固定庫存（候選 BM 必填），回答不了採買量 | `BaremetalType` 機型模板 + `ProcurementCap` 桶機位上限；虛擬可採買 BM 進 joint solve，被用到的就是採買數 | ✅ |
+| **3a** 多期 roll-forward | 這個月的放置與採買要影響下個月的帳 | 單發 solve 無時間維；Q1 買的機器 Q2 才是庫存，不滾動會把同一批容量/機位賣兩次 | 每 (fab, 月) 一次 solve；庫存消耗、買機 materialize 成下月 in-stock、機位遞減、已購池 drain | ✅ |
+| **3b** 採買量算法 | 「買幾台、什麼型、放哪個桶」要可證明，不是估算 | 平均裝箱率忽略碎片與拓撲打散，系統性算錯採買量（替代方案 C 落選的原因） | 殘量 + 虛擬 BM 一次 CP-SAT 聯合解（機型選擇 + 落點 + 數量）；分層目標：台數最少 → 桶間平衡 | ✅ |
+| **3c** 報表與解釋性 | 頭條要「可落地可用量」；缺口要講得出成因 | 名目加總系統性高估 →「帳面夠卻擺不下」；只回台數說服不了長官與財務 | solve 結果本身舉證 + 四儀表（nominal / slots / stranded / balance）+ 結構化 `ShortfallDetail`（capacity / anti_affinity / space）| ✅（graceful partial、`space` 的桶標註待補）|
+| **3d** 需求單與 Provenance | User 只填意圖；現況一律由系統帶入 | User 填不了也不該填 cluster 現況；固定 12 期不符實務；「沒填」被誤讀成 0 會做錯決策 | `DemandEntry` 稀疏帳本、upsert 修訂、月份三態、horizon = 帳本月份；現況由 Go Scheduler 整合 Inventory 帶入 | ✅ |
+| **3e** 新舊節點一起打散 | anti-affinity 的作用範圍是整個 cluster，不是這批新節點 | 只平衡新批會長出全域傾斜的 cluster，報表還是綠燈（假陰性） | `ExistingDistribution` 每桶聚合數當基線；master 硬約束（容忍既有違規）、worker 軟約束 | ⚠️ 設計已定、未實作 |
+| **3f** 現有 VM 的 per-BM 佔用 | max_per_bm 要把既有 VM 算進去 | 否則規劃會把新 master 排到「資源夠但 1/BM 已滿」的機器上，與真實放置打架 | `ExistingBmOccupancy`（count-only，免 double count）；約束左邊加常數即可 | ⚠️ 設計已定、未實作 |
+| **3g** BGP 網路域隔離 | 整個 cluster 統一住某個 BGP 的機器 | 一個 AG 混多個 BGP，「往 ag-0 買」有歧義；cluster 只看得到自己 BGP 那部分容量 | 放置靠既有 `candidate_baremetals` 過濾（零改動）；採買與計量以 `(bucket, network)` 配對為單位 | ✅ |
+| **3h** 已採購庫存 | 已買未上架的機器要先用完，才建議買新的 | 回答「已買各 100 台夠不夠、各型還缺幾台」；否則採買建議會重複花錢 | `CommittedStock` 低權重層；三層順序 in-stock → committed → 新買 | ✅ |
+
+> 另有兩項**設計已定、列 backlog**：機隊事件簿（建新拆舊，決議 #40）與
+> no-buy what-if 情境（決議 #43 第二層）——review 時可作為「下一步」收尾。
+
 ---
 
 ## Proposed Design
