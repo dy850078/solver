@@ -112,6 +112,10 @@ class ResourceSplitter:
         # vm_id → BoolVar (1 = this synthetic slot is active / must be placed)
         self.active_vars: dict[str, cp_model.IntVar] = {}
         self.synthetic_vms: list[VM] = []
+        # vm_id → index into self.requirements. The synthetic id also encodes
+        # the index, but downstream attribution (E0/S2) must not depend on
+        # the id format.
+        self.vm_req_of: dict[str, int] = {}
 
         # specs actually used per requirement (for solution extraction)
         self._req_specs: dict[int, list[Resources]] = {}
@@ -237,6 +241,7 @@ class ResourceSplitter:
                 vm_id = f"split-r{req_idx}-s{spec_idx}-{k}"
                 active_var = self.model.new_bool_var(f"active_{vm_id}")
                 self.active_vars[vm_id] = active_var
+                self.vm_req_of[vm_id] = req_idx
                 active_vars_for_spec.append(active_var)
                 self.synthetic_vms.append(VM(
                     id=vm_id,

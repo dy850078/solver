@@ -42,8 +42,10 @@ from .models import (
     PlacementRequest,
     PlacementResult,
     ProcurementDecision,
+    DemandCoverage,
     ProcurementRequest,
     ProcurementResult,
+    RequirementCoverage,
     ResourceRequirement,
     Resources,
     ShortfallDetail,
@@ -556,6 +558,37 @@ def _to_result(request: ProcurementRequest, p: _Pass,
         p.splitter.get_split_decisions(p.cp_solver) if p.cp_solver else []
     )
 
+    # Per-requirement coverage by source (E0/S2). Runs pre-roll-forward, so
+    # virtual-BM ids are still recognizable. Membership in the virtual maps
+    # is definitive; anything else the solver placed on must be in-stock
+    # (candidates are drawn from in_stock ∪ virtual only). Explicit
+    # request.vms are absent from vm_req_of and excluded by design.
+    vm_req = p.splitter.vm_req_of if p.splitter is not None else {}
+    cov: dict[int, Counter] = {}
+    for a in r.assignments:
+        ri = vm_req.get(a.vm_id)
+        if ri is None:
+            continue
+        if a.baremetal_id in p.buyable_type_of:
+            src = "new_buy"
+        elif a.baremetal_id in p.committed_type_of:
+            src = "committed"
+        else:
+            src = "in_stock"
+        cov.setdefault(ri, Counter())[src] += 1
+    requirement_coverage = [
+        RequirementCoverage(
+            requirement_index=i,
+            cluster_id=req.cluster_id,
+            node_role=req.node_role,
+            in_stock=cov.get(i, Counter())["in_stock"],
+            committed=cov.get(i, Counter())["committed"],
+            new_buy=cov.get(i, Counter())["new_buy"],
+            total=sum(cov.get(i, Counter()).values()),
+        )
+        for i, req in enumerate(request.requirements)
+    ]
+
     # Health gauges over the post-placement state: all in-stock BMs plus the
     # virtual BMs actually used (an unused buyable BM doesn't exist).
     placed: dict[str, Resources] = {}
@@ -587,6 +620,7 @@ def _to_result(request: ProcurementRequest, p: _Pass,
     return ProcurementResult(
         success=success,
         procurement=procurement,
+        requirement_coverage=requirement_coverage,
         committed_used=committed_used,
         committed_entry_used=committed_entry_used,
         split_decisions=split_decisions,
@@ -723,10 +757,28 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 all_ok = False
                 failed_period = period
 
+            # Join coverage rows back to demand-book rows by index —
+            # preq.requirements was built as [e.to_requirement() for e in
+            # entries], so requirement_index i ⇔ entries[i].
+            demand_coverage = [
+                DemandCoverage(
+                    demand_id=entries[rc.requirement_index].demand_id,
+                    cluster_id=rc.cluster_id,
+                    node_role=rc.node_role,
+                    period=period,
+                    fab=fab,
+                    in_stock=rc.in_stock,
+                    committed=rc.committed,
+                    new_buy=rc.new_buy,
+                    total=rc.total,
+                )
+                for rc in res.requirement_coverage
+            ]
+
             reports.append(_period_report(
                 fab, period, res, stock, dim,
                 node_adds_per_cell, bought_per_cell, own_per_cell,
-                stock_used_per_cell,
+                stock_used_per_cell, demand_coverage,
             ))
 
     budget_view = [
@@ -860,7 +912,8 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
                    stock_after: list[Baremetal], dim: str,
                    node_adds_per_cell: Counter, bought_per_cell: Counter,
                    own_per_cell: Counter,
-                   stock_used_per_cell: Counter) -> PeriodFabReport:
+                   stock_used_per_cell: Counter,
+                   demand_coverage: list[DemandCoverage]) -> PeriodFabReport:
     # Post-month in-stock snapshot per (bucket, network) cell — for a failed
     # month the state is unchanged, so the snapshot shows what was available.
     cell_stock: dict[tuple[str, str], dict[str, Resources]] = {}
@@ -911,6 +964,7 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
         stranded_available=res.stranded_available,
         balance_after=res.balance_after,
         cells=cells,
+        demand_coverage=demand_coverage,
     )
 
 

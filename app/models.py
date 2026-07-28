@@ -588,10 +588,29 @@ class ProcurementRequest(BaseModel):
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
+class RequirementCoverage(BaseModel):
+    """
+    Planned-VM counts for one requirement, by supply source (E0/S2).
+    Classification is pre-roll-forward: "in_stock" means in-stock at the
+    START of this solve — machines acquired in earlier planner months have
+    already materialized into in-stock and count as such.
+    """
+    requirement_index: int
+    cluster_id: str = ""
+    node_role: NodeRole = NodeRole.WORKER
+    in_stock: int = 0
+    committed: int = 0
+    new_buy: int = 0
+    total: int = 0                    # == in_stock + committed + new_buy
+
+
 class ProcurementResult(BaseModel):
     """Output for the procurement endpoint."""
     success: bool
     procurement: list[ProcurementDecision] = Field(default_factory=list)
+    # Per-requirement coverage by source; one row per requirement, zeros on
+    # a failed solve. Requirement-driven (synthetic) VMs only.
+    requirement_coverage: list[RequirementCoverage] = Field(default_factory=list)
     # Draws from committed_stock (already-owned machines put to use).
     committed_used: list[ProcurementDecision] = Field(default_factory=list)
     # Draws per committed_stock entry INDEX (exact-entry accounting so
@@ -663,6 +682,10 @@ class DemandEntry(BaseModel):
     fab: str = ""                     # "" = single-fab mode (matches all BMs)
     network: str = ""                 # BGP domain filter (缺口 3g)
     allowed_bm_types: list[str] | None = None   # 決議 #38
+    # Caller-supplied opaque id (E0/S2), echoed in demand_coverage. The
+    # solver never interprets it; rows without one are still identified by
+    # (cluster_id, node_role, period, fab).
+    demand_id: str | None = None
 
     def to_requirement(self) -> ResourceRequirement:
         return ResourceRequirement(
@@ -791,6 +814,19 @@ class BucketMonthCell(BaseModel):
     in_stock_available: Resources = Field(default_factory=Resources)
 
 
+class DemandCoverage(BaseModel):
+    """RequirementCoverage joined back to its demand-book row (E0/S2)."""
+    demand_id: str | None = None
+    cluster_id: str
+    node_role: NodeRole
+    period: str
+    fab: str = ""
+    in_stock: int = 0
+    committed: int = 0
+    new_buy: int = 0
+    total: int = 0
+
+
 class PeriodFabReport(BaseModel):
     """One fab × month: headline counts + evidence + drill-down cells."""
     fab: str
@@ -812,6 +848,8 @@ class PeriodFabReport(BaseModel):
     stranded_available: Resources | None = None
     balance_after: dict[str, int] = Field(default_factory=dict)
     cells: list[BucketMonthCell] = Field(default_factory=list)
+    # Per-demand coverage by source (E0/S2); empty on blocked stubs.
+    demand_coverage: list[DemandCoverage] = Field(default_factory=list)
 
 
 class CapacityReport(BaseModel):

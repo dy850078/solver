@@ -690,12 +690,14 @@ class TestReviewFixes:
 # ===========================================================================
 
 def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
-          role=NodeRole.WORKER, spec=None, fab="", network="", allowed=None):
+          role=NodeRole.WORKER, spec=None, fab="", network="", allowed=None,
+          demand_id=None):
     return DemandEntry(
         cluster_id=cluster, node_role=role, period=period,
         cpu_cores=cpu, memory_mib=mem, storage_gb=disk, pod_count=pods,
         vm_specs=[spec] if spec else None,
         fab=fab, network=network, allowed_bm_types=allowed,
+        demand_id=demand_id,
     )
 
 
@@ -1165,6 +1167,102 @@ class TestCommittedAvailableFrom:
         assert r.procured_bm_total == 0
 
 
+class TestRequirementCoverage:
+    """S2: per-requirement / per-demand coverage by supply source."""
+
+    def test_coverage_sums_equal_planned_vms(self):
+        """Invariant: per row total == in_stock+committed+new_buy, and the
+        grand total equals the planned VM count from split_decisions."""
+        # A bought "mid" holds only 4 of the 6 planned VMs, so the free
+        # in-stock machine must host the rest — both sources appear.
+        in_stock = [make_bm("bm-1", cpu=16, mem=64_000, disk=400, ag="ag-1")]
+        types = [make_type("mid", 32, 128_000, 1000)]
+
+        r = procure(make_req(cpu=48, spec=SPEC_8), in_stock, types)
+
+        assert r.success
+        assert len(r.requirement_coverage) == 1
+        row = r.requirement_coverage[0]
+        assert row.total == row.in_stock + row.committed + row.new_buy
+        assert row.total == sum(d.count for d in r.split_decisions)
+        assert row.in_stock == 2 and row.new_buy == 4
+
+    def test_coverage_classifies_three_sources(self):
+        """One requirement forced across all three tiers: in-stock fills
+        first (free), then committed (w_committed_stock), then a new buy."""
+        in_stock = [make_bm("bm-1", cpu=16, mem=64_000, disk=400, ag="ag-1")]
+        types = [make_type("small", 16, 64_000, 400)]
+        committed = [CommittedStock(type_id="small", count=1)]
+
+        r = procure(make_req(cpu=48, spec=SPEC_8), in_stock, types,
+                    committed=committed)
+
+        assert r.success
+        row = r.requirement_coverage[0]
+        assert (row.in_stock, row.committed, row.new_buy) == (2, 2, 2)
+        assert r.committed_bm_used == 1 and r.procured_bm_total == 1
+
+    def test_coverage_excludes_explicit_vms(self):
+        """Explicit request.vms are pass-through placement, not requirement-
+        driven: they never appear in coverage counts."""
+        in_stock = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000, ag="ag-1")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        vm = make_vm("vm-explicit", cpu=8, mem=16_000, disk=100,
+                     candidates=["bm-1"])
+
+        r = procure(make_req(cpu=16, spec=SPEC_8), in_stock, types, vms=[vm])
+
+        assert r.success
+        row = r.requirement_coverage[0]
+        assert row.total == 2  # the two synthetic VMs only, not vm-explicit
+
+    def test_coverage_rows_zero_on_infeasible(self):
+        """A failed solve still emits one row per requirement, all zeros —
+        consistent shape for consumers."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100, ag="ag-1")]
+
+        r = procure(make_req(cpu=64, spec=SPEC_8), in_stock, [])
+
+        assert not r.success
+        assert len(r.requirement_coverage) == 1
+        row = r.requirement_coverage[0]
+        assert (row.in_stock, row.committed, row.new_buy, row.total) == (0, 0, 0, 0)
+
+    def test_demand_coverage_echoes_demand_id(self):
+        """The horizon joins coverage back to demand rows: demand_id is a
+        pass-through echo, absent ids stay None but rows remain identified."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8, cluster="c-a",
+                      demand_id="D-42"),
+                entry("2026-01", cpu=16, spec=SPEC_8, cluster="c-b")]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        cov = {c.cluster_id: c for c in r.by_fab_period[0].demand_coverage}
+        assert cov["c-a"].demand_id == "D-42"
+        assert cov["c-b"].demand_id is None
+        assert cov["c-a"].period == "2026-01"
+        assert cov["c-a"].total == 2
+
+    def test_demand_coverage_pre_roll_forward_across_months(self):
+        """A machine bought in month 1 is month 2's in-stock: month 2 demand
+        landing on it classifies as in_stock, not new_buy (documented
+        RequirementCoverage semantics)."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=32, spec=SPEC_8),
+                entry("2026-02", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        m1 = by_period["2026-01"].demand_coverage[0]
+        m2 = by_period["2026-02"].demand_coverage[0]
+        assert m1.new_buy == 4 and m1.in_stock == 0
+        assert m2.in_stock == m2.total == 2 and m2.new_buy == 0
+
+
 class TestPlanEndpoint:
 
     def test_endpoint_smoke(self, client):
@@ -1191,6 +1289,9 @@ class TestPlanEndpoint:
         data = resp.json()
         assert data["success"]
         assert data["totals"]["bm_procurement"] >= 1
+        cov = data["by_fab_period"][0]["demand_coverage"]
+        assert cov and cov[0]["cluster_id"] == "c1"
+        assert cov[0]["total"] == cov[0]["in_stock"] + cov[0]["committed"] + cov[0]["new_buy"]
 
 
 # ===========================================================================
@@ -1222,3 +1323,4 @@ class TestProcureEndpoint:
         data = resp.json()
         assert data["success"]
         assert data["procured_bm_total"] >= 1
+        assert data["requirement_coverage"][0]["new_buy"] >= 1

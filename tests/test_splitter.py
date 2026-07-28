@@ -694,3 +694,35 @@ class TestPodDimension:
         r = split_solve(req, bms, max_pods_per_node=110)
 
         assert not r.success
+
+
+class TestVmReqOfMap:
+    """S2: the splitter's explicit vm_id → requirement-index map."""
+
+    def test_vm_req_of_maps_every_synthetic_vm(self):
+        """Every synthetic VM is in vm_req_of and maps back to the
+        requirement that minted it (checked via cluster_id) — downstream
+        coverage attribution must not depend on the id format."""
+        from ortools.sat.python import cp_model
+
+        from app.splitter import ResourceSplitter
+
+        bms = [make_bm("bm-1"), make_bm("bm-2", ag="ag-2", rack="rack-2")]
+        spec = Resources(cpu_cores=8, memory_mib=16_000, storage_gb=100)
+        reqs = [
+            make_req(cpu=16, vm_specs=[spec], cluster="c-a",
+                     candidate_bms=["bm-1", "bm-2"]),
+            make_req(cpu=8, vm_specs=[spec], cluster="c-b",
+                     candidate_bms=["bm-1", "bm-2"]),
+        ]
+
+        splitter = ResourceSplitter(
+            cp_model.CpModel(), reqs, bms,
+            SolverConfig(auto_generate_anti_affinity=False),
+        )
+        vms = splitter.build()
+
+        assert vms
+        assert set(splitter.vm_req_of) == {vm.id for vm in vms}
+        for vm in vms:
+            assert reqs[splitter.vm_req_of[vm.id]].cluster_id == vm.cluster_id
