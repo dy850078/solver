@@ -4,13 +4,13 @@
       "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-01",
       "cpu_cores": 64, "memory_mib": 128000, "storage_gb": 800, "pod_count": 200,
       "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
-      "fab": "fab-a"
+      "fab": "fab-a", "demand_id": "DMD-app-2026-01"
     },
     {
       "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-02",
       "cpu_cores": 192, "memory_mib": 384000, "storage_gb": 2400,
       "vm_specs": [{"cpu_cores": 8, "memory_mib": 16000, "storage_gb": 100}],
-      "fab": "fab-a"
+      "fab": "fab-a", "demand_id": "DMD-app-2026-02"
     },
     {
       "cluster_id": "cluster-app", "node_role": "worker", "period": "2026-03",
@@ -63,7 +63,7 @@
     {"fab": "fab-b", "bucket": "ag-1", "max_bm": 1}
   ],
   "committed_stock": [
-    {"type_id": "big-64c", "count": 1, "fab": "fab-a"}
+    {"type_id": "big-64c", "count": 1, "fab": "fab-a", "available_from": "2026-02"}
   ],
   "config": {
     "auto_generate_anti_affinity": false,
