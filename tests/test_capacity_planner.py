@@ -1051,6 +1051,120 @@ class TestP3ReviewFixes:
         assert "2026-02" in m3.shortfalls[0].message
 
 
+class TestCommittedAvailableFrom:
+    """S1: CommittedStock.available_from — hand-maintained month gate."""
+
+    def test_available_from_gates_until_month(self):
+        """A pool arriving in month 2 must not serve month 1: month 1 buys,
+        month 2 drains the now-available pool instead of buying again."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1,
+                                    available_from="2026-02")]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].committed_bm_used == 0
+        assert by_period["2026-01"].bm_procurement_total == 1
+        assert by_period["2026-02"].committed_bm_used == 1
+        assert by_period["2026-02"].bm_procurement_total == 0
+
+    def test_available_from_equal_month_usable(self):
+        """The gate is inclusive: available_from == first period drains in
+        month 1 (mirror of test_committed_pool_drains_across_months)."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1,
+                                    available_from="2026-01")]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        assert r.by_fab_period[0].committed_bm_used == 1
+        assert r.by_fab_period[0].bm_procurement_total == 0
+
+    def test_available_from_leftover_carries(self):
+        """A gated-then-active pool behaves like any pool afterwards: partial
+        drain leaves the remainder for later months, no buying."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=2,
+                                    available_from="2026-01")]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].committed_bm_used == 1
+        assert by_period["2026-02"].committed_bm_used == 1
+        assert r.totals["bm_procurement"] == 0
+
+    def test_available_from_gating_preserves_entry_indices(self):
+        """The month-1 filter must not shift committed_entry_used onto the
+        gated entry: entry 0 (available now) drains in month 1, entry 1
+        (arrives month 2) still has its full count for month 2. If gating
+        skewed indices, month 1's drain would eat entry 1 and month 2 would
+        be forced to buy."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [
+            CommittedStock(type_id="big", count=1),
+            CommittedStock(type_id="big", count=1, available_from="2026-02"),
+        ]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].committed_bm_used == 1
+        assert by_period["2026-02"].committed_bm_used == 1
+        assert r.totals["bm_procurement"] == 0
+
+    def test_available_from_beyond_horizon_never_used(self):
+        """Stock arriving after the last planned month is legitimate input:
+        never offered, never drained, no error — every month buys."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=5,
+                                    available_from="2027-01")]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        assert r.totals["bm_procurement"] == 2
+        assert all(p.committed_bm_used == 0 for p in r.by_fab_period)
+
+    def test_available_from_bad_format_rejected(self):
+        """Malformed months must fail validation: '2026/07' sorts after every
+        valid 'YYYY-MM' and would silently gate the entry forever."""
+        import pytest
+        from pydantic import ValidationError
+
+        for bad in ("2026/07", "202607", "2026-13", "2026-1"):
+            with pytest.raises(ValidationError, match="available_from"):
+                CommittedStock(type_id="big", count=1, available_from=bad)
+
+    def test_procure_ignores_available_from(self):
+        """The single-shot endpoint has no period concept: a far-future
+        available_from is ignored and the pool still drains before buying."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1,
+                                    available_from="2099-01")]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8), [], types,
+                    committed=committed)
+
+        assert r.success
+        assert r.committed_bm_used == 1
+        assert r.procured_bm_total == 0
+
+
 class TestPlanEndpoint:
 
     def test_endpoint_smoke(self, client):

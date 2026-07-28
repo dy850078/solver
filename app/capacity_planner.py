@@ -624,7 +624,9 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
         (nodes are sticky — no reshuffling, 決議/替代方案 B);
       - each materialized machine consumes one slot from every matching
         bucket cap (max_bm decreases, 決議 #30);
-      - committed pools drain as they are used.
+      - committed pools drain as they are used;
+      - committed entries with a future `available_from` are withheld until
+        their month arrives (S1; inclusive gate, ISO month order).
 
     Months absent from the book are absent from the report (unplanned ≠ zero
     growth, 決議 #26). Fabs are independent pools (決議 #4). When a month
@@ -682,7 +684,16 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 reports.append(_blocked_report(fab, period, failed_period))
                 continue
 
-            active_committed = [c for c in committed_state if c.count > 0]
+            # Month gate: an entry with a future available_from is withheld
+            # (untouched, re-evaluated next period); ISO "YYYY-MM" strings
+            # compare chronologically. This same list is both the index space
+            # of committed_entry_used and the drain target in _roll_forward,
+            # so filtering here cannot skew entry indices.
+            active_committed = [
+                c for c in committed_state
+                if c.count > 0
+                and (c.available_from is None or c.available_from <= period)
+            ]
             preq = ProcurementRequest(
                 requirements=[e.to_requirement() for e in entries],
                 in_stock=stock,

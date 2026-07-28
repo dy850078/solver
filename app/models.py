@@ -9,6 +9,7 @@ Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 """
 
 from __future__ import annotations
+import re
 from enum import Enum
 from typing import Any, Literal
 
@@ -541,12 +542,29 @@ class CommittedStock(BaseModel):
     type_id must reference one of the request's procurement_types.
     bucket set → the machines land in that bucket; None → floating, the
     solver picks landing buckets (at most `count` used across all buckets).
+
+    available_from: optional "YYYY-MM" gate, maintained by hand (delivery
+    dates float; no automated ETA). In the multi-period planner
+    (/v1/capacity/plan) the entry is offered only from that month onward,
+    inclusive. The single-shot /v1/capacity/procure endpoint has no period
+    concept, so the field is ignored there (entry treated as available now).
     """
     type_id: str
     count: int = Field(ge=0)
     bucket: str | None = None
     network: str = ""
     fab: str = ""
+    available_from: str | None = None
+
+    @field_validator("available_from")
+    @classmethod
+    def _validate_available_from(cls, v: str | None) -> str | None:
+        # A malformed month must not pass: lexical compare against "YYYY-MM"
+        # periods would sort e.g. "2026/07" after every valid month and
+        # silently gate the entry forever.
+        if v is not None and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", v):
+            raise ValueError(f"available_from must be 'YYYY-MM', got {v!r}")
+        return v
 
 
 class ProcurementRequest(BaseModel):
