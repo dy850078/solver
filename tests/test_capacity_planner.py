@@ -1127,6 +1127,32 @@ class TestCommittedAvailableFrom:
         assert by_period["2026-02"].committed_bm_used == 1
         assert r.totals["bm_procurement"] == 0
 
+    def test_available_from_drain_attribution_by_type(self):
+        """Drain must hit the entry the solver actually drew from, not
+        position 0 of the UNFILTERED pool. Distinguishable type_ids make the
+        attribution observable: month 1 can only draw type B (A is gated),
+        so month 2 must draw the newly arrived type A. A naive drain against
+        the unfiltered list would decrement A in month 1 and silently
+        re-offer B in month 2 (phantom capacity) — total procurement stays 0
+        either way (drain conserves pool size), so only this per-type
+        assertion discriminates the bug."""
+        types = [make_type("typeA", 64, 256_000, 2000),
+                 make_type("typeB", 64, 256_000, 2000)]
+        committed = [
+            CommittedStock(type_id="typeA", count=1, available_from="2026-02"),
+            CommittedStock(type_id="typeB", count=1),
+        ]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, [], types, committed=committed)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert [d.type_id for d in by_period["2026-01"].committed_used] == ["typeB"]
+        assert [d.type_id for d in by_period["2026-02"].committed_used] == ["typeA"]
+        assert r.totals["bm_procurement"] == 0
+
     def test_available_from_beyond_horizon_never_used(self):
         """Stock arriving after the last planned month is legitimate input:
         never offered, never drained, no error — every month buys."""
