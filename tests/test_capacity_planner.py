@@ -1292,6 +1292,8 @@ class TestPlanEndpoint:
         cov = data["by_fab_period"][0]["demand_coverage"]
         assert cov and cov[0]["cluster_id"] == "c1"
         assert cov[0]["total"] == cov[0]["in_stock"] + cov[0]["committed"] + cov[0]["new_buy"]
+        import re
+        assert re.fullmatch(r"[0-9a-f]{12}", data["config_fingerprint"])
 
 
 # ===========================================================================
@@ -1324,3 +1326,5 @@ class TestProcureEndpoint:
         assert data["success"]
         assert data["procured_bm_total"] >= 1
         assert data["requirement_coverage"][0]["new_buy"] >= 1
+        import re
+        assert re.fullmatch(r"[0-9a-f]{12}", data["config_fingerprint"])

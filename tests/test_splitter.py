@@ -525,6 +525,8 @@ class TestSplitEndpoint:
         assert out["success"] is True
         assert len(out["split_decisions"]) >= 1
         assert len(out["assignments"]) >= 4  # 16 CPU / 4 CPU per VM
+        import re
+        assert re.fullmatch(r"[0-9a-f]{12}", out["config_fingerprint"])
 
 
 # ===========================================================================

@@ -47,6 +47,7 @@ from .models import (
     PlacementRequest,
     PlacementResult,
     Resources,
+    config_fingerprint,
 )
 
 logger = logging.getLogger(__name__)
@@ -1143,8 +1144,16 @@ class VMPlacementSolver:
         """
         Build the model, solve it, return results.
 
-        This is the main entry point.
+        This is the main entry point. Thin wrapper so every return path of
+        _solve (input error / infeasible / exception / success) carries the
+        config fingerprint (E0/S4) — stamping per-literal would silently
+        miss a future early-return.
         """
+        result = self._solve()
+        result.config_fingerprint = config_fingerprint(self.config)
+        return result
+
+    def _solve(self) -> PlacementResult:
         start = time.time()
 
         # Reject requests with input errors — scheduler must fix upstream.

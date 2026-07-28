@@ -9,8 +9,12 @@ Virtual:  AG (availability group) — each rack belongs to exactly 1 AG
 """
 
 from __future__ import annotations
+import hashlib
+import json
 import re
 from enum import Enum
+from functools import lru_cache
+from importlib import metadata
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -385,6 +389,38 @@ class SolverConfig(BaseModel):
         return v
 
 
+@lru_cache(maxsize=1)
+def _engine_versions() -> tuple[str, str]:
+    """(engine, ortools) versions; process-constant, cached. Fallback keeps
+    the fingerprint computable when package metadata is absent."""
+    def _ver(pkg: str) -> str:
+        try:
+            return metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            return "0+unknown"
+    return _ver("vm-placement-solver"), _ver("ortools")
+
+
+def config_fingerprint(config: SolverConfig) -> str:
+    """
+    12-hex-char sha256 over (effective SolverConfig, engine version, ortools
+    version) — echoed on every response (E0/S4) so the caller can correlate
+    a result with the exact solver behavior knobs that produced it, and a
+    reconcile pass can flag config/engine drift between plan and execution.
+    json.dumps(sort_keys=True) canonicalizes recursively (covers the
+    target_spread dict); list order (e.g. vm_specs) stays significant on
+    purpose — a different spec order is a different effective config.
+    """
+    engine, ortools_ver = _engine_versions()
+    payload = {
+        "config": config.model_dump(mode="json"),
+        "engine": engine,
+        "ortools": ortools_ver,
+    }
+    canon = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canon.encode()).hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # Solver I/O: the JSON contract
 # ---------------------------------------------------------------------------
@@ -419,6 +455,9 @@ class PlacementResult(BaseModel):
     # total number of BMs provided in the request (len(request.baremetals)).
     bm_used_count: int = 0
     bm_total_count: int = 0
+    # sha256[:12] over effective config + engine/ortools versions (E0/S4);
+    # "" only in payloads from pre-upgrade peers.
+    config_fingerprint: str = ""
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:
@@ -498,6 +537,8 @@ class SplitPlacementResult(BaseModel):
     # total number of BMs provided in the request (len(request.baremetals)).
     bm_used_count: int = 0
     bm_total_count: int = 0
+    # sha256[:12] over effective config + engine/ortools versions (E0/S4).
+    config_fingerprint: str = ""
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     def to_assignment_map(self) -> dict[str, str]:
@@ -625,6 +666,8 @@ class ProcurementResult(BaseModel):
     shortfall_cause: str = "none"
     solver_status: str = ""
     solve_time_seconds: float = 0.0
+    # sha256[:12] over effective config + engine/ortools versions (E0/S4).
+    config_fingerprint: str = ""
     in_stock_bm_used: int = 0
     procured_bm_total: int = 0
     committed_bm_used: int = 0
@@ -868,3 +911,5 @@ class CapacityReport(BaseModel):
     # Aggregates over SUCCESSFUL months only, consistent with budget_view.
     totals: dict[str, Any] = Field(default_factory=dict)
     solve_time_seconds: float = 0.0
+    # sha256[:12] over effective config + engine/ortools versions (E0/S4).
+    config_fingerprint: str = ""

@@ -50,6 +50,7 @@ from .models import (
     Resources,
     ShortfallDetail,
     Topology,
+    config_fingerprint,
 )
 from .splitter import (
     RESOURCE_FIELDS,
@@ -63,6 +64,14 @@ logger = logging.getLogger(__name__)
 
 
 def solve_capacity_plan(request: ProcurementRequest) -> ProcurementResult:
+    """Public entry point: every return path (INPUT_ERROR bails included)
+    carries the config fingerprint (E0/S4)."""
+    result = _solve_capacity_plan(request)
+    result.config_fingerprint = config_fingerprint(request.config)
+    return result
+
+
+def _solve_capacity_plan(request: ProcurementRequest) -> ProcurementResult:
     start = time.time()
 
     # Empty procurement_types is a valid request ("can this fit in-stock
@@ -810,6 +819,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
         budget_view=budget_view,
         totals=totals,
         solve_time_seconds=time.time() - start,
+        config_fingerprint=config_fingerprint(config),
     )
 
 

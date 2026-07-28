@@ -1229,3 +1229,85 @@ class TestAntiAffinitySelector:
         assert r.success
         ags = {a.ag for a in r.assignments}
         assert len(ags) == 3
+
+
+# ===========================================================================
+# Config fingerprint (E0/S4)
+# ===========================================================================
+
+class TestConfigFingerprint:
+    """The 12-hex hash over (effective config, engine, ortools versions)
+    echoed on every response so callers can attribute results to the exact
+    solver behavior knobs that produced them."""
+
+    def test_format_and_determinism(self):
+        import re
+        from app.models import config_fingerprint
+        fp = config_fingerprint(SolverConfig())
+        assert re.fullmatch(r"[0-9a-f]{12}", fp)
+        assert fp == config_fingerprint(SolverConfig())
+
+    def test_dict_order_insensitive(self):
+        """Canonical JSON (sort_keys) must erase dict insertion order —
+        semantically equal configs may arrive with reordered target_spread."""
+        from app.models import config_fingerprint
+        a = SolverConfig(target_spread={"ag": 3, "room": 2})
+        b = SolverConfig(target_spread={"room": 2, "ag": 3})
+        assert config_fingerprint(a) == config_fingerprint(b)
+
+    def test_sensitive_to_weight_change(self):
+        from app.models import config_fingerprint
+        a = SolverConfig(w_consolidation=10)
+        b = SolverConfig(w_consolidation=11)
+        assert config_fingerprint(a) != config_fingerprint(b)
+
+    def test_stable_across_processes(self):
+        """Guards against per-process ordering/hash-seed leaking into the
+        hash: a fresh interpreter must reproduce the same fingerprint."""
+        import subprocess
+        import sys
+        from app.models import config_fingerprint
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "from app.models import config_fingerprint, SolverConfig;"
+             "print(config_fingerprint(SolverConfig()))"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert out == config_fingerprint(SolverConfig())
+
+    def test_present_on_success_and_on_input_error(self):
+        """The wrapper stamps every return path — a failure must still be
+        attributable to the config that produced it."""
+        import re
+        bms = [make_bm("bm-1")]
+        ok = solve([make_vm("vm-1", candidates=["bm-1"])], bms)
+        assert re.fullmatch(r"[0-9a-f]{12}", ok.config_fingerprint)
+
+        request = PlacementRequest(
+            vms=[make_vm("vm-1", candidates=[])], baremetals=bms,
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        err = VMPlacementSolver(request).solve()
+        assert err.solver_status.startswith("INPUT_ERROR")
+        assert err.config_fingerprint == ok.config_fingerprint
+
+    def test_http_solve_endpoint_carries_fingerprint(self, client):
+        import re
+        body = {
+            "vms": [{
+                "id": "vm-1",
+                "demand": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
+                "cluster_id": "c1",
+                "candidate_baremetals": ["bm-1"],
+            }],
+            "baremetals": [{
+                "id": "bm-1",
+                "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+                "topology": {"ag": "ag-1"},
+            }],
+            "config": {"auto_generate_anti_affinity": False},
+        }
+        resp = client.post("/v1/placement/solve", json=body)
+        assert resp.status_code == 200
+        assert re.fullmatch(r"[0-9a-f]{12}", resp.json()["config_fingerprint"])

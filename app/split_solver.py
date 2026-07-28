@@ -12,7 +12,12 @@ import time
 
 from ortools.sat.python import cp_model
 
-from .models import PlacementRequest, SplitPlacementRequest, SplitPlacementResult
+from .models import (
+    PlacementRequest,
+    SplitPlacementRequest,
+    SplitPlacementResult,
+    config_fingerprint,
+)
 from .splitter import ResourceSplitter
 from .solver import VMPlacementSolver
 
@@ -20,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 
 def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResult:
+    """Public entry point: every return path (early NO_VMS bail included)
+    carries the config fingerprint (E0/S4)."""
+    result = _solve_split_placement(request)
+    result.config_fingerprint = config_fingerprint(request.config)
+    return result
+
+
+def _solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResult:
     """
     1. Build a shared CpModel.
     2. ResourceSplitter adds split variables + coverage constraints → synthetic VMs.
