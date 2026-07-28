@@ -435,10 +435,14 @@ function renderDetail(p) {
       <dd>${p.stranded_available == null ? "— (no min-useful spec)" : resourcesLine(p.stranded_available)}</dd>
     </dl>`;
 
+  // Pool column only when any cell carries a dedicated-pool tag (E2/S6) —
+  // pool-less plans render pixel-identical to before.
+  const hasPools = (p.cells || []).some((c) => c.pool);
   const cells = (p.cells || []).map((c) => `
       <tr>
         <td class="mono">${esc(c.bucket) || "—"}</td>
         <td class="mono">${esc(c.network) || "—"}</td>
+        ${hasPools ? `<td class="mono">${esc(c.pool) || "—"}</td>` : ""}
         <td class="num">${fmt(c.node_adds)}</td>
         <td class="num">${fmt(c.bm_bought)}</td>
         <td class="num">${fmt(c.committed_used)}</td>
@@ -473,11 +477,11 @@ function renderDetail(p) {
     </div>
 
     ${cells ? `
-      <p class="subhead" style="margin-top:20px">Cells — (bucket, network) drill-down · machine counts this month</p>
+      <p class="subhead" style="margin-top:20px">Cells — (bucket, network${hasPools ? ", pool" : ""}) drill-down · machine counts this month</p>
       <div class="table-wrap">
         <table class="tbl">
           <thead><tr>
-            <th>Bucket</th><th>Network</th>
+            <th>Bucket</th><th>Network</th>${hasPools ? "<th>Pool</th>" : ""}
             <th class="num">Node adds</th><th class="num">BM bought</th><th class="num">Committed</th>
             <th class="num">In-stock used</th>
           </tr></thead>
@@ -507,15 +511,17 @@ function renderBudget(report) {
       <span class="barstrip__val">${fmt(n)}</span>
     </div>`).join("");
 
+  const hasPoolRows = rows.some((r) => r.pool);
   $("budget-table").innerHTML = `
     <thead><tr>
-      <th>Fab</th><th>Bucket</th><th>Network</th><th>Month</th><th>Model</th><th class="num">BM count</th>
+      <th>Fab</th><th>Bucket</th><th>Network</th>${hasPoolRows ? "<th>Pool</th>" : ""}<th>Month</th><th>Model</th><th class="num">BM count</th>
     </tr></thead>
     <tbody>${rows.map((r) => `
       <tr>
         <td>${esc(r.fab) || "—"}</td>
         <td class="mono">${esc(r.bucket) || "—"}</td>
         <td class="mono">${esc(r.network) || "—"}</td>
+        ${hasPoolRows ? `<td class="mono">${esc(r.pool) || "—"}</td>` : ""}
         <td class="mono">${esc(r.period)}</td>
         <td class="mono">${esc(r.type_id) || "—"}</td>
         <td class="num">${fmt(r.bm_count)}</td>
@@ -569,16 +575,18 @@ function reportToSheets(report) {
     ]);
   }
 
-  const budget = [["Fab", "Bucket", "Network", "Month", "Model", "BM count"]];
+  const budget = [["Fab", "Bucket", "Network", "Pool", "Month", "Model", "BM count"]];
   for (const r of report.budget_view || [])
-    budget.push([r.fab || "", r.bucket || "", r.network || "", r.period,
-      r.type_id || "", r.bm_count || 0]);
+    budget.push([r.fab || "", r.bucket || "", r.network || "", r.pool || "",
+      r.period, r.type_id || "", r.bm_count || 0]);
 
-  const cells = [["Fab", "Month", "Bucket", "Network", "Node adds", "BM bought",
-    "Committed used", "In-stock used", "In-stock CPU total", "In-stock CPU free"]];
+  const cells = [["Fab", "Month", "Bucket", "Network", "Pool", "Node adds",
+    "BM bought", "Committed used", "In-stock used", "In-stock CPU total",
+    "In-stock CPU free"]];
   for (const p of report.by_fab_period)
     for (const c of p.cells || [])
       cells.push([p.fab || "", p.period, c.bucket || "", c.network || "",
+        c.pool || "",
         c.node_adds || 0, c.bm_bought || 0, c.committed_used || 0,
         c.in_stock_bm_used || 0,
         c.in_stock_total?.cpu_cores || 0, c.in_stock_available?.cpu_cores || 0]);

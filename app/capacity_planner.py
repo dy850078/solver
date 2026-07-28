@@ -664,7 +664,10 @@ def _to_result(request: ProcurementRequest, p: _Pass,
     # (candidates are drawn from in_stock ∪ virtual only). Explicit
     # request.vms are absent from vm_req_of and excluded by design.
     vm_req = p.splitter.vm_req_of if p.splitter is not None else {}
+    bm_pool_of = {bm.id: bm.pool for bm in request.in_stock}
+    bm_pool_of.update({bid: bm.pool for bid, bm in p.virtual_bms.items()})
     cov: dict[int, Counter] = {}
+    spilled: Counter = Counter()
     for a in r.assignments:
         ri = vm_req.get(a.vm_id)
         if ri is None:
@@ -676,6 +679,11 @@ def _to_result(request: ProcurementRequest, p: _Pass,
         else:
             src = "in_stock"
         cov.setdefault(ri, Counter())[src] += 1
+        # Spilled = a pool requirement's VM landed on shared supply (E2/S6).
+        # Overlaps in_stock/committed; the total invariant is untouched.
+        if (request.requirements[ri].pool
+                and bm_pool_of.get(a.baremetal_id, "") == ""):
+            spilled[ri] += 1
     requirement_coverage = [
         RequirementCoverage(
             requirement_index=i,
@@ -685,6 +693,7 @@ def _to_result(request: ProcurementRequest, p: _Pass,
             committed=cov.get(i, Counter())["committed"],
             new_buy=cov.get(i, Counter())["new_buy"],
             total=sum(cov.get(i, Counter()).values()),
+            spilled=spilled[i],
         )
         for i, req in enumerate(request.requirements)
     ]
@@ -785,7 +794,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
     fabs = list(dict.fromkeys(e.fab for e in request.demand_book))
 
     reports: list[PeriodFabReport] = []
-    budget: Counter = Counter()   # (fab, bucket, network, period) -> bought
+    budget: Counter = Counter()   # (fab, bucket, network, pool, period) -> bought
     all_ok = True
 
     for fab in fabs:
@@ -857,9 +866,9 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 _roll_forward(stock, caps_state, active_committed, res,
                               dim, period)
                 for bm in res.bought_bms:
-                    bucket, network = _cell_of(bm, dim)
+                    bucket, network, bm_pool = _cell_of(bm, dim)
                     type_id = res.bought_type_of.get(bm.id, "")
-                    budget[(fab, bucket, network, period, type_id)] += 1
+                    budget[(fab, bucket, network, bm_pool, period, type_id)] += 1
             else:
                 all_ok = False
                 failed_period = period
@@ -878,6 +887,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                     committed=rc.committed,
                     new_buy=rc.new_buy,
                     total=rc.total,
+                    spilled=rc.spilled,
                 )
                 for rc in res.requirement_coverage
             ]
@@ -889,8 +899,9 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             ))
 
     budget_view = [
-        BudgetRow(fab=f, bucket=b, network=n, period=pd, type_id=t, bm_count=cnt)
-        for (f, b, n, pd, t), cnt in sorted(budget.items())
+        BudgetRow(fab=f, bucket=b, network=n, pool=pl, period=pd, type_id=t,
+                  bm_count=cnt)
+        for (f, b, n, pl, pd, t), cnt in sorted(budget.items())
     ]
     # Aggregates cover SUCCESSFUL months only (consistent with budget_view);
     # a failed month's numbers are what-if output and live only in its own
@@ -942,18 +953,20 @@ def _blocked_report(fab: str, period: str, failed_period: str) -> PeriodFabRepor
     )
 
 
-def _cell_of(bm: Baremetal, dim: str) -> tuple[str, str]:
-    """The (bucket, network) planning cell a BM belongs to (決議 #37)."""
-    return (getattr(bm.topology, dim), bm.network)
+def _cell_of(bm: Baremetal, dim: str) -> tuple[str, str, str]:
+    """The (bucket, network, pool) planning cell a BM belongs to (決議 #37;
+    pool coordinate added by E2/S6 — "" for the shared pool, so no-pool
+    requests keep their exact pre-pool cell set)."""
+    return (getattr(bm.topology, dim), bm.network, bm.pool)
 
 
 def _cell_attribution(
     res: ProcurementResult, stock: list[Baremetal], dim: str,
 ) -> tuple[Counter, Counter, Counter, Counter]:
     """Count this month's node adds / buys / committed draws / distinct
-    in-stock machines touched, per (bucket, network) cell, using
+    in-stock machines touched, per (bucket, network, pool) cell, using
     pre-roll-forward ids."""
-    cell_by_id: dict[str, tuple[str, str]] = {}
+    cell_by_id: dict[str, tuple[str, str, str]] = {}
     stock_ids = {bm.id for bm in stock}
     for bm in stock:
         cell_by_id[bm.id] = _cell_of(bm, dim)
@@ -1022,9 +1035,11 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
                    own_per_cell: Counter,
                    stock_used_per_cell: Counter,
                    demand_coverage: list[DemandCoverage]) -> PeriodFabReport:
-    # Post-month in-stock snapshot per (bucket, network) cell — for a failed
-    # month the state is unchanged, so the snapshot shows what was available.
-    cell_stock: dict[tuple[str, str], dict[str, Resources]] = {}
+    # Post-month in-stock snapshot per (bucket, network, pool) cell — for a
+    # failed month the state is unchanged, so the snapshot shows what was
+    # available. Pool-less requests only ever produce pool="" keys, keeping
+    # the pre-pool cell set intact (E2/S6).
+    cell_stock: dict[tuple[str, str, str], dict[str, Resources]] = {}
     for bm in stock_after:
         agg = cell_stock.setdefault(_cell_of(bm, dim), {
             "total": Resources(), "used": Resources(),
@@ -1042,17 +1057,19 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
     empty = {"total": Resources(), "used": Resources()}
     cells = [
         BucketMonthCell(
-            fab=fab, bucket=bucket, network=network, period=period,
-            node_adds=node_adds_per_cell.get((bucket, network), 0),
-            bm_bought=bought_per_cell.get((bucket, network), 0),
-            committed_used=own_per_cell.get((bucket, network), 0),
-            in_stock_bm_used=stock_used_per_cell.get((bucket, network), 0),
+            fab=fab, bucket=bucket, network=network, pool=bm_pool,
+            period=period,
+            node_adds=node_adds_per_cell.get(cell, 0),
+            bm_bought=bought_per_cell.get(cell, 0),
+            committed_used=own_per_cell.get(cell, 0),
+            in_stock_bm_used=stock_used_per_cell.get(cell, 0),
             in_stock_total=agg["total"],
             in_stock_used=agg["used"],
             in_stock_available=agg["total"] - agg["used"],
         )
-        for (bucket, network) in sorted(all_cells)
-        for agg in [cell_stock.get((bucket, network), empty)]
+        for cell in sorted(all_cells)
+        for (bucket, network, bm_pool) in [cell]
+        for agg in [cell_stock.get(cell, empty)]
     ]
 
     return PeriodFabReport(

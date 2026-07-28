@@ -1237,6 +1237,68 @@ class TestDedicatedPools:
         assert not r.success
         assert "allow_spill" in r.solver_status
 
+    def test_budget_and_cells_carry_pool(self):
+        """Purchases split by pool in both projections: budget rows and
+        drill-down cells carry the pool coordinate."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8, cluster="c-shared"),
+                entry("2026-01", cpu=16, spec=SPEC_8, cluster="c-ml",
+                      pool="pool-ml")]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        by_pool = {row.pool: row.bm_count for row in r.budget_view}
+        assert by_pool == {"": 1, "pool-ml": 1}
+        cell_pools = {c.pool for c in r.by_fab_period[0].cells if c.bm_bought}
+        assert cell_pools == {"", "pool-ml"}
+
+    def test_pool_tag_survives_roll_forward(self):
+        """A machine bought into the pool in month 1 is month 2's own-pool
+        in-stock: the tag rides model_copy through materialization."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8, pool="pool-ml"),
+                entry("2026-02", cpu=16, spec=SPEC_8, pool="pool-ml")]
+
+        r = plan(book, [], types)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].bm_procurement_total == 1
+        assert by_period["2026-02"].bm_procurement_total == 0
+        assert by_period["2026-02"].in_stock_bm_used == 1
+
+    def test_spilled_coverage_counter(self):
+        """Coverage tells the user their pool demand ran on borrowed shared
+        hardware: spilled overlays in_stock, the total invariant holds."""
+        in_stock = [make_bm("bm-shared")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8, pool="pool-ml")]
+
+        r = plan(book, in_stock, types, policies=policies)
+
+        assert r.success
+        cov = r.by_fab_period[0].demand_coverage[0]
+        assert cov.spilled == 2
+        assert cov.in_stock == 2
+        assert cov.total == cov.in_stock + cov.committed + cov.new_buy == 2
+
+    def test_pool_less_plan_keeps_shape(self):
+        """No pools anywhere → every cell and budget row carries pool="" and
+        the cell set matches the pre-pool (bucket, network) granularity."""
+        in_stock = [make_bm("bm-1", cpu=8, mem=16_000, disk=100)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        book = [entry("2026-01", cpu=24, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types)
+
+        assert r.success
+        assert all(c.pool == "" for c in r.by_fab_period[0].cells)
+        assert all(row.pool == "" for row in r.budget_view)
+        assert all(cov.spilled == 0
+                   for cov in r.by_fab_period[0].demand_coverage)
+
     def test_horizon_passes_policies_through(self):
         """/v1/capacity/plan path: the fab-filtered policy list reaches every
         month's solve — spill works end-to-end through the horizon."""

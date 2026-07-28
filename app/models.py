@@ -684,6 +684,9 @@ class RequirementCoverage(BaseModel):
     committed: int = 0
     new_buy: int = 0
     total: int = 0                    # == in_stock + committed + new_buy
+    # VMs placed on shared supply via a spill contract (E2/S6). Overlaps the
+    # counts above; does not enter the total invariant.
+    spilled: int = 0
 
 
 class ProcurementResult(BaseModel):
@@ -893,6 +896,8 @@ class BudgetRow(BaseModel):
     fab: str
     bucket: str
     network: str
+    # Dedicated-pool destination of the purchase (E2/S6); "" = shared pool.
+    pool: str = ""
     period: str
     type_id: str = ""
     bm_count: int
@@ -900,13 +905,17 @@ class BudgetRow(BaseModel):
 
 class BucketMonthCell(BaseModel):
     """
-    Planning-report drill-down cell at the (fab, bucket, network, month)
-    granularity — never per BM/rack (決議 #21/#37). The in-stock figures are
-    the post-month state (what the next month starts from).
+    Planning-report drill-down cell at the (fab, bucket, network[, pool],
+    month) granularity — never per BM/rack (決議 #21/#37). The in-stock
+    figures are the post-month state (what the next month starts from).
+    The pool coordinate (E2/S6) only produces extra rows where dedicated
+    pools exist; pool-less requests keep their pre-pool cell set.
     """
     fab: str
     bucket: str
     network: str
+    # Dedicated-pool coordinate; "" = shared pool.
+    pool: str = ""
     period: str
     node_adds: int = 0
     bm_bought: int = 0
@@ -932,6 +941,10 @@ class DemandCoverage(BaseModel):
     committed: int = 0
     new_buy: int = 0
     total: int = 0
+    # Of the counts above, how many VMs landed on SHARED supply via a spill
+    # contract (E2/S6). Overlaps in_stock/committed — the total invariant
+    # (total == in_stock + committed + new_buy) is unchanged.
+    spilled: int = 0
 
 
 class PeriodFabReport(BaseModel):
