@@ -102,6 +102,11 @@ class Baremetal(BaseModel):
     # attribute, not a spread dimension — clusters live entirely inside one
     # domain and never spread across domains. "" = untagged.
     network: str = ""
+    # Dedicated-pool tag (E2/S6). A filter attribute, not a spread dimension.
+    # "" = the shared pool — a DISTINCT domain, not a wildcard: shared demand
+    # never lands on pool-tagged hosts and pool demand only reaches shared
+    # hosts via an explicit PoolPolicy(allow_spill=True).
+    pool: str = ""
 
     @property
     def available_capacity(self) -> Resources:
@@ -504,6 +509,12 @@ class ResourceRequirement(BaseModel):
     # this requirement's residual demand may only buy / draw these
     # BaremetalType ids. None = any type in the fab.
     allowed_bm_types: list[str] | None = None
+    # Dedicated-pool membership (E2/S6). Consumed ONLY by the capacity
+    # planner's candidate assembly (like allowed_bm_types); the splitter and
+    # plain placement ignore it. Unlike `network`, "" is a distinct domain
+    # (shared pool), never a wildcard: pool="" demand sees only shared BMs,
+    # pool="X" demand sees pool-X BMs (+ shared, when PoolPolicy allows spill).
+    pool: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
 
 
@@ -595,6 +606,10 @@ class CommittedStock(BaseModel):
     bucket: str | None = None
     network: str = ""
     fab: str = ""
+    # Dedicated-pool destination (E2/S6): machines from this PO belong to the
+    # named pool; "" = shared pool. Same distinct-domain semantics as
+    # Baremetal.pool.
+    pool: str = ""
     available_from: str | None = None
 
     @field_validator("available_from")
@@ -725,6 +740,9 @@ class DemandEntry(BaseModel):
     fab: str = ""                     # "" = single-fab mode (matches all BMs)
     network: str = ""                 # BGP domain filter (缺口 3g)
     allowed_bm_types: list[str] | None = None   # 決議 #38
+    # Dedicated-pool membership (E2/S6), system-filled from the cluster
+    # registry. "" = shared pool (distinct domain, not a wildcard).
+    pool: str = ""
     # Caller-supplied opaque id (E0/S2), echoed in demand_coverage. The
     # solver never interprets it; rows without one are still identified by
     # (cluster_id, node_role, period, fab).
@@ -748,6 +766,7 @@ class DemandEntry(BaseModel):
             max_total_vms=self.max_total_vms,
             total_pods=self.pod_count,
             network=self.network,
+            pool=self.pool,
             allowed_bm_types=self.allowed_bm_types,
         )
 

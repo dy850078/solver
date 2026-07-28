@@ -18,12 +18,15 @@ def client():
 
 def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
             used_cpu=0, used_mem=0, used_disk=0,
-            ag="ag-1", dc="dc-1", room="room-1", rack="rack-1"):
+            ag="ag-1", dc="dc-1", room="room-1", rack="rack-1",
+            network="", pool=""):
     return Baremetal(
         id=bm_id,
         total_capacity=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
         used_capacity=Resources(cpu_cores=used_cpu, memory_mib=used_mem, storage_gb=used_disk),
         topology=Topology(site="site-a", phase="p1", datacenter=dc, room=room, rack=rack, ag=ag),
+        network=network,
+        pool=pool,
     )
 
 

@@ -196,7 +196,7 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     cell_members: dict[tuple[str, str], list[str]] = {}
 
     def add_virtual(bm_id: str, capacity: Resources, bucket: str,
-                    network: str, rep: Topology) -> None:
+                    network: str, rep: Topology, pool: str = "") -> None:
         # Each virtual BM gets a unique synthetic rack: a newly purchased
         # machine can always be racked apart (rack placement is the DC
         # hardware team's call, 決議 #29), so rack-level anti-affinity must
@@ -211,27 +211,37 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
             used_capacity=Resources(),
             topology=rep.model_copy(update=updates),
             network=network,
+            pool=pool,
         )
+        # Slot membership is pool-agnostic on purpose: machine slots are
+        # physical, shared across pools (E2/S6).
         cell_members.setdefault((bucket, network), []).append(bm_id)
 
     # Committed stock first (it occupies slots and reduces what's left to buy).
-    pool_groups: list[tuple[set[str], int]] = []
+    # ("floating group" = cardinality cap of one floating committed entry;
+    # unrelated to the dedicated-pool dimension.)
+    floating_groups: list[tuple[set[str], int]] = []
     for idx, cs in enumerate(request.committed_stock):
         if cs.count <= 0:
             continue
         capacity = type_by_id[cs.type_id].capacity
+        # Named-pool machines get an id suffix so shared-pool ids stay
+        # byte-identical to the pre-pool format (back-compat).
+        pool_sfx = f"|{cs.pool}" if cs.pool else ""
         if cs.bucket is not None:
             rep = cells.get((cs.bucket, cs.network), Topology(**{dim: cs.bucket}))
             for k in range(cs.count):
-                bm_id = f"own{idx}-{cs.type_id}-{cs.bucket}|{cs.network}-{k}"
-                add_virtual(bm_id, capacity, cs.bucket, cs.network, rep)
+                bm_id = (f"own{idx}-{cs.type_id}-{cs.bucket}|{cs.network}"
+                         f"{pool_sfx}-{k}")
+                add_virtual(bm_id, capacity, cs.bucket, cs.network, rep,
+                            pool=cs.pool)
                 committed_type_of[bm_id] = cs.type_id
                 committed_entry_of[bm_id] = idx
         else:
-            # Floating: copies in every network-compatible cell; a pool-wide
-            # cardinality cap keeps total usage within the owned count. Per
-            # cell, never more copies than the cell's slot cap allows.
-            pool: set[str] = set()
+            # Floating: copies in every network-compatible cell; a cardinality
+            # cap keeps total usage within the owned count. Per cell, never
+            # more copies than the cell's slot cap allows.
+            floating_ids: set[str] = set()
             for (bucket, network), rep in cells.items():
                 if cs.network and network != cs.network:
                     continue
@@ -240,27 +250,38 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
                 if bound is not None:
                     copies = min(copies, bound)
                 for k in range(copies):
-                    bm_id = f"own{idx}-{cs.type_id}-{bucket}|{network}-{k}"
-                    add_virtual(bm_id, capacity, bucket, network, rep)
+                    bm_id = (f"own{idx}-{cs.type_id}-{bucket}|{network}"
+                             f"{pool_sfx}-{k}")
+                    add_virtual(bm_id, capacity, bucket, network, rep,
+                                pool=cs.pool)
                     committed_type_of[bm_id] = cs.type_id
                     committed_entry_of[bm_id] = idx
-                    pool.add(bm_id)
-            if pool:
-                pool_groups.append((pool, cs.count))
+                    floating_ids.add(bm_id)
+            if floating_ids:
+                floating_groups.append((floating_ids, cs.count))
 
+    # Buyables are generated per demanded pool (E2/S6): a pool requirement's
+    # new machines carry its tag (dedicated hardware stays dedicated), shared
+    # demand buys shared. Generation may transiently offer the same physical
+    # slot to several pools; enforcement is on USAGE via slot_groups, which
+    # stay pool-agnostic.
+    demanded_pools = sorted({r.pool for r in request.requirements})
     for bt in request.procurement_types:
         need = worst_case.get(bt.type_id, 0)
         if need <= 0:
             continue
-        for (bucket, network), rep in cells.items():
-            slots = need
-            bound = cell_gen_bound(bucket, network)
-            if bound is not None:
-                slots = min(slots, bound)
-            for k in range(slots):
-                bm_id = f"buy-{bt.type_id}-{bucket}|{network}-{k}"
-                add_virtual(bm_id, bt.capacity, bucket, network, rep)
-                buyable_type_of[bm_id] = bt.type_id
+        for bm_pool in demanded_pools:
+            pool_sfx = f"|{bm_pool}" if bm_pool else ""
+            for (bucket, network), rep in cells.items():
+                slots = need
+                bound = cell_gen_bound(bucket, network)
+                if bound is not None:
+                    slots = min(slots, bound)
+                for k in range(slots):
+                    bm_id = f"buy-{bt.type_id}-{bucket}|{network}{pool_sfx}-{k}"
+                    add_virtual(bm_id, bt.capacity, bucket, network, rep,
+                                pool=bm_pool)
+                    buyable_type_of[bm_id] = bt.type_id
 
     # Slot caps enforced across types AND committed stock: each cap bounds how
     # many virtual BMs (machines added to the bucket) may actually be used.
@@ -278,31 +299,35 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     # Candidate scoping: a requirement reaches network-matching in-stock BMs
     # (unless the caller already filtered via candidate_baremetals) plus
     # network-matching virtual BMs. network == "" on the requirement means no
-    # restriction (缺口 3g). Candidate lists are cached per distinct network so
-    # they aren't rebuilt per requirement.
+    # restriction (缺口 3g). The pool coordinate is DIFFERENT (E2/S6): "" is
+    # the shared pool, a distinct domain — never a wildcard — so pool matching
+    # is exact on both sides. Candidate lists are cached per distinct
+    # (network, pool) so they aren't rebuilt per requirement.
     def net_ok(req_net: str, item_net: str) -> bool:
         return req_net == "" or item_net == req_net
 
-    in_stock_ids_by_net: dict[str, list[str]] = {}
-    virtual_ids_by_net: dict[str, list[str]] = {}
+    ids_by_key: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
 
-    def candidates_for(net: str) -> tuple[list[str], list[str]]:
-        if net not in virtual_ids_by_net:
-            in_stock_ids_by_net[net] = [
-                bm.id for bm in request.in_stock if net_ok(net, bm.network)
+    def candidates_for(net: str, pool: str) -> tuple[list[str], list[str]]:
+        key = (net, pool)
+        if key not in ids_by_key:
+            in_stock_ids = [
+                bm.id for bm in request.in_stock
+                if net_ok(net, bm.network) and bm.pool == pool
             ]
-            virtual_ids_by_net[net] = [
+            virtual_ids = [
                 bm_id for bm_id, bm in virtual_bms.items()
-                if net_ok(net, bm.network)
+                if net_ok(net, bm.network) and bm.pool == pool
             ]
-        return in_stock_ids_by_net[net], virtual_ids_by_net[net]
+            ids_by_key[key] = (in_stock_ids, virtual_ids)
+        return ids_by_key[key]
 
     type_of = {**buyable_type_of, **committed_type_of}
 
     reqs = []
     unreachable: list[dict] = []
     for idx, r in enumerate(request.requirements):
-        in_stock_ids, virtual_ids = candidates_for(r.network)
+        in_stock_ids, virtual_ids = candidates_for(r.network, r.pool)
         if r.allowed_bm_types is not None:
             # 決議 #38: this cluster may only buy/draw these machine types.
             allowed = set(r.allowed_bm_types)
@@ -366,7 +391,7 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     solver.splitter_waste_terms = splitter.build_waste_objective_terms()
     solver.procurement_bm_ids = set(buyable_type_of)
     solver.committed_bm_ids = set(committed_type_of)
-    solver.bm_group_caps = slot_groups + pool_groups
+    solver.bm_group_caps = slot_groups + floating_groups
 
     result = solver.solve()
     cp_solver = getattr(solver, "_last_cp_solver", None)
@@ -394,6 +419,19 @@ def _no_candidates_reason(req: ResourceRequirement,
             f"declare one via an in-stock machine, a procurement_cap, or a "
             f"committed_stock entry with network='{req.network}'"
         )
+    if req.pool:
+        pool_supply = (
+            any(bm.pool == req.pool for bm in request.in_stock)
+            or any(cs.pool == req.pool for cs in request.committed_stock)
+        )
+        if not pool_supply and not request.procurement_types:
+            # With procurement_types present, pool-tagged buyables are always
+            # generated, so a pool demand cannot be candidate-less.
+            return (
+                f"pool '{req.pool}' has no supply — tag an in-stock machine "
+                f"or committed_stock entry with pool='{req.pool}', or provide "
+                f"procurement_types so machines can be bought into the pool"
+            )
     if not request.in_stock and not request.procurement_types:
         return ("no in-stock machines and no procurement_types — "
                 "nothing can host this demand")

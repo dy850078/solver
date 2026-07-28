@@ -32,13 +32,14 @@ from .conftest import make_bm, make_vm
 # ---------------------------------------------------------------------------
 
 def make_req(cpu=0, mem=0, disk=0, pods=0, spec=None, role=NodeRole.WORKER,
-             network=""):
+             network="", pool=""):
     return ResourceRequirement(
         total_resources=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
         node_role=role,
         vm_specs=[spec] if spec else None,
         total_pods=pods,
         network=network,
+        pool=pool,
     )
 
 
@@ -691,13 +692,13 @@ class TestReviewFixes:
 
 def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
           role=NodeRole.WORKER, spec=None, fab="", network="", allowed=None,
-          demand_id=None):
+          demand_id=None, pool=""):
     return DemandEntry(
         cluster_id=cluster, node_role=role, period=period,
         cpu_cores=cpu, memory_mib=mem, storage_gb=disk, pod_count=pods,
         vm_specs=[spec] if spec else None,
         fab=fab, network=network, allowed_bm_types=allowed,
-        demand_id=demand_id,
+        demand_id=demand_id, pool=pool,
     )
 
 
@@ -1051,6 +1052,104 @@ class TestP3ReviewFixes:
         assert m3.solver_status.startswith("BLOCKED")
         assert m3.shortfalls[0].cause == "blocked"
         assert "2026-02" in m3.shortfalls[0].message
+
+
+class TestDedicatedPools:
+    """S6: dedicated BM pools — pool is an exact-match eligibility filter;
+    "" (shared) is a distinct domain, never a wildcard."""
+
+    def test_shared_demand_never_lands_on_pool_bm(self):
+        """A roomy dedicated-pool machine is invisible to shared demand:
+        the solver buys a shared machine instead of borrowing pool hardware."""
+        in_stock = [make_bm("bm-pool", pool="pool-ml")]
+        types = [make_type("big", 64, 256_000, 2000)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8), in_stock, types)
+
+        assert r.success
+        assert r.in_stock_bm_used == 0
+        assert r.procured_bm_total == 1
+        assert all(bm.pool == "" for bm in r.bought_bms)
+
+    def test_pool_demand_without_policy_buys_into_pool(self):
+        """No PoolPolicy = no spill: pool demand ignores roomy shared stock
+        and buys — and the bought machines carry the pool tag."""
+        in_stock = [make_bm("bm-shared")]
+        types = [make_type("big", 64, 256_000, 2000)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types)
+
+        assert r.success
+        assert r.in_stock_bm_used == 0
+        assert r.procured_bm_total == 1
+        assert all(bm.pool == "pool-ml" for bm in r.bought_bms)
+
+    def test_pool_demand_uses_own_pool_stock(self):
+        """Own-pool in-stock is the cheapest tier: no buying, no borrowing."""
+        in_stock = [make_bm("bm-pool", pool="pool-ml"), make_bm("bm-shared", rack="rack-2", ag="ag-2")]
+        types = [make_type("big", 64, 256_000, 2000)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types)
+
+        assert r.success
+        assert r.in_stock_bm_used == 1
+        assert r.procured_bm_total == 0
+        assert {a.baremetal_id for a in r.assignments} == {"bm-pool"}
+
+    def test_committed_pool_tag_flows(self):
+        """A pool-tagged PO serves pool demand as the second tier — and its
+        materialized machine carries the tag."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1, pool="pool-ml")]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    [], types, committed=committed)
+
+        assert r.success
+        assert r.committed_bm_used == 1
+        assert r.procured_bm_total == 0
+        assert all(bm.pool == "pool-ml" for bm in r.committed_bms)
+
+    def test_pool_committed_invisible_to_shared_demand(self):
+        """Isolation applies to the committed tier too: shared demand cannot
+        drain a pool-tagged PO and must buy instead."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1, pool="pool-ml")]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8), [], types,
+                    committed=committed)
+
+        assert r.success
+        assert r.committed_bm_used == 0
+        assert r.procured_bm_total == 1
+
+    def test_pool_intersects_network(self):
+        """pool ∩ network: a pool demand scoped to bgp1 only reaches pool
+        machines in bgp1, not the pool machine in bgp2."""
+        in_stock = [
+            make_bm("bm-p1", pool="pool-ml", network="bgp1"),
+            make_bm("bm-p2", pool="pool-ml", network="bgp2",
+                    rack="rack-2", ag="ag-2"),
+        ]
+        types = [make_type("big", 64, 256_000, 2000)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml",
+                             network="bgp1"), in_stock, types)
+
+        assert r.success
+        assert {a.baremetal_id for a in r.assignments} == {"bm-p1"}
+
+    def test_pool_demand_no_supply_no_types_is_input_error(self):
+        """Pool demand with no pool supply and nothing buyable → actionable
+        INPUT_ERROR naming the pool."""
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    [make_bm("bm-shared")], [])
+
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "pool-ml" in r.solver_status
 
 
 class TestCommittedAvailableFrom:
