@@ -181,6 +181,13 @@ class VMPlacementSolver:
         # preference order is: in-stock, then committed, then buy new.
         self.committed_bm_ids: set[str] = set()
 
+        # Dedicated-pool spill pairs (E2/S6), injected by capacity_planner:
+        # per pool requirement allowed to overflow onto shared supply,
+        # (its VM ids, the shared BM ids it may spill to). Penalized per
+        # ASSIGNMENT — not per bm_used — because a shared BM can host shared
+        # demand (free) and spilled demand (penalized) at the same time.
+        self.pool_spill_sets: list[tuple[set[str], set[str]]] = []
+
         # The CP-SAT model — shared with splitter when called from split_solver
         self.model = model if model is not None else cp_model.CpModel()
 
@@ -1068,6 +1075,20 @@ class VMPlacementSolver:
             ]
             if own_terms:
                 terms.append(self.config.w_committed_stock * sum(own_terms))
+
+        # Dedicated-pool spill (E2/S6): each spilled VM costs w_pool_spill,
+        # ordering the tiers own in-stock → own committed → spill → buy for
+        # per-BM VM counts up to w_procurement/w_pool_spill (~50 at defaults;
+        # beyond that buying a dedicated machine wins — intentional).
+        if self.pool_spill_sets and self.config.w_pool_spill > 0:
+            spill_terms = [
+                self.assign[(v, b)]
+                for vm_ids, bm_ids in self.pool_spill_sets
+                for v in vm_ids for b in bm_ids
+                if (v, b) in self.assign
+            ]
+            if spill_terms:
+                terms.append(self.config.w_pool_spill * sum(spill_terms))
 
         # Balance resulting per-bucket available capacity (decision #11).
         terms.extend(self._compute_procurement_balance_terms())

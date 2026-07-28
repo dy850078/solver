@@ -12,6 +12,7 @@ from app.models import (
     GroupSelector,
     NodeRole,
     PlacementRequest,
+    PoolPolicy,
     ProcurementCap,
     ProcurementRequest,
     ResourceRequirement,
@@ -51,7 +52,7 @@ def make_type(type_id, cpu, mem, disk):
 
 
 def procure(requirements, in_stock, types, caps=None, committed=None,
-            vms=None, rules=None, **cfg):
+            vms=None, rules=None, policies=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     reqs = requirements if isinstance(requirements, list) else [requirements]
@@ -62,6 +63,7 @@ def procure(requirements, in_stock, types, caps=None, committed=None,
         procurement_types=types,
         procurement_caps=caps or [],
         committed_stock=committed or [],
+        pool_policies=policies or [],
         anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
     ))
@@ -702,7 +704,8 @@ def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
     )
 
 
-def plan(book, in_stock, types, caps=None, committed=None, rules=None, **cfg):
+def plan(book, in_stock, types, caps=None, committed=None, rules=None,
+         policies=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     return solve_capacity_horizon(CapacityPlanRequest(
@@ -711,6 +714,7 @@ def plan(book, in_stock, types, caps=None, committed=None, rules=None, **cfg):
         procurement_types=types,
         procurement_caps=caps or [],
         committed_stock=committed or [],
+        pool_policies=policies or [],
         anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
     ))
@@ -1140,6 +1144,140 @@ class TestDedicatedPools:
 
         assert r.success
         assert {a.baremetal_id for a in r.assignments} == {"bm-p1"}
+
+    def test_spill_uses_shared_before_buying(self):
+        """PoolPolicy(allow_spill) + empty pool: spill onto roomy shared
+        stock instead of buying — the user-decided order (spill before buy)."""
+        in_stock = [make_bm("bm-shared")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types, policies=policies)
+
+        assert r.success
+        assert r.in_stock_bm_used == 1
+        assert r.procured_bm_total == 0
+
+    def test_own_stock_beats_spill(self):
+        """Spill is a penalized fallback: with own-pool stock available the
+        pool demand stays home even though spill is allowed."""
+        in_stock = [make_bm("bm-pool", pool="pool-ml"),
+                    make_bm("bm-shared", rack="rack-2", ag="ag-2")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types, policies=policies)
+
+        assert r.success
+        assert {a.baremetal_id for a in r.assignments} == {"bm-pool"}
+
+    def test_own_committed_beats_spill(self):
+        """The k=1 critical case that pins w_pool_spill > 110: opening a
+        fresh own-pool committed machine (100+10) must beat spilling a single
+        VM (200) onto a shared BM that shared demand has already opened."""
+        in_stock = [make_bm("bm-shared")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        committed = [CommittedStock(type_id="big", count=1, pool="pool-ml")]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+
+        r = procure(
+            [make_req(cpu=8, spec=SPEC_8),                    # opens bm-shared
+             make_req(cpu=8, spec=SPEC_8, pool="pool-ml")],
+            in_stock, types, committed=committed, policies=policies)
+
+        assert r.success
+        assert r.committed_bm_used == 1
+        cov = {c.requirement_index: c for c in r.requirement_coverage}
+        assert cov[1].committed == 1 and cov[1].in_stock == 0
+
+    def test_spill_never_uses_shared_buyables(self):
+        """Spill covers EXISTING shared supply only: when the demand exceeds
+        what one bought machine can hold, the overflow spills onto shared
+        in-stock and the purchase still goes INTO the pool — never via a
+        shared buyable. (When a single purchase could hold everything, the
+        solver rightly skips spilling: buying is a fixed cost, so
+        consolidating onto the bought machine is cheaper than spill+buy.)"""
+        in_stock = [make_bm("bm-shared", cpu=16, mem=64_000, disk=400)]
+        types = [make_type("mid", 32, 128_000, 1000)]   # holds only 4 of 6
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+
+        r = procure(make_req(cpu=48, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types, policies=policies)
+
+        assert r.success
+        assert r.in_stock_bm_used == 1          # 2 VMs spilled onto shared
+        assert r.procured_bm_total == 1
+        assert all(bm.pool == "pool-ml" for bm in r.bought_bms)
+
+    def test_mass_spill_inversion_buys_instead(self):
+        """The documented w_pool_spill=200 inversion bound: spilling 60 VMs
+        (60×200 = 12,000) costs more than buying one dedicated machine
+        (10,010), so the solver buys — mass displacement onto shared
+        hardware is not a plan, it's a smell."""
+        giant = dict(cpu=512, mem=1_024_000, disk=6400)
+        in_stock = [make_bm("bm-shared", **giant)]
+        types = [make_type("giant", 512, 1_024_000, 6400)]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+
+        r = procure(make_req(cpu=480, spec=SPEC_8, pool="pool-ml"),
+                    in_stock, types, policies=policies)
+
+        assert r.success
+        assert r.procured_bm_total == 1
+        assert r.in_stock_bm_used == 0
+
+    def test_spill_hint_in_input_error(self):
+        """Pool demand, no pool supply, no types, but shared stock present
+        and no policy → the error suggests allow_spill."""
+        r = procure(make_req(cpu=16, spec=SPEC_8, pool="pool-ml"),
+                    [make_bm("bm-shared")], [])
+
+        assert not r.success
+        assert "allow_spill" in r.solver_status
+
+    def test_horizon_passes_policies_through(self):
+        """/v1/capacity/plan path: the fab-filtered policy list reaches every
+        month's solve — spill works end-to-end through the horizon."""
+        in_stock = [make_bm("bm-shared")]
+        types = [make_type("big", 64, 256_000, 2000)]
+        policies = [PoolPolicy(pool="pool-ml", allow_spill=True)]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8, pool="pool-ml")]
+
+        r = plan(book, in_stock, types, policies=policies)
+
+        assert r.success
+        assert r.by_fab_period[0].in_stock_bm_used == 1
+        assert r.by_fab_period[0].bm_procurement_total == 0
+
+
+class TestPoolPolicyValidation:
+
+    def test_duplicate_policy_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="duplicate PoolPolicy"):
+            CapacityPlanRequest(
+                demand_book=[entry("2026-01", cpu=8, spec=SPEC_8)],
+                in_stock=[],
+                procurement_types=[make_type("big", 64, 256_000, 2000)],
+                pool_policies=[PoolPolicy(pool="pool-ml"),
+                               PoolPolicy(pool="pool-ml", allow_spill=True)],
+            )
+
+    def test_unscoped_policy_rejected_in_named_fab_mode(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="PoolPolicy"):
+            CapacityPlanRequest(
+                demand_book=[entry("2026-01", cpu=8, spec=SPEC_8, fab="fab-a")],
+                in_stock=[],
+                procurement_types=[make_type("big", 64, 256_000, 2000)],
+                pool_policies=[PoolPolicy(pool="pool-ml")],
+            )
 
     def test_pool_demand_no_supply_no_types_is_input_error(self):
         """Pool demand with no pool supply and nothing buyable → actionable

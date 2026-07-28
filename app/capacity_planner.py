@@ -306,7 +306,13 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     def net_ok(req_net: str, item_net: str) -> bool:
         return req_net == "" or item_net == req_net
 
+    # Spill contracts (E2/S6): a pool may allow its clusters to overflow onto
+    # SHARED supply — in-stock and committed only, never shared buyables (new
+    # money always buys into the pool).
+    spill_allowed = {p.pool for p in request.pool_policies if p.allow_spill}
+
     ids_by_key: dict[tuple[str, str], tuple[list[str], list[str]]] = {}
+    spill_ids_by_key: dict[tuple[str, str], set[str]] = {}
 
     def candidates_for(net: str, pool: str) -> tuple[list[str], list[str]]:
         key = (net, pool)
@@ -319,13 +325,29 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
                 bm_id for bm_id, bm in virtual_bms.items()
                 if net_ok(net, bm.network) and bm.pool == pool
             ]
+            spill_ids: set[str] = set()
+            if pool and pool in spill_allowed:
+                spill_stock = [
+                    bm.id for bm in request.in_stock
+                    if net_ok(net, bm.network) and bm.pool == ""
+                ]
+                spill_committed = [
+                    bm_id for bm_id, bm in virtual_bms.items()
+                    if net_ok(net, bm.network) and bm.pool == ""
+                    and bm_id in committed_type_of
+                ]
+                in_stock_ids = in_stock_ids + spill_stock
+                virtual_ids = virtual_ids + spill_committed
+                spill_ids = set(spill_stock) | set(spill_committed)
             ids_by_key[key] = (in_stock_ids, virtual_ids)
+            spill_ids_by_key[key] = spill_ids
         return ids_by_key[key]
 
     type_of = {**buyable_type_of, **committed_type_of}
 
     reqs = []
     unreachable: list[dict] = []
+    spill_bms_of_req: dict[int, set[str]] = {}
     for idx, r in enumerate(request.requirements):
         in_stock_ids, virtual_ids = candidates_for(r.network, r.pool)
         if r.allowed_bm_types is not None:
@@ -333,6 +355,12 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
             allowed = set(r.allowed_bm_types)
             virtual_ids = [i for i in virtual_ids if type_of[i] in allowed]
         candidates = (r.candidate_baremetals or in_stock_ids) + virtual_ids
+        # Spill pairs for the objective: only BMs that survived into the
+        # final candidate list (allowed_bm_types may have pruned committed
+        # virtuals; caller-supplied candidate_baremetals replace in-stock).
+        spill_set = spill_ids_by_key.get((r.network, r.pool), set())
+        if spill_set:
+            spill_bms_of_req[idx] = spill_set & set(candidates)
         if not candidates and has_demand(r):
             # Precheck with a cause-specific message: the splitter would drop
             # these too, but its generic spec-centric wording doesn't tell the
@@ -393,6 +421,20 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     solver.committed_bm_ids = set(committed_type_of)
     solver.bm_group_caps = slot_groups + floating_groups
 
+    # Spill penalty pairs (E2/S6): per pool requirement with spill enabled,
+    # its synthetic VMs × the shared BMs it may overflow onto. vm_req_of maps
+    # each synthetic VM to its requirement; explicit request.vms are absent
+    # from it and thus never penalized.
+    if spill_bms_of_req:
+        vms_of_req: dict[int, set[str]] = {}
+        for vm_id, ri in splitter.vm_req_of.items():
+            vms_of_req.setdefault(ri, set()).add(vm_id)
+        solver.pool_spill_sets = [
+            (vms_of_req[ri], bm_ids)
+            for ri, bm_ids in spill_bms_of_req.items()
+            if bm_ids and ri in vms_of_req
+        ]
+
     result = solver.solve()
     cp_solver = getattr(solver, "_last_cp_solver", None)
     vm_demand = {vm.id: vm.demand for vm in placement_request.vms}
@@ -427,11 +469,22 @@ def _no_candidates_reason(req: ResourceRequirement,
         if not pool_supply and not request.procurement_types:
             # With procurement_types present, pool-tagged buyables are always
             # generated, so a pool demand cannot be candidate-less.
-            return (
+            msg = (
                 f"pool '{req.pool}' has no supply — tag an in-stock machine "
                 f"or committed_stock entry with pool='{req.pool}', or provide "
                 f"procurement_types so machines can be bought into the pool"
             )
+            has_shared = any(bm.pool == "" for bm in request.in_stock)
+            spill_on = any(
+                p.pool == req.pool and p.allow_spill
+                for p in request.pool_policies
+            )
+            if has_shared and not spill_on:
+                msg += (
+                    f"; shared stock exists — a PoolPolicy(pool='{req.pool}', "
+                    f"allow_spill=true) would let this demand overflow onto it"
+                )
+            return msg
     if not request.in_stock and not request.procurement_types:
         return ("no in-stock machines and no procurement_types — "
                 "nothing can host this demand")
@@ -754,6 +807,12 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             t for t in request.procurement_types
             if fab == "" or t.fab in ("", fab)
         ]
+        # Pool contracts are stateless (nothing to roll forward) — filter by
+        # fab once and pass the same list into every month.
+        policies_f = [
+            p for p in request.pool_policies
+            if fab == "" or p.fab in ("", fab)
+        ]
 
         failed_period: str | None = None
         for period in periods:
@@ -781,6 +840,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 procurement_types=types_f,
                 procurement_caps=caps_state,
                 committed_stock=active_committed,
+                pool_policies=policies_f,
                 anti_affinity_rules=request.anti_affinity_rules,
                 max_per_bm_rules=request.max_per_bm_rules,
                 failover_rules=request.failover_rules,
