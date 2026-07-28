@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>名目 vs 可落地</title>
+<style>
+  :root{
+    --bg:#0b0e13; --card:#12161d; --border:#232a35; --border2:#2d3644;
+    --text:#e6e9ef; --muted:#8b95a5; --subtle:#5b6472; --accent:#3987e5;
+    --newbuy:#d95926; --crit:#d03b3b; --good:#0ca30c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);width:1200px;height:400px;
+    display:flex;align-items:center;justify-content:center;
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;}
+  .num{font-variant-numeric:tabular-nums}
+  .panel{position:relative;width:1080px}
+  .rowlbl{font-size:14px;color:var(--muted);margin-bottom:6px}
+  .rowlbl b{color:var(--text);font-weight:650}
+  .track{position:relative;height:28px;margin-bottom:30px}
+  .bar{position:absolute;left:0;top:0;height:28px;border-radius:4px}
+  .bar.nominal{width:760px;background:var(--subtle)}
+  .bar.placeable{width:623px;background:var(--accent)}
+  .barval{position:absolute;top:3px;font-size:14px;font-weight:650}
+  .verdict{position:absolute;top:4px;font-size:13px;white-space:nowrap}
+  .demand{position:absolute;left:752px;top:64px;bottom:36px;width:0;
+    border-left:2px dashed var(--newbuy)}
+  .demand .tag{position:absolute;left:-44px;top:-34px;width:90px;text-align:center;
+    font-size:13px;font-weight:650;color:var(--newbuy);white-space:nowrap}
+</style>
+</head>
+<body>
+  <div class="panel">
+    <div style="height:44px"></div>
+    <div class="rowlbl"><b>名目可用</b>（帳面加總）</div>
+    <div class="track">
+      <div class="bar nominal"></div>
+      <span class="barval num" style="left:716px;color:var(--bg)">100</span>
+      <span class="verdict num" style="left:790px;color:var(--muted)">帳面：放得下 ✓</span>
+    </div>
+    <div class="rowlbl"><b>可落地</b>（帶碎片與拓撲，真實擺得下）</div>
+    <div class="track" style="margin-bottom:6px">
+      <div class="bar placeable"></div>
+      <span class="barval num" style="left:585px;color:#fff">82</span>
+      <span class="verdict num" style="left:790px;color:var(--crit);font-weight:650">實際：放不下 ✕</span>
+    </div>
+    <div class="demand"><span class="tag num">需求 99</span></div>
+  </div>
+</body>
+</html>

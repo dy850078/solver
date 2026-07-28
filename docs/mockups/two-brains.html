@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>規劃腦 × 執行腦</title>
+<style>
+  :root{
+    --bg:#0b0e13; --card:#12161d; --card2:#171c25; --border:#232a35; --border2:#2d3644;
+    --text:#e6e9ef; --muted:#8b95a5; --subtle:#5b6472; --accent:#3987e5; --good:#0ca30c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);width:1600px;height:460px;
+    display:flex;align-items:center;justify-content:center;
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;}
+  .grid{display:grid;grid-template-columns:340px 60px 480px 60px 400px;align-items:center;gap:0}
+  .col{display:flex;flex-direction:column;gap:28px}
+  .brain{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 22px}
+  .brain .who{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--subtle)}
+  .brain .name{font-size:19px;font-weight:650;margin-top:4px}
+  .brain .q{font-size:13px;color:var(--muted);margin-top:6px}
+  .core{background:var(--card);border:1.5px solid var(--accent);border-radius:14px;
+    padding:24px 26px;text-align:center;box-shadow:0 0 34px rgba(57,135,229,.14)}
+  .core .name{font-size:21px;font-weight:700;letter-spacing:-.01em}
+  .core .sub{font-size:12.5px;color:var(--muted);margin-top:4px}
+  .chips{display:flex;gap:8px;justify-content:center;margin-top:14px;flex-wrap:wrap}
+  .chip{font-size:12px;font-weight:600;border:1px solid var(--border2);border-radius:999px;
+    padding:3px 11px;color:var(--muted);background:var(--card2)}
+  .result{background:var(--card);border:1px solid color-mix(in srgb,var(--good) 45%,transparent);
+    border-radius:12px;padding:20px 24px}
+  .result .tag{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--good);font-weight:700}
+  .result .txt{font-size:17px;font-weight:650;margin-top:6px;line-height:1.6}
+  .arr{display:flex;flex-direction:column;gap:64px;align-items:center;color:var(--subtle)}
+  .arr.single{gap:0}
+  .arr svg{display:block}
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="col">
+      <div class="brain">
+        <div class="who">規劃腦 · Capacity 負責人</div>
+        <div class="name">容量規劃</div>
+        <div class="q">「要加幾台 node？要買幾台 BM？」</div>
+      </div>
+      <div class="brain">
+        <div class="who">執行腦 · Go Scheduler</div>
+        <div class="name">實際調度</div>
+        <div class="q">「這批 VM 擺在哪幾台 BM？」</div>
+      </div>
+    </div>
+    <div class="arr">
+      <svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 4 L16 11 L5 18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 4 L16 11 L5 18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="core">
+      <div class="name">同一套約束模型</div>
+      <div class="sub">同一顆 CP-SAT 引擎 · 同一份現況快照</div>
+      <div class="chips">
+        <span class="chip">capacity</span><span class="chip">anti-affinity</span>
+        <span class="chip">topology / AG</span><span class="chip">failover N-1</span>
+        <span class="chip">BGP / pool</span>
+      </div>
+    </div>
+    <div class="arr single">
+      <svg width="22" height="22" viewBox="0 0 22 22"><path d="M5 4 L16 11 L5 18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+    <div class="result">
+      <div class="tag">核心價值主張</div>
+      <div class="txt">規劃時承諾的容量，<br>執行時真的放得進去。</div>
+    </div>
+  </div>
+</body>
+</html>

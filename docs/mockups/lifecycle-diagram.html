@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Demand Lifecycle</title>
+<style>
+  :root{
+    --bg:#0b0e13; --card:#12161d; --card2:#171c25; --border:#232a35; --border2:#2d3644;
+    --text:#e6e9ef; --muted:#8b95a5; --subtle:#5b6472; --accent:#3987e5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);width:1760px;height:400px;
+    display:flex;align-items:center;
+    font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;}
+  .wrap{position:relative;padding:0 48px 92px;width:100%}
+  .flow{display:flex;align-items:stretch;gap:0}
+  .stage{flex:1 1 0;background:var(--card);border:1px solid var(--border);border-radius:10px;
+    padding:14px 10px 12px;text-align:center;position:relative;min-width:0}
+  .stage .no{font-size:10px;letter-spacing:.14em;color:var(--subtle);font-variant-numeric:tabular-nums}
+  .stage .name{font-size:16px;font-weight:650;margin-top:4px;letter-spacing:-.01em;white-space:nowrap}
+  .stage .en{font-size:10.5px;color:var(--muted);margin-top:3px;letter-spacing:.04em;white-space:nowrap}
+  .arrow{flex:0 0 26px;display:flex;align-items:center;justify-content:center;color:var(--subtle)}
+  .arrow svg{display:block}
+  .loopline{position:absolute;left:120px;right:120px;bottom:30px;height:44px;
+    border:2px dashed var(--accent);border-top:none;border-radius:0 0 16px 16px;opacity:.8}
+  .loopline::before{content:"";position:absolute;left:-7px;top:-9px;
+    border-left:6px solid transparent;border-right:6px solid transparent;
+    border-bottom:9px solid var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="flow" id="flow"></div>
+  <div class="loopline"></div>
+</div>
+<script>
+  const stages = [
+    ["01","需求規劃","Demand"],
+    ["02","容量計算","Capacity Plan"],
+    ["03","採買","Procure"],
+    ["04","已購庫存","Committed"],
+    ["05","到貨上架","In-stock"],
+    ["06","打 OS","OS Ready"],
+    ["07","Cluster 建置","Build"],
+    ["08","Day-1 執行","Placement"],
+    ["09","Day-2 維運","Operate"],
+    ["10","用量回饋","Feedback"],
+  ];
+  const flow = document.getElementById('flow');
+  const chev = '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M4 2 L10 7 L4 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  stages.forEach((s, i) => {
+    if (i) { const a = document.createElement('div'); a.className = 'arrow'; a.innerHTML = chev; flow.appendChild(a); }
+    const d = document.createElement('div'); d.className = 'stage';
+    d.innerHTML = `<div class="no">${s[0]}</div><div class="name">${s[1]}</div><div class="en">${s[2]}</div>`;
+    flow.appendChild(d);
+  });
+</script>
+</body>
+</html>
