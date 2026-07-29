@@ -460,7 +460,7 @@ group-by，不是新功能；「池的命中率」是四指標的一個切面，
 | S2 | 覆蓋標註輸出 | per-demand coverage counts + demand_id 回吐 |
 | S3 | `/v1/capacity/reconcile` | 純函式對帳（見設計主題 2）——**已實作**（決議 #24、ADR-005）|
 | S4 | `config_fingerprint` | 所有 response 回吐（plan 與 placement）|
-| S5 | 一致性測試（solver 側）| 合成快照雙跑單元測試 |
+| S5 | 一致性測試（solver 側）| 合成快照雙跑單元測試——**已實作**（決議 #25、ADR-006）|
 | S6 | 獨佔池 | models pool 欄位 + capacity_planner candidate 推導 + 採買 pool 標籤 + 池滿雙開關 |
 
 ---
@@ -569,6 +569,7 @@ reconcile 漂移列表與四個頭條指標（含週對帳點 sparkline）。
 | 22 | **Spill 能力移除，池嚴格隔離**（修訂 #18 的池滿雙開關為單一路徑）：獨佔池需求只能用自己池 + 採買進池；溢出需求由**人工調配**（Inventory 改 pool 標籤）處理 | Capacity 負責人決議隔離優先；結構保證勝過政策保證（能力不存在就不會被誤開）| spill 設計與實作保留於 ADR-003 追記 + git `3549a56`，未來翻案成本低 |
 | 23 | **E2.5 fleet events `release` 落地**（依 #40 既定三語意：只做 release / 整台釋放 / 事前凍結），加一個實作期新決定：**凍結機的剩餘空間排除於健康儀表**（nominal / slots / stranded / balance），cells 快照仍完整呈現該機 | 凍結機不接新節點，其空位不是可用餘裕——照算即高估（D1 型說謊）；快照是狀態帳、儀表是可用度，兩者本就不同座標 | ADR-004；報表新增 `released_bms` / `frozen_bms` 標注 |
 | 24 | **S3 `/v1/capacity/reconcile` 落地**，v1 語意定案：**單月對帳**（as_of 所在月）；四指標分母為空時=**null 不是 0%**；無 demand_id 的計畫行**排除於兌現率並回報 unjoinable**（不冒充 miss）；供給實到台數由 Go 以 `machine_adds` 落帳（庫存 count diff 不需 solver）；漂移歸因規則式——供給不符的格子由 supply row 帶過容量差註記、**只有無法用供給解釋的容量位移才標 fleet**；fab 總量差在 5% 內才歸因 placement | 對帳進 solver 的唯一硬理由是可落地量重算（`in_stock_slots` per cell，決議 #5 同理）；假指標比沒指標糟（不可量測≠0%）；重複歸因是噪音、假單一歸因是說謊 | ADR-005；`BucketMonthCell.in_stock_slots` 為此新增（凍結機計 0，與 #23 一致）|
+| 25 | **S5 一致性回放落地**（M3 solver 側）：`tests/test_consistency_replay.py` 的 replay harness 依 M1 已定差集表推導兩個 view 雙跑；判定分四級——`consistent` / `plan_infeasible`（無承諾可守）/ `explained_by_profile_delta` / `broken`。兩個實作期裁決：**未申報的 view 差在 solve 前用集合比對抓**（用 solve 推斷會與申報差集混淆）；**filter 判定優先於 divergence**（view 都錯了再談引擎分歧是誤導修方向）| 守門「plan 可行 ⇒ execution 可行」；紅燈條件=②失敗且原因不在顯式差集（D1/D2 的沉默說謊）| ADR-006；跨 repo 真實快照層為 G7（Go 端同兩呼叫走 HTTP）|
 
 ---
 
