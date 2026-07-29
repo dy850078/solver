@@ -774,7 +774,7 @@ POST /v1/capacity/plan
 | 38 | **per-cluster 限採買機型** `DemandEntry.allowed_bm_types` | 不同 cluster 可買不同機型；in-stock 端已由候選過濾，採買端需機型允許清單 | 小改動：殘量只生成 allowed 機型的虛擬 BM |
 | 39 | **已採購庫存**（缺口 3h，effort 低已納入）：當「零成本採買層」，先用完再買新 | 回答「已買各 100 台夠不夠、各再買多少」 | `CommittedStock`；已上架→in_stock、浮動→已購池；空＝不啟用 |
 | — | 命名修正：`bought[b]` → `added_resources[b]`；釐清 `buy` 的兩種加總（台數 for max_bm、資源 for balance）| 避免 reviewer 卡在 `×cap_t` 的語意 | — |
-| 40 | **建新拆舊（fleet events）**：先只做 `release`（整台除役還池）、事件月前**擋新節點**；設計已定、**列 backlog 暫不實作** | roll-forward 目前單向消耗，表達不了「某月機器從舊 cluster 除役變回可用」 | 見下方〈Backlog：機隊事件簿〉 |
+| 40 | **建新拆舊（fleet events）**：先只做 `release`（整台除役還池）、事件月前**擋新節點**；**已於 E2.5 實作**（ADR-004）| roll-forward 目前單向消耗，表達不了「某月機器從舊 cluster 除役變回可用」 | 見下方〈機隊事件簿〉；實作加碼：凍結機剩餘空間排除於健康儀表 |
 | 41 | **UI 定位 = B：檢視 + 微調 + 模擬工具**；正式需求帳本住 Go Scheduler 端 | 20 fab × 20 cluster 規模需要持久化/權限/稽核/並行編輯，在無狀態 sidecar 長儲存層違反 #25；UI 保留 what-if 沙盒、報表視覺化、除錯 demo 三角色 | 演進：UI 加 localStorage 草稿 → Go 端帳本 API 好後加 Load/Save book 按鈕，UI 始終無狀態 |
 | 42 | **需求規模化輸入 = 長表 CSV/TSV 匯入**（Excel 貼上），**匯入取代全部**、**重複鍵報錯**；格子語意維持資源總量（GiB）；需求網格（demand lines grid）**後補** | 20 fab 的需求已活在 Excel；長表與 `DemandEntry` 一比一，同時是未來與 Go 端帳本的交換格式 | 欄位：`fab, cluster, role, period, cpu_cores, memory_gib(或 memory_mib 擇一), storage_gb, pods, spec(目錄名，空=Any), network`；cluster/period 必填、欄序不拘、未知欄警告忽略、全有或全無 |
 | 43 | **「不採買累計缺口」= 每月採買量的前綴和**（純 UI 變換，不另跑情境） | 每月採買量本身就是該月的邊際缺口（solver 買的是滿足需求的最少台數），per-fab running sum 即「都不買的話到 M 月累計缺幾台」；回答「說服採買」的緊迫性論述 | 未規劃月攜帶前值（淡色標注）；**失敗月繼續累計其 what-if 採買量並從此標 `≥`（下界）**——先前的缺口不因該月失敗而消失，且該月真實缺口可能大於 what-if（capacity/AA 成因時無法量化）。此表本身即 what-if 情境，納入失敗月 what-if 與「totals 只計成功月」不衝突。節點級 no-buy what-if 見下方 Backlog |
@@ -791,7 +791,7 @@ POST /v1/capacity/plan
 （partial placement、stop-after-failure 的情境豁免），即決議 #12 延後的 what-if
 多情境的第一個具體實例；實作前走 plan-first 設計流程。
 
-### Backlog：機隊事件簿（fleet events）— 建新拆舊（決議 #40，設計已定、暫不實作）
+### 機隊事件簿（fleet events）— 建新拆舊（決議 #40；已於 E2.5 實作，見 ADR-004）
 
 **情境**：某月把幾台 BM 從舊 cluster 除役，容量釋放回 in-stock 供後續月份使用。
 現況做不到：`in_stock.used_capacity` 是期初快照，roll-forward 只會消耗容量
@@ -824,4 +824,13 @@ POST /v1/capacity/plan
 - 驗證：`bm_ids` 引用不存在的機器、或與具名 fab 範圍不符 → `INPUT_ERROR`。
 - 報表：事件月的 month detail 標註「released N machines」；釋放後容量
   自然流入 nominal / slots / balance_after / cells。
+
+**實作結果（E2.5，ADR-004）**：契約為 `CapacityPlanRequest.fleet_events`
+（`FleetEvent{period, action="release", bm_ids, fab}`），報表為
+`PeriodFabReport.released_bms / frozen_bms`。三語意照案落地，另補一個
+設計時未明定的決定：**凍結機的剩餘空間排除於健康儀表**
+（nominal / slots / stranded / balance_after）——凍結機不接新節點，其空位
+不是可用餘裕，照算即高估；cells 快照仍完整呈現該機（狀態帳 vs 可用度，
+座標不同）。事件引用不存在機器、一機多事件、具名 fab 模式未標 fab 或
+fab 不符 → 請求驗證期即拒絕。
 - UI：表單加「Fleet events」區（月份 + 機器群組挑選）。

@@ -323,6 +323,7 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
         return ids_by_key[key]
 
     type_of = {**buyable_type_of, **committed_type_of}
+    frozen = set(request.frozen_bm_ids)
 
     reqs = []
     unreachable: list[dict] = []
@@ -333,6 +334,12 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
             allowed = set(r.allowed_bm_types)
             virtual_ids = [i for i in virtual_ids if type_of[i] in allowed]
         candidates = (r.candidate_baremetals or in_stock_ids) + virtual_ids
+        if frozen:
+            # Pre-release isolation (E2.5): a machine scheduled for release
+            # hosts nothing new — filtered here (after the explicit-list
+            # branch) so caller-supplied candidate lists can't reach it
+            # either.
+            candidates = [c for c in candidates if c not in frozen]
         if not candidates and has_demand(r):
             # Precheck with a cause-specific message: the splitter would drop
             # these too, but its generic spec-centric wording doesn't tell the
@@ -436,6 +443,14 @@ def _no_candidates_reason(req: ResourceRequirement,
     if not request.in_stock and not request.procurement_types:
         return ("no in-stock machines and no procurement_types — "
                 "nothing can host this demand")
+    frozen = set(request.frozen_bm_ids)
+    if (frozen and not request.procurement_types and request.in_stock
+            and all(bm.id in frozen for bm in request.in_stock)):
+        return (
+            "every in-stock machine is frozen pending a scheduled release "
+            "(fleet event) and there are no procurement_types — nothing can "
+            "host this demand before the release month"
+        )
     if req.allowed_bm_types is not None:
         return (
             f"allowed_bm_types {req.allowed_bm_types} matches no reachable "
@@ -654,7 +669,14 @@ def _to_result(request: ProcurementRequest, p: _Pass,
     post_bms = list(request.in_stock) + [
         p.virtual_bms[bid] for bid in (used_buy_ids | used_own_ids)
     ]
+    frozen = set(request.frozen_bm_ids)
     for bm in post_bms:
+        if bm.id in frozen:
+            # Pending release (E2.5): the machine rejects new nodes until its
+            # event month, so its free space is not usable headroom — counting
+            # it would overstate every gauge (the D1 lie these gauges exist to
+            # avoid). State snapshots elsewhere still show the machine.
+            continue
         remaining = bm.available_capacity - placed.get(bm.id, Resources())
         nominal = nominal + remaining
         bucket = getattr(bm.topology, dim)
@@ -708,7 +730,11 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
         bucket cap (max_bm decreases, 決議 #30);
       - committed pools drain as they are used;
       - committed entries with a future `available_from` are withheld until
-        their month arrives (S1; inclusive gate, ISO month order).
+        their month arrives (S1; inclusive gate, ISO month order);
+      - fleet events (E2.5, 決議 #40): a machine scheduled for `release` is
+        frozen before its event month (old load stands, hosts nothing new,
+        free space excluded from gauges); at the event month its
+        used_capacity zeroes and it re-enters the pool clean.
 
     Months absent from the book are absent from the report (unplanned ≠ zero
     growth, 決議 #26). Fabs are independent pools (決議 #4). When a month
@@ -755,6 +781,16 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             t for t in request.procurement_types
             if fab == "" or t.fab in ("", fab)
         ]
+        # Fleet events (E2.5, 決議 #40): release month per machine, this
+        # fab's events only (named-fab mode validates event.fab ↔ machine
+        # fab consistency, so the scope filter and the machine set agree).
+        release_month = {
+            bid: ev.period
+            for ev in request.fleet_events
+            if fab == "" or ev.fab in ("", fab)
+            for bid in ev.bm_ids
+        }
+        released_applied: set[str] = set()
         failed_period: str | None = None
         for period in periods:
             entries = book.get((fab, period))
@@ -764,6 +800,25 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
             if failed_period is not None:
                 reports.append(_blocked_report(fab, period, failed_period))
                 continue
+
+            # Apply due releases exactly once, at the first planned month at
+            # or after the event month (a release landing between planned
+            # months takes effect at the next planned one — nothing solves
+            # in between, so the states are indistinguishable). Whole-machine
+            # semantics: the old cluster's load leaves with the release and
+            # the machine re-enters the pool clean. Machines with a FUTURE
+            # release month are frozen: present, loaded, hosting nothing new.
+            released_now: list[str] = []
+            for bm in stock:
+                rm = release_month.get(bm.id)
+                if (rm is not None and rm <= period
+                        and bm.id not in released_applied):
+                    bm.used_capacity = Resources()
+                    released_applied.add(bm.id)
+                    released_now.append(bm.id)
+            frozen_ids = sorted(
+                bid for bid, rm in release_month.items() if rm > period
+            )
 
             # Month gate: an entry with a future available_from is withheld
             # (untouched, re-evaluated next period); ISO "YYYY-MM" strings
@@ -781,6 +836,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 procurement_types=types_f,
                 procurement_caps=caps_state,
                 committed_stock=active_committed,
+                frozen_bm_ids=frozen_ids,
                 anti_affinity_rules=request.anti_affinity_rules,
                 max_per_bm_rules=request.max_per_bm_rules,
                 failover_rules=request.failover_rules,
@@ -826,6 +882,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 fab, period, res, stock, dim,
                 node_adds_per_cell, bought_per_cell, own_per_cell,
                 stock_used_per_cell, demand_coverage,
+                released_bms=sorted(released_now), frozen_bms=frozen_ids,
             ))
 
     budget_view = [
@@ -964,7 +1021,9 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
                    node_adds_per_cell: Counter, bought_per_cell: Counter,
                    own_per_cell: Counter,
                    stock_used_per_cell: Counter,
-                   demand_coverage: list[DemandCoverage]) -> PeriodFabReport:
+                   demand_coverage: list[DemandCoverage],
+                   released_bms: list[str] | None = None,
+                   frozen_bms: list[str] | None = None) -> PeriodFabReport:
     # Post-month in-stock snapshot per (bucket, network, pool) cell — for a
     # failed month the state is unchanged, so the snapshot shows what was
     # available. Pool-less requests only ever produce pool="" keys, keeping
@@ -1020,6 +1079,8 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
         balance_after=res.balance_after,
         cells=cells,
         demand_coverage=demand_coverage,
+        released_bms=released_bms or [],
+        frozen_bms=frozen_bms or [],
     )
 
 

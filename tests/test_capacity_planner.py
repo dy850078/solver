@@ -9,6 +9,7 @@ from app.models import (
     CapacityPlanRequest,
     CommittedStock,
     DemandEntry,
+    FleetEvent,
     GroupSelector,
     NodeRole,
     PlacementRequest,
@@ -703,7 +704,7 @@ def entry(period, cpu=0, mem=0, disk=0, pods=0, cluster="cluster-1",
 
 
 def plan(book, in_stock, types, caps=None, committed=None, rules=None,
-         **cfg):
+         fleet_events=None, **cfg):
     defaults = dict(max_solve_time_seconds=10, auto_generate_anti_affinity=False)
     defaults.update(cfg)
     return solve_capacity_horizon(CapacityPlanRequest(
@@ -712,6 +713,7 @@ def plan(book, in_stock, types, caps=None, committed=None, rules=None,
         procurement_types=types,
         procurement_caps=caps or [],
         committed_stock=committed or [],
+        fleet_events=fleet_events or [],
         anti_affinity_rules=rules or [],
         config=SolverConfig(**defaults),
     ))
@@ -1335,6 +1337,173 @@ class TestCommittedAvailableFrom:
         assert r.success
         assert r.committed_bm_used == 1
         assert r.procured_bm_total == 0
+
+
+class TestFleetEvents:
+    """E2.5 (決議 #40): scheduled whole-machine release + pre-event freeze."""
+
+    def test_release_frees_capacity_at_event_month(self):
+        """A fully-loaded machine released in month 2 hosts month 2's demand
+        clean — without the release that month would have to buy."""
+        in_stock = [
+            make_bm("bm-old", cpu=64, mem=256_000, disk=2000, used_cpu=64,
+                    used_mem=256_000, used_disk=2000),
+            make_bm("bm-keep", cpu=64, mem=256_000, disk=2000,
+                    ag="ag-2", rack="rack-2"),
+        ]
+        types = [make_type("big", 64, 256_000, 2000)]
+        events = [FleetEvent(period="2026-02", action="release",
+                             bm_ids=["bm-old"])]
+        book = [entry("2026-01", cpu=64, spec=SPEC_8),
+                entry("2026-02", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, fleet_events=events)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        m1, m2 = by_period["2026-01"], by_period["2026-02"]
+        assert m1.bm_procurement_total == 0        # bm-keep hosts month 1
+        assert m1.frozen_bms == ["bm-old"] and m1.released_bms == []
+        assert m2.bm_procurement_total == 0        # released bm-old hosts it
+        assert m2.released_bms == ["bm-old"] and m2.frozen_bms == []
+        assert m2.in_stock_bm_used == 1
+
+    def test_freeze_blocks_new_nodes_before_event_month(self):
+        """Pre-event isolation: a machine with free space but a scheduled
+        release must not take new nodes — the plan buys instead (never
+        'build in February, wipe in March')."""
+        in_stock = [make_bm("bm-old", cpu=64, mem=256_000, disk=2000)]
+        types = [make_type("big", 64, 256_000, 2000)]
+        events = [FleetEvent(period="2026-02", action="release",
+                             bm_ids=["bm-old"])]
+        book = [entry("2026-01", cpu=16, spec=SPEC_8)]
+
+        r = plan(book, in_stock, types, fleet_events=events)
+
+        assert r.success
+        m1 = r.by_fab_period[0]
+        assert m1.bm_procurement_total == 1
+        assert m1.in_stock_bm_used == 0
+
+    def test_frozen_free_space_excluded_from_gauges(self):
+        """A frozen machine's free space is not usable headroom: gauges skip
+        it, while the cells snapshot still carries the machine's state."""
+        in_stock = [
+            make_bm("bm-old", cpu=64, mem=256_000, disk=2000),
+            make_bm("bm-keep", cpu=64, mem=256_000, disk=2000,
+                    ag="ag-2", rack="rack-2"),
+        ]
+        events = [FleetEvent(period="2026-02", action="release",
+                             bm_ids=["bm-old"])]
+        book = [entry("2026-01")]          # explicit no-growth month
+
+        r = plan(book, in_stock, [], fleet_events=events,
+                 reference_vm_spec=SPEC_8)
+
+        assert r.success
+        m1 = r.by_fab_period[0]
+        assert m1.nominal_available.cpu_cores == 64      # bm-keep only
+        assert m1.remaining_node_slots == 8              # 64 / SPEC_8
+        assert sum(c.in_stock_total.cpu_cores for c in m1.cells) == 128
+
+    def test_release_between_planned_months_applies_at_next(self):
+        """A release month that is not itself planned takes effect at the
+        next planned month (nothing solves in between)."""
+        in_stock = [make_bm("bm-old", cpu=64, mem=256_000, disk=2000,
+                            used_cpu=64, used_mem=256_000, used_disk=2000)]
+        events = [FleetEvent(period="2026-02", action="release",
+                             bm_ids=["bm-old"])]
+        book = [entry("2026-01"),
+                entry("2026-03", cpu=64, spec=SPEC_8)]
+
+        r = plan(book, in_stock, [], fleet_events=events)
+
+        assert r.success
+        by_period = {p.period: p for p in r.by_fab_period}
+        assert by_period["2026-01"].frozen_bms == ["bm-old"]
+        assert by_period["2026-03"].released_bms == ["bm-old"]
+        assert by_period["2026-03"].in_stock_bm_used == 1
+
+    def test_procure_frozen_ids_direct(self):
+        """The single-shot path honors frozen_bm_ids too: the frozen machine
+        is skipped even though it has room, and demand buys instead."""
+        types = [make_type("big", 64, 256_000, 2000)]
+        r = solve_capacity_plan(ProcurementRequest(
+            requirements=[make_req(cpu=16, spec=SPEC_8)],
+            in_stock=[make_bm("bm-1", cpu=64, mem=256_000, disk=2000)],
+            procurement_types=types,
+            frozen_bm_ids=["bm-1"],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        ))
+        assert r.success
+        assert r.procured_bm_total == 1
+        assert r.in_stock_bm_used == 0
+
+    def test_all_frozen_no_types_actionable_error(self):
+        """Nothing but frozen machines and no way to buy → the INPUT_ERROR
+        names the freeze, not a generic 'no candidates'."""
+        r = solve_capacity_plan(ProcurementRequest(
+            requirements=[make_req(cpu=16, spec=SPEC_8)],
+            in_stock=[make_bm("bm-1", cpu=64, mem=256_000, disk=2000)],
+            procurement_types=[],
+            frozen_bm_ids=["bm-1"],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        ))
+        assert not r.success
+        assert "frozen pending a scheduled release" in r.solver_status
+
+    def test_unknown_machine_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="unknown in-stock machine"):
+            plan([entry("2026-01")], [make_bm("bm-1")], [],
+                 fleet_events=[FleetEvent(period="2026-02", action="release",
+                                          bm_ids=["nope"])])
+
+    def test_machine_in_two_events_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        events = [
+            FleetEvent(period="2026-02", action="release", bm_ids=["bm-1"]),
+            FleetEvent(period="2026-03", action="release", bm_ids=["bm-1"]),
+        ]
+        with pytest.raises(ValidationError, match="more than one fleet event"):
+            plan([entry("2026-01")], [make_bm("bm-1")], [],
+                 fleet_events=events)
+
+    def test_named_fab_mode_requires_event_fab(self):
+        import pytest
+        from pydantic import ValidationError
+
+        bm = make_bm("bm-1")
+        bm.topology = bm.topology.model_copy(update={"site": "fab-a"})
+        with pytest.raises(ValidationError, match="FleetEvent to name"):
+            plan([entry("2026-01", fab="fab-a")], [bm], [],
+                 fleet_events=[FleetEvent(period="2026-02", action="release",
+                                          bm_ids=["bm-1"])])
+
+    def test_event_fab_machine_mismatch_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        # make_bm's default topology sits in site-a, not fab-b.
+        with pytest.raises(ValidationError, match="sits in fab"):
+            plan([entry("2026-01")], [make_bm("bm-1")], [],
+                 fleet_events=[FleetEvent(period="2026-02", action="release",
+                                          fab="fab-b", bm_ids=["bm-1"])])
+
+    def test_bad_period_and_action_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="period"):
+            FleetEvent(period="2026/02", action="release", bm_ids=["bm-1"])
+        with pytest.raises(ValidationError, match="action"):
+            FleetEvent(period="2026-02", action="retire", bm_ids=["bm-1"])
 
 
 class TestRequirementCoverage:

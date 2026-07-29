@@ -639,6 +639,12 @@ class ProcurementRequest(BaseModel):
     procurement_types: list[BaremetalType]
     procurement_caps: list[ProcurementCap] = Field(default_factory=list)
     committed_stock: list[CommittedStock] = Field(default_factory=list)
+    # Machines present but out of candidacy (E2.5): scheduled for a future
+    # fleet-event release, they keep their old load, appear in state
+    # snapshots, but host nothing new and their free space is NOT usable
+    # headroom (excluded from health gauges). Set by the multi-period
+    # planner; direct callers may freeze machines the same way.
+    frozen_bm_ids: list[str] = Field(default_factory=list)
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
@@ -772,6 +778,40 @@ class DemandEntry(BaseModel):
         )
 
 
+class FleetEvent(BaseModel):
+    """
+    One fleet-event-book row (決議 #40, E2.5): scheduled whole-machine
+    release — the named in-stock machines leave their old cluster in `period`
+    and return to the pool with used_capacity zeroed. Three fixed semantics:
+
+      - action is `release` only for now (`retire` / `add` are future rows in
+        the same book, added as new Literal members when needed);
+      - whole-machine granularity: the old load leaves WITH the machine, no
+        partial release;
+      - pre-event isolation: in every planned month BEFORE `period` the
+        machine keeps its old load and is frozen out of candidacy (it hosts
+        nothing new), so the plan can never build onto a machine that is
+        about to be wiped.
+
+    The single-shot /v1/capacity/procure endpoint has no period concept and
+    ignores the event book entirely.
+    """
+    period: str                       # "YYYY-MM" the release takes effect
+    action: Literal["release"]
+    bm_ids: list[str] = Field(min_length=1)
+    fab: str = ""                     # required in named-fab planning mode
+
+    @field_validator("period")
+    @classmethod
+    def _validate_period(cls, v: str) -> str:
+        # Same guard as CommittedStock.available_from: a malformed month
+        # would compare lexically against valid "YYYY-MM" periods and gate
+        # (or fire) the event at the wrong time, silently.
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", v):
+            raise ValueError(f"period must be 'YYYY-MM', got {v!r}")
+        return v
+
+
 class CapacityPlanRequest(BaseModel):
     """
     Input for the multi-period planning endpoint. The horizon is derived from
@@ -784,6 +824,7 @@ class CapacityPlanRequest(BaseModel):
     procurement_types: list[BaremetalType]
     procurement_caps: list[ProcurementCap] = Field(default_factory=list)
     committed_stock: list[CommittedStock] = Field(default_factory=list)
+    fleet_events: list[FleetEvent] = Field(default_factory=list)
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
@@ -822,6 +863,51 @@ class CapacityPlanRequest(BaseModel):
                     "to name its fab (owned machines sit in one fab); "
                     f"unscoped entry type(s): {unscoped_committed}"
                 )
+            unscoped_events = [
+                ev.bm_ids for ev in self.fleet_events if not ev.fab
+            ]
+            if unscoped_events:
+                raise ValueError(
+                    "named-fab planning requires every FleetEvent to name "
+                    "its fab (a machine sits in one fab); "
+                    f"unscoped event machine(s): {unscoped_events}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_fleet_events(self) -> CapacityPlanRequest:
+        """
+        Event-book referential integrity (決議 #40): a dangling bm_id would
+        silently release nothing (the event book is a plan of record, typos
+        must fail loudly); one machine in two events is ambiguous (released
+        twice); a named-fab event must reference machines actually sitting in
+        that fab, or the release would be applied in the wrong rolling state.
+        """
+        if not self.fleet_events:
+            return self
+        fab_dim = self.config.fab_topology_dimension
+        bm_fab = {
+            bm.id: getattr(bm.topology, fab_dim) for bm in self.in_stock
+        }
+        seen: set[str] = set()
+        for ev in self.fleet_events:
+            for bid in ev.bm_ids:
+                if bid not in bm_fab:
+                    raise ValueError(
+                        f"fleet_events references unknown in-stock machine "
+                        f"{bid!r}"
+                    )
+                if bid in seen:
+                    raise ValueError(
+                        f"machine {bid!r} appears in more than one fleet "
+                        f"event; a machine can be released once"
+                    )
+                seen.add(bid)
+                if ev.fab and bm_fab[bid] != ev.fab:
+                    raise ValueError(
+                        f"fleet event scoped to fab {ev.fab!r} references "
+                        f"machine {bid!r} which sits in fab {bm_fab[bid]!r}"
+                    )
         return self
 
 
@@ -919,6 +1005,12 @@ class PeriodFabReport(BaseModel):
     cells: list[BucketMonthCell] = Field(default_factory=list)
     # Per-demand coverage by source (E0/S2); empty on blocked stubs.
     demand_coverage: list[DemandCoverage] = Field(default_factory=list)
+    # Fleet-event annotations (E2.5): machines whose scheduled release took
+    # effect this month (capacity re-entered the pool clean), and machines
+    # still frozen this month pending a future release (present in the
+    # snapshot, hosting nothing new).
+    released_bms: list[str] = Field(default_factory=list)
+    frozen_bms: list[str] = Field(default_factory=list)
 
 
 class CapacityReport(BaseModel):
