@@ -29,10 +29,13 @@ from .models import (
     PlacementResult,
     ProcurementRequest,
     ProcurementResult,
+    ReconcileReport,
+    ReconcileRequest,
     SplitPlacementRequest,
     SplitPlacementResult,
 )
 from .capacity_planner import solve_capacity_horizon, solve_capacity_plan
+from .reconcile import reconcile as run_reconcile
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
 
@@ -123,6 +126,12 @@ def procure(request: ProcurementRequest) -> ProcurementResult:
 def plan(request: CapacityPlanRequest) -> CapacityReport:
     """Multi-period capacity plan: sparse demand book → per-fab monthly roll-forward report."""
     return solve_capacity_horizon(request)
+
+
+@api.post("/v1/capacity/reconcile", response_model=ReconcileReport)
+def capacity_reconcile(request: ReconcileRequest) -> ReconcileReport:
+    """Plan vs actual drift report for the as_of month — pure function, nothing persisted."""
+    return run_reconcile(request)
 
 
 @api.get("/health")

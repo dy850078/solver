@@ -883,6 +883,7 @@ def solve_capacity_horizon(request: CapacityPlanRequest) -> CapacityReport:
                 node_adds_per_cell, bought_per_cell, own_per_cell,
                 stock_used_per_cell, demand_coverage,
                 released_bms=sorted(released_now), frozen_bms=frozen_ids,
+                ref_spec=config.reference_vm_spec,
             ))
 
     budget_view = [
@@ -1023,18 +1024,27 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
                    stock_used_per_cell: Counter,
                    demand_coverage: list[DemandCoverage],
                    released_bms: list[str] | None = None,
-                   frozen_bms: list[str] | None = None) -> PeriodFabReport:
+                   frozen_bms: list[str] | None = None,
+                   ref_spec: Resources | None = None) -> PeriodFabReport:
     # Post-month in-stock snapshot per (bucket, network, pool) cell — for a
     # failed month the state is unchanged, so the snapshot shows what was
     # available. Pool-less requests only ever produce pool="" keys, keeping
     # the pre-pool cell set intact (E2/S6).
     cell_stock: dict[tuple[str, str, str], dict[str, Resources]] = {}
+    # Landable node slots per cell (S3): per-BM bin-pack of the reference
+    # spec. Frozen machines contribute zero — same usability stance as the
+    # gauges (E2.5): space that can't take new nodes is not capacity.
+    cell_slots: Counter = Counter()
+    frozen_set = set(frozen_bms or [])
     for bm in stock_after:
-        agg = cell_stock.setdefault(_cell_of(bm, dim), {
+        cell = _cell_of(bm, dim)
+        agg = cell_stock.setdefault(cell, {
             "total": Resources(), "used": Resources(),
         })
         agg["total"] = agg["total"] + bm.total_capacity
         agg["used"] = agg["used"] + bm.used_capacity
+        if ref_spec is not None and bm.id not in frozen_set:
+            cell_slots[cell] += _fits_count(bm.available_capacity, ref_spec)
 
     # Cells cover every cell with stock OR activity: a failed month's what-if
     # buys land in cells that may hold no stock (state unchanged), and the
@@ -1055,6 +1065,8 @@ def _period_report(fab: str, period: str, res: ProcurementResult,
             in_stock_total=agg["total"],
             in_stock_used=agg["used"],
             in_stock_available=agg["total"] - agg["used"],
+            in_stock_slots=(cell_slots.get(cell, 0)
+                            if ref_spec is not None else None),
         )
         for cell in sorted(all_cells)
         for (bucket, network, bm_pool) in [cell]

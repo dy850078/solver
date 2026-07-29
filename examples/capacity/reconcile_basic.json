@@ -1,0 +1,277 @@
+{
+  "plan": {
+    "plan_id": "plan-2026-01-v1",
+    "created_at": "2026-01-02",
+    "report": {
+      "success": true,
+      "by_fab_period": [
+        {
+          "fab": "",
+          "period": "2026-01",
+          "success": true,
+          "node_adds_total": 4,
+          "bm_procurement_total": 0,
+          "committed_bm_used": 0,
+          "in_stock_bm_used": 1,
+          "procurement": [],
+          "committed_used": [],
+          "split_decisions": [
+            {
+              "node_role": "worker",
+              "vm_spec": {
+                "cpu_cores": 8,
+                "memory_mib": 16000,
+                "storage_gb": 100,
+                "gpu_count": 0
+              },
+              "count": 4
+            }
+          ],
+          "shortfalls": [],
+          "solver_status": "OPTIMAL",
+          "nominal_available": {
+            "cpu_cores": 96,
+            "memory_mib": 448000,
+            "storage_gb": 3600,
+            "gpu_count": 0
+          },
+          "remaining_node_slots": 12,
+          "stranded_available": null,
+          "balance_after": {
+            "ag-1": 32,
+            "ag-2": 64
+          },
+          "cells": [
+            {
+              "fab": "",
+              "bucket": "ag-1",
+              "network": "",
+              "pool": "",
+              "period": "2026-01",
+              "node_adds": 4,
+              "bm_bought": 0,
+              "committed_used": 0,
+              "in_stock_bm_used": 1,
+              "in_stock_total": {
+                "cpu_cores": 64,
+                "memory_mib": 256000,
+                "storage_gb": 2000,
+                "gpu_count": 0
+              },
+              "in_stock_used": {
+                "cpu_cores": 32,
+                "memory_mib": 64000,
+                "storage_gb": 400,
+                "gpu_count": 0
+              },
+              "in_stock_available": {
+                "cpu_cores": 32,
+                "memory_mib": 192000,
+                "storage_gb": 1600,
+                "gpu_count": 0
+              },
+              "in_stock_slots": 4
+            },
+            {
+              "fab": "",
+              "bucket": "ag-2",
+              "network": "",
+              "pool": "",
+              "period": "2026-01",
+              "node_adds": 0,
+              "bm_bought": 0,
+              "committed_used": 0,
+              "in_stock_bm_used": 0,
+              "in_stock_total": {
+                "cpu_cores": 64,
+                "memory_mib": 256000,
+                "storage_gb": 2000,
+                "gpu_count": 0
+              },
+              "in_stock_used": {
+                "cpu_cores": 0,
+                "memory_mib": 0,
+                "storage_gb": 0,
+                "gpu_count": 0
+              },
+              "in_stock_available": {
+                "cpu_cores": 64,
+                "memory_mib": 256000,
+                "storage_gb": 2000,
+                "gpu_count": 0
+              },
+              "in_stock_slots": 8
+            }
+          ],
+          "demand_coverage": [
+            {
+              "demand_id": "DMD-web-2026-01",
+              "cluster_id": "cluster-web",
+              "node_role": "worker",
+              "period": "2026-01",
+              "fab": "",
+              "in_stock": 4,
+              "committed": 0,
+              "new_buy": 0,
+              "total": 4
+            }
+          ],
+          "released_bms": [],
+          "frozen_bms": []
+        }
+      ],
+      "budget_view": [],
+      "totals": {
+        "node_adds": 4,
+        "bm_procurement": 0,
+        "committed_bm_used": 0,
+        "in_stock_bm_used": 1,
+        "by_fab": {
+          "": {
+            "node_adds": 4,
+            "bm_procurement": 0
+          }
+        }
+      },
+      "solve_time_seconds": 0.015409469604492188,
+      "config_fingerprint": "4aca1d66cdd4"
+    },
+    "demand_snapshot": [
+      {
+        "cluster_id": "cluster-web",
+        "node_role": "worker",
+        "period": "2026-01",
+        "cpu_cores": 32,
+        "memory_mib": 0,
+        "storage_gb": 0,
+        "pod_count": 0,
+        "vm_specs": [
+          {
+            "cpu_cores": 8,
+            "memory_mib": 16000,
+            "storage_gb": 100,
+            "gpu_count": 0
+          }
+        ],
+        "min_total_vms": null,
+        "max_total_vms": null,
+        "fab": "",
+        "network": "",
+        "allowed_bm_types": null,
+        "pool": "",
+        "demand_id": "DMD-web-2026-01"
+      }
+    ]
+  },
+  "actual": {
+    "as_of": "2026-01-31",
+    "in_stock": [
+      {
+        "id": "bm-1",
+        "hostname": "",
+        "total_capacity": {
+          "cpu_cores": 32,
+          "memory_mib": 256000,
+          "storage_gb": 2000,
+          "gpu_count": 0
+        },
+        "used_capacity": {
+          "cpu_cores": 32,
+          "memory_mib": 64000,
+          "storage_gb": 400,
+          "gpu_count": 0
+        },
+        "topology": {
+          "site": "site-a",
+          "phase": "p1",
+          "datacenter": "dc-1",
+          "room": "room-1",
+          "rack": "rack-1",
+          "ag": "ag-1"
+        },
+        "network": "",
+        "pool": ""
+      },
+      {
+        "id": "bm-2",
+        "hostname": "",
+        "total_capacity": {
+          "cpu_cores": 64,
+          "memory_mib": 256000,
+          "storage_gb": 2000,
+          "gpu_count": 0
+        },
+        "used_capacity": {
+          "cpu_cores": 16,
+          "memory_mib": 32000,
+          "storage_gb": 200,
+          "gpu_count": 0
+        },
+        "topology": {
+          "site": "site-a",
+          "phase": "p1",
+          "datacenter": "dc-1",
+          "room": "room-1",
+          "rack": "rack-2",
+          "ag": "ag-2"
+        },
+        "network": "",
+        "pool": ""
+      }
+    ],
+    "committed_stock": [],
+    "executions": [
+      {
+        "demand_id": "DMD-web-2026-01",
+        "cluster_id": "cluster-web",
+        "node_role": "worker",
+        "vm_count": 4,
+        "status": "success",
+        "period": "2026-01",
+        "fab": "",
+        "infeasible_cause": null
+      },
+      {
+        "demand_id": null,
+        "cluster_id": "cluster-rogue",
+        "node_role": "worker",
+        "vm_count": 2,
+        "status": "success",
+        "period": "2026-01",
+        "fab": "",
+        "infeasible_cause": null
+      }
+    ],
+    "machine_adds": []
+  },
+  "config": {
+    "max_solve_time_seconds": 10.0,
+    "num_workers": 8,
+    "allow_partial_placement": false,
+    "auto_generate_anti_affinity": false,
+    "target_spread": {
+      "ag": 3
+    },
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "headroom_upper_bound_pct": 90,
+    "w_slot_score": 0,
+    "vm_specs": [],
+    "w_resource_waste": 5,
+    "max_pods_per_node": 0,
+    "auto_generate_max_per_bm": false,
+    "default_max_per_bm": null,
+    "w_procurement": 10000,
+    "procurement_spread_dimension": "ag",
+    "w_committed_stock": 100,
+    "w_procurement_balance": 0,
+    "reference_vm_spec": {
+      "cpu_cores": 8,
+      "memory_mib": 16000,
+      "storage_gb": 100,
+      "gpu_count": 0
+    },
+    "min_useful_spec": null,
+    "fab_topology_dimension": "site"
+  }
+}

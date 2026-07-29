@@ -967,6 +967,12 @@ class BucketMonthCell(BaseModel):
     in_stock_total: Resources = Field(default_factory=Resources)
     in_stock_used: Resources = Field(default_factory=Resources)
     in_stock_available: Resources = Field(default_factory=Resources)
+    # Landable node slots in this cell's post-month stock (S3): per-BM
+    # bin-pack of config.reference_vm_spec, summed over the cell — the
+    # fragmentation-honest capacity number nominal Resources cannot give
+    # (決議 #5). None when no reference_vm_spec is configured. Frozen
+    # machines (pending release, E2.5) contribute zero, same as the gauges.
+    in_stock_slots: int | None = None
 
 
 class DemandCoverage(BaseModel):
@@ -1031,3 +1037,169 @@ class CapacityReport(BaseModel):
     solve_time_seconds: float = 0.0
     # sha256[:12] over effective config + engine/ortools versions (E0/S4).
     config_fingerprint: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Reconcile I/O (E4/S3): plan vs actual calibration — a pure function.
+# The solver stores nothing (決議 #25): Go archives each canonical run (G4)
+# and posts it back here together with the current real snapshot. The one
+# computation Go cannot do is the landable-capacity recount (bin-pack of
+# reference_vm_spec per BM) — nominal sums lie under fragmentation (決議 #5);
+# everything else is a diff.
+# ---------------------------------------------------------------------------
+
+class ExecutionRecord(BaseModel):
+    """
+    One executed build/add-node batch, as booked by the Go scheduler.
+    demand_id joins it back to the plan's demand book; None = the execution
+    bypassed the book (a meteor — it feeds unplanned_ratio and demand drift).
+    """
+    demand_id: str | None = None
+    cluster_id: str = ""
+    node_role: NodeRole = NodeRole.WORKER
+    vm_count: int = Field(ge=0)
+    status: Literal["success", "failed"]
+    period: str                       # "YYYY-MM" the execution belongs to
+    fab: str = ""
+    infeasible_cause: str | None = None
+
+    @field_validator("period")
+    @classmethod
+    def _validate_period(cls, v: str) -> str:
+        # A malformed month would silently fall out of every period join and
+        # the record would vanish from all four metrics.
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", v):
+            raise ValueError(f"period must be 'YYYY-MM', got {v!r}")
+        return v
+
+
+class MachineAdd(BaseModel):
+    """
+    Machines that actually became ready in a cell during a period, counted by
+    Go from inventory history (a count diff needs no solver). Compared against
+    the plan's bm_bought + committed_used per cell for supply hit rate.
+    """
+    fab: str = ""
+    bucket: str
+    network: str = ""
+    pool: str = ""
+    period: str
+    count: int = Field(ge=0)
+
+    @field_validator("period")
+    @classmethod
+    def _validate_period(cls, v: str) -> str:
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", v):
+            raise ValueError(f"period must be 'YYYY-MM', got {v!r}")
+        return v
+
+
+class ActualSnapshot(BaseModel):
+    """The world as it is at reconcile time — same formats as planning input."""
+    as_of: str                        # "YYYY-MM-DD"; its month is the target
+    in_stock: list[Baremetal]
+    committed_stock: list[CommittedStock] = Field(default_factory=list)
+    executions: list[ExecutionRecord] = Field(default_factory=list)
+    machine_adds: list[MachineAdd] = Field(default_factory=list)
+
+    @field_validator("as_of")
+    @classmethod
+    def _validate_as_of(cls, v: str) -> str:
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])", v):
+            raise ValueError(f"as_of must be 'YYYY-MM-DD', got {v!r}")
+        return v
+
+
+class ReconcilePlan(BaseModel):
+    """
+    The archived canonical run being reconciled against: the CapacityReport
+    it produced (predicted cells live in report.by_fab_period[].cells) plus
+    the demand book it was fed (the demand_id join space).
+    """
+    plan_id: str = ""
+    created_at: str = ""
+    report: CapacityReport
+    demand_snapshot: list[DemandEntry] = Field(default_factory=list)
+
+
+class ReconcileRequest(BaseModel):
+    plan: ReconcilePlan
+    actual: ActualSnapshot
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class ReconcileCell(BaseModel):
+    """Predicted vs actual state of one (fab, bucket, network, pool) cell for
+    the target month. Slots are the landable measure (headline); nominal
+    Resources are the auxiliary columns (決議 #5: nominal alone lies)."""
+    fab: str = ""
+    bucket: str
+    network: str = ""
+    pool: str = ""
+    period: str
+    predicted_slots: int | None = None
+    actual_slots: int | None = None
+    slots_delta: int | None = None    # actual - predicted
+    predicted_total: Resources = Field(default_factory=Resources)
+    actual_total: Resources = Field(default_factory=Resources)
+    predicted_used: Resources = Field(default_factory=Resources)
+    actual_used: Resources = Field(default_factory=Resources)
+    predicted_available: Resources = Field(default_factory=Resources)
+    actual_available: Resources = Field(default_factory=Resources)
+
+
+class DriftDetail(BaseModel):
+    """
+    One structured drift finding (mirrors ShortfallDetail's shape). Rule-based
+    v1: a cell can legitimately appear under several categories at once
+    (e.g. supply late + fleet change) — multiple rows, no forced single
+    attribution.
+    """
+    # "demand" | "supply" | "placement" | "fleet"
+    category: str
+    fab: str = ""
+    bucket: str | None = None
+    network: str | None = None
+    pool: str | None = None
+    period: str = ""
+    delta: int = 0
+    demand_ids: list[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class ReconcileHeadline(BaseModel):
+    """
+    The four metrics (決議 #9), each None when its denominator is empty —
+    an unmeasurable rate must not masquerade as 0% or 100%. The int fields
+    expose numerators/denominators so the UI can show "17/20", not just 85%.
+    """
+    fulfillment_rate: float | None = None     # 承諾兌現率 (headline)
+    planned_vms: int = 0                      # denominator (joinable rows)
+    fulfilled_vms: int = 0                    # numerator
+    # Planned VMs whose coverage row carries no demand_id — invisible to the
+    # join, EXCLUDED from the rate; nonzero means the book has gaps.
+    unjoinable_planned_vms: int = 0
+    forecast_error: float | None = None       # Σ|Δslots| / Σ predicted slots
+    supply_hit_rate: float | None = None
+    planned_machine_adds: int = 0
+    actual_machine_adds: int = 0
+    unplanned_ratio: float | None = None      # meteor share of executed VMs
+    executed_vms: int = 0
+    unplanned_vms: int = 0
+
+
+class ReconcileReport(BaseModel):
+    """Drift report for the as_of month: headline + per-cell diff + findings.
+    Pure output — nothing is persisted on the solver side."""
+    success: bool
+    status: str = "OK"
+    period: str = ""                  # the reconciled month (as_of's month)
+    as_of: str = ""
+    plan_id: str = ""
+    headline: ReconcileHeadline = Field(default_factory=ReconcileHeadline)
+    cells: list[ReconcileCell] = Field(default_factory=list)
+    drifts: list[DriftDetail] = Field(default_factory=list)
+    # Fingerprint of THIS reconcile's config; plan.report carries its own —
+    # a mismatch between the two is itself worth flagging in the UI (M2).
+    config_fingerprint: str = ""
+    plan_config_fingerprint: str = ""

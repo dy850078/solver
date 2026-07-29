@@ -18,6 +18,8 @@ app/
 ├── splitter.py      # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 ├── split_solver.py  # Orchestrates splitter + solver joint solve (split-and-solve endpoint)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
+├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
+├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
 ├── diagnostics.py   # Advisory diagnostics (e.g. spread_below_target)
 ├── server.py        # FastAPI app + CLI mode; UI gated behind ENABLE_UI
 ├── mockgen.py       # Mock request generator for testing/demo
