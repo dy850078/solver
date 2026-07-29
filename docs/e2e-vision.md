@@ -399,9 +399,11 @@ DemandEntry.pool: str = ""        # 由 cluster 註冊資訊帶入（provenance 
   維度，報表不全面爆炸。
 - **池內打散**：池跨 AG 時，anti-affinity 的 `reachable_buckets` 由候選 BM 算
   （既有機制），自然只在池所及的 AG 間展開 —— 零新機制。
-- **池滿政策**（兩個可選開關，細部順位列 Open Question）：
-  1. **by-池採買擴充**：池 owner 的殘量採買進池（虛擬 BM 掛 pool 標籤）。
-  2. **spill 設定**：允許獨佔池 user 溢出吃共用池（per-cluster/pool config）。
+- **池滿政策（實作後修訂，見 Decision #22）**：只有一條路——**採買進池**
+  （虛擬 BM 掛 pool 標籤）。spill（溢出吃共用池）曾實作為 `PoolPolicy` +
+  assignment-level 罰項，經 Capacity 負責人 review 後**整段移除**：隔離改為
+  結構保證；真需要溢出時人工調配（Inventory 改機器 pool 標籤，下次
+  canonical run 生效）。設計與實作保留於 ADR-003 追記與 git 歷史。
 
 ### Pool 是報表切面，不是平行功能
 
@@ -502,8 +504,8 @@ E1 先於 E2（帳本是 demand_id 之根）；fleet events 提前到 E2.5（早
 
 1. **預留機制**：v1 不做。等 E4 命中率數據證明「時差漂移」真的痛，再評估
    Go 端容量鎖定的成本（狀態、利用率下降、與全域重解的張力）。
-2. **池滿政策細部**：消化順位（own pool → spill → 採買？）、spill 開關掛
-   per-cluster 還是 per-pool、採買是否一律進池 —— S6 實作 plan-first 時定案。
+2. ~~池滿政策細部~~ → **已定案（Decision #22）**：spill 移除、嚴格隔離、
+   採買一律進池；溢出需求人工調配。
 3. **`get_book_as_of` 版本化**：先用 plan 整包存檔頂替；何時值得上真正的帳本
    版本查詢（例如需要審計「誰在何時改了需求」時）。
 4. **帶單率目標值與治理**：計畫外比率的可接受水位、超標時的制度動作
@@ -564,6 +566,7 @@ reconcile 漂移列表與四個頭條指標（含週對帳點 sparkline）。
 | 19 | **Roadmap E0–E5**：功能面先於命中率；E1 帳本先於 E2 快照；fleet events 提前至 E2.5 | 帳本是 demand_id 之根；機隊漂移早入模讓 E4 指標更準 | 各階段獨立交付可回滾 |
 | 20 | **名詞對齊**：採買落點語言=AG（虛擬 DC，實體至少散 3 櫃）；PO 表無桶沒關係（committed 浮動）| 對齊 #29/#10；rack 級屬 DC HW Team | — |
 | 21 | **Pool 是報表切面不是平行功能**：pool 進三個源頭（cell key / DemandEntry / PO·採買標籤），所有視圖與四指標自動繼承 by-池切面；共用可落地不含池容量；無池 fab 形狀不變；不為池另開功能頁 | 一次實作全域繼承，避免 by-池邏輯散落各功能各自為政 | S6 實作時落地三源頭 |
+| 22 | **Spill 能力移除，池嚴格隔離**（修訂 #18 的池滿雙開關為單一路徑）：獨佔池需求只能用自己池 + 採買進池；溢出需求由**人工調配**（Inventory 改 pool 標籤）處理 | Capacity 負責人決議隔離優先；結構保證勝過政策保證（能力不存在就不會被誤開）| spill 設計與實作保留於 ADR-003 追記 + git `3549a56`，未來翻案成本低 |
 
 ---
 

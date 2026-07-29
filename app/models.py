@@ -104,8 +104,9 @@ class Baremetal(BaseModel):
     network: str = ""
     # Dedicated-pool tag (E2/S6). A filter attribute, not a spread dimension.
     # "" = the shared pool — a DISTINCT domain, not a wildcard: shared demand
-    # never lands on pool-tagged hosts and pool demand only reaches shared
-    # hosts via an explicit PoolPolicy(allow_spill=True).
+    # never lands on pool-tagged hosts and pool demand never lands on shared
+    # hosts (strict isolation; rebalancing between pools is a manual
+    # operation — retag the machine in Inventory).
     pool: str = ""
 
     @property
@@ -351,17 +352,6 @@ class SolverConfig(BaseModel):
     # Committed stock (already purchased, 缺口 3h) costs less than buying new
     # but more than in-stock, giving the order: in-stock → committed → buy.
     w_committed_stock: int = 100
-    # Spill penalty per ASSIGNMENT (E2/S6): each VM of a dedicated-pool
-    # requirement placed on a shared-pool BM costs this much, giving the
-    # order: own in-stock → own committed → spill → buy. Per-VM (not per-BM)
-    # because a shared BM can simultaneously host shared demand (free) and
-    # spilled demand (penalized). Magnitude: must exceed w_committed_stock
-    # + w_consolidation (110) so a fresh own-pool committed machine beats
-    # spilling even one VM, and k·w_pool_spill must stay below w_procurement
-    # (10_010) for realistic per-BM VM counts — 200 holds the order up to
-    # 50 VMs/BM; beyond that the solver buys instead of mass-spilling
-    # (documented, intentional).
-    w_pool_spill: int = 200
     # Balance the *resulting* per-bucket available capacity (decision #11):
     # soft-minimize (max − min) of post-placement available CPU cores across
     # the procurement_spread_dimension buckets, so buying tops up the emptiest
@@ -524,7 +514,7 @@ class ResourceRequirement(BaseModel):
     # planner's candidate assembly (like allowed_bm_types); the splitter and
     # plain placement ignore it. Unlike `network`, "" is a distinct domain
     # (shared pool), never a wildcard: pool="" demand sees only shared BMs,
-    # pool="X" demand sees pool-X BMs (+ shared, when PoolPolicy allows spill).
+    # pool="X" demand sees only pool-X BMs (strict isolation).
     pool: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
 
@@ -634,20 +624,6 @@ class CommittedStock(BaseModel):
         return v
 
 
-class PoolPolicy(BaseModel):
-    """
-    The contract of one dedicated pool (E2/S6), maintained system-side (Go)
-    like procurement_caps. One row per (fab, pool). No row = spill off.
-    A policy may name a pool nothing references yet (bootstrap: the first
-    purchase creates the pool).
-    """
-    fab: str = ""
-    pool: str
-    # Allow this pool's clusters to overflow onto shared-pool supply
-    # (in-stock and committed only — new purchases always go INTO the pool).
-    allow_spill: bool = False
-
-
 class ProcurementRequest(BaseModel):
     """
     Input for the procurement endpoint (single fab/period).
@@ -663,7 +639,6 @@ class ProcurementRequest(BaseModel):
     procurement_types: list[BaremetalType]
     procurement_caps: list[ProcurementCap] = Field(default_factory=list)
     committed_stock: list[CommittedStock] = Field(default_factory=list)
-    pool_policies: list[PoolPolicy] = Field(default_factory=list)
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
@@ -684,9 +659,6 @@ class RequirementCoverage(BaseModel):
     committed: int = 0
     new_buy: int = 0
     total: int = 0                    # == in_stock + committed + new_buy
-    # VMs placed on shared supply via a spill contract (E2/S6). Overlaps the
-    # counts above; does not enter the total invariant.
-    spilled: int = 0
 
 
 class ProcurementResult(BaseModel):
@@ -812,7 +784,6 @@ class CapacityPlanRequest(BaseModel):
     procurement_types: list[BaremetalType]
     procurement_caps: list[ProcurementCap] = Field(default_factory=list)
     committed_stock: list[CommittedStock] = Field(default_factory=list)
-    pool_policies: list[PoolPolicy] = Field(default_factory=list)
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
@@ -828,16 +799,6 @@ class CapacityPlanRequest(BaseModel):
         stock = owned machines) must name its fab for the same reason;
         procurement_types may stay fab="" — a catalog is stateless.
         """
-        seen_policies: set[tuple[str, str]] = set()
-        for p in self.pool_policies:
-            key = (p.fab, p.pool)
-            if key in seen_policies:
-                raise ValueError(
-                    f"duplicate PoolPolicy for (fab={p.fab!r}, "
-                    f"pool={p.pool!r}) — one contract row per pool"
-                )
-            seen_policies.add(key)
-
         fabs = {e.fab for e in self.demand_book}
         if "" in fabs and len(fabs) > 1:
             raise ValueError(
@@ -860,14 +821,6 @@ class CapacityPlanRequest(BaseModel):
                     "named-fab planning requires every CommittedStock entry "
                     "to name its fab (owned machines sit in one fab); "
                     f"unscoped entry type(s): {unscoped_committed}"
-                )
-            unscoped_policies = [p.pool for p in self.pool_policies if not p.fab]
-            if unscoped_policies:
-                raise ValueError(
-                    "named-fab planning requires every PoolPolicy to name its "
-                    "fab (a pool name may recur across fabs with different "
-                    f"spill contracts); unscoped policy pool(s): "
-                    f"{unscoped_policies}"
                 )
         return self
 
@@ -941,10 +894,6 @@ class DemandCoverage(BaseModel):
     committed: int = 0
     new_buy: int = 0
     total: int = 0
-    # Of the counts above, how many VMs landed on SHARED supply via a spill
-    # contract (E2/S6). Overlaps in_stock/committed — the total invariant
-    # (total == in_stock + committed + new_buy) is unchanged.
-    spilled: int = 0
 
 
 class PeriodFabReport(BaseModel):

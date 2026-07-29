@@ -34,9 +34,6 @@
   "procurement_types": [
     {"type_id": "big-64c", "capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}}
   ],
-  "pool_policies": [
-    {"pool": "pool-ml", "allow_spill": true}
-  ],
   "config": {
     "auto_generate_anti_affinity": false,
     "max_solve_time_seconds": 10,

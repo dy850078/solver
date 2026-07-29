@@ -1,5 +1,14 @@
 # ADR-003: 獨佔 BM 池——精確匹配的資格過濾 + assignment-level spill 罰項
 
+> **追記 (2026-07-28)**：spill 能力已於 review 後**整段移除**（Capacity 負責人
+> 決議：隔離優先；真需要溢出時由人工調配——在 Inventory 改機器的 pool 標籤,
+> 下次 canonical run 自然生效）。移除的是 `PoolPolicy`、`w_pool_spill`、
+> assignment-level 罰項與 `spilled` 計數;**保留**的是雙邊精確匹配隔離、
+> 買進池、committed 池標籤與 `(bucket, network, pool)` 報表座標。隔離因此從
+> 「政策保證」升為「結構保證」（想開也開不了）。本文 §2「spill 偏好的
+> objective 表達」與 §4 的 spill 走讀保留為歷史紀錄與未來重啟時的設計依據
+> ——實作在 git 歷史 `3549a56`。
+
 - **日期**: 2026-07-28
 - **作者**: Claude (claude-code)
 - **相關 PR / commit**: `9d72371`(隔離)、`3549a56`(spill)、`072bbee`(報表)

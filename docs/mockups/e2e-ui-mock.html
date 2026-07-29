@@ -614,12 +614,12 @@
     </div>
     <div class="explain">
       <b>共用池的「可落地」不含獨佔池容量</b>——池只對 owner cluster 可見，混算會系統性高估共用容量。
-      pool 是報表的一個切面（cell key 多一維），不是平行功能。
+      pool 是報表的一個切面（cell key 多一維），不是平行功能。池嚴格隔離，不支援溢出；真需要時由人工在 Inventory 調配機器歸屬。
     </div>
     <div class="tblwrap">
     <table>
       <thead><tr>
-        <th>fab</th><th>pool</th><th>範圍 (AG)</th><th>可落地 (nodes)</th><th>CPU 利用率</th><th>spill 設定</th>
+        <th>fab</th><th>pool</th><th>範圍 (AG)</th><th>可落地 (nodes)</th><th>CPU 利用率</th><th>溢出處理</th>
       </tr></thead>
       <tbody>
         <tr>
@@ -627,14 +627,14 @@
           <td><span class="pool-tag ded">pool-ml（獨佔）</span> <span class="dim">cluster-ml-a/b</span></td>
           <td class="mono dim">ag-0 / ag-1 / ag-2</td><td class="num">12</td>
           <td class="progress num"><div class="pbar"><i style="width:68%"></i></div>68%</td>
-          <td><span class="chip st-done">off</span></td>
+          <td><span class="dimmer">人工調配</span></td>
         </tr>
         <tr>
           <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
           <td><span class="pool-tag ded">pool-db（獨佔）</span> <span class="dim">cluster-db</span></td>
           <td class="mono dim">ag-0 / ag-1</td><td class="num">3</td>
           <td class="progress num"><div class="pbar"><i class="hot" style="width:82%"></i></div>82%</td>
-          <td><span class="chip st-ready">● on（可溢出共用池）</span></td>
+          <td><span class="dimmer">人工調配</span></td>
         </tr>
         <tr>
           <td><i class="fab-dot" style="background:var(--f12)"></i>F12</td>
@@ -648,7 +648,7 @@
           <td><span class="pool-tag ded">pool-cache（獨佔）</span> <span class="dim">cluster-cache</span></td>
           <td class="mono dim">ag-0 / ag-2</td><td class="num">6</td>
           <td class="progress num"><div class="pbar"><i style="width:74%"></i></div>74%</td>
-          <td><span class="chip st-done">off</span></td>
+          <td><span class="dimmer">人工調配</span></td>
         </tr>
         <tr>
           <td><i class="fab-dot" style="background:var(--f07)"></i>F07</td>
