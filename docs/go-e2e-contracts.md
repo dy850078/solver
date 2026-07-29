@@ -1,13 +1,26 @@
 # Go 端 E2E 實作說明（G1–G7）— 給實作 agent 的交接文件
 
-> **用途**：把這份文件直接餵給在 Go Scheduler repo 工作的 agent。文件自足——
-> 不需要讀 solver repo 也能實作；但 solver 本身是活的合約來源：
-> `GET /openapi.json` 有機器可讀 schema，`examples/capacity/*.json` 是可直接
-> POST 的樣本（`plan_dedicated_pool.json`、`plan_fleet_release.json`、
-> `reconcile_basic.json`）。
-> **背景設計**：`docs/e2e-vision.md`（決議 #1–#25）、`docs/capacity-planning.md`
-> （決議 #1–#43）。本文只重述實作必需的部分。
+> **用途**：把這份文件餵給在 Go Scheduler repo 工作的 agent。**solver repo
+> 在本地可讀**——本文內嵌的 JSON 契約只是速查，**與 code 有出入時一律以
+> solver repo 的 `app/models.py` 為準**（Pydantic 模型即合約）。跑起來的
+> solver 另有 `GET /openapi.json` 機器可讀 schema。
 > **日期**：2026-07-29。Solver 端 S1–S6 全數落地，本文所列契約皆已上線。
+
+## Solver repo 閱讀地圖（按需查證，不必通讀）
+
+| 要查什麼 | 讀哪裡 |
+|---|---|
+| 任何欄位的權威定義、預設值、驗證規則 | `app/models.py`（每個模型的 docstring 含語意） |
+| 可直接 POST 的請求樣本 | `examples/capacity/plan_dedicated_pool.json`、`plan_fleet_release.json`、`reconcile_basic.json`；其餘 `examples/` |
+| 端點清單與 handler | `app/server.py`（很短） |
+| 規劃/roll-forward 的行為語意 | `app/capacity_planner.py::solve_capacity_horizon` docstring |
+| reconcile 的計算與歸因規則 | `app/reconcile.py`（模組與各函式 docstring） |
+| G7 回放判定邏輯（可直接翻譯成 Go） | `tests/test_consistency_replay.py::replay` + 檔頭差集表 |
+| 契約的行為範例（每條規則都有對應測試） | `tests/test_capacity_planner.py`、`tests/test_reconcile.py` |
+| 設計依據與決議編號 | `docs/e2e-vision.md`（#1–#25）、`docs/capacity-planning.md`（#1–#43）、`docs/decisions/ADR-001..006` |
+| 本地把 solver 跑起來 | `make install && make run`（:50051）；單發 CLI：`make cli INPUT=examples/...` |
+
+驗證手段優先序：**跑測試/實 POST 範例 > 讀 models.py > 讀本文**。
 
 ---
 
@@ -39,10 +52,11 @@
 
 ---
 
-## 2. 共用資料模型（JSON 契約）
+## 2. 共用資料模型（JSON 契約速查）
 
-以下是 Go 端需要組裝/解讀的模型。省略的欄位（anti_affinity_rules 等）沿用
-既有 placement 契約。所有 `period` 一律 `"YYYY-MM"`（格式錯 → 422）。
+以下是 Go 端需要組裝/解讀的模型（權威版本在 `app/models.py`，出入以彼為準）。
+省略的欄位（anti_affinity_rules 等）沿用既有 placement 契約。所有 `period`
+一律 `"YYYY-MM"`（格式錯 → 422）。
 
 ### Resources / Topology / Baremetal
 
@@ -339,8 +353,9 @@ Go filter stage 抽成兩個**具名** profile：
 ```
 
 - 定期 job 跑真實快照；②是純函式呼叫，天然 dry-run。
-- 判定邏輯可直接翻譯 solver repo `tests/test_consistency_replay.py::replay`
-  （約 40 行,含判定優先序：filter 先於 divergence）。
+- 判定邏輯直接翻譯 `tests/test_consistency_replay.py::replay`（約 40 行，
+  含判定優先序：filter 先於 divergence；差集表在同檔 `PLANNING_STATES` /
+  `EXECUTION_STATES` 常數）。
 - **驗收**：CI 綠燈 + 定期真快照回放在跑。
 
 ---
