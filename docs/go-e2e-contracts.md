@@ -256,7 +256,30 @@
 
 ## 4. G1–G7 逐項實作說明
 
-依建議順序排列（= roadmap E1→E2→E2.5 影響→E3→E4→E5）。每項附驗收條件。
+依建議順序排列（= roadmap E1→E2→E2.5 影響→E3→E4→E5）。
+
+每項的**驗收條件分三層**，交付時逐條走過：
+
+- **A. 語意** — 表格化的「給定 → 必須」場景，每條都可以寫成一個測試。
+  這層是重點：它們對應的都是**做錯了不會報錯、只會靜默給出錯答案**的地方。
+- **B. 整合** — 證明它接得上下一站（通常是「輸出不經任何手工轉換直接餵給
+  下一個端點且成功」）。這是各項「完成」的硬指標。
+- **C. 成果** — 業務層面的成功訊號，可能要一兩個月才驗得到，**不擋交付**。
+
+守門類的項目（G3、G7）額外有一層 **對抗性驗收**：故意弄壞，確認它會叫。
+一個從未紅過的守門員與一個壞掉的守門員從外面看是一樣的。
+
+#### 一眼總覽
+
+| # | 一句話「做完了沒」 |
+|---|---|
+| G1 | `get_book` 的輸出**直接** POST `/v1/capacity/plan` 成功，且同一份 CSV 匯入兩次 demand_id 不變 |
+| G2 | canonical run 的 request **零手工欄位**組出來，且 committed 與 in_stock 不重複計算同一批機器 |
+| G3 | 兩 profile 的機器集合差集**恰好等於**那三列；忘記宣告 profile 會編譯不過 |
+| G4 | 任一 `plan_id` 取回的 response **原封**塞進 reconcile 成功 |
+| G5 | 成功與失敗都落帳；placement request 裡**沒有** demand_id |
+| G6 | 空分母顯示「—」不是 0%；三個資料源自動組裝、手動與 cron 走同一段程式碼 |
+| G7 | 故意製造 filter 漂移**會紅燈**，修好**會恢復綠燈** |
 
 ### G1 — 需求帳本（roadmap E1；一切的起點）
 
@@ -361,8 +384,40 @@ CSV "spec" = 空          → Any            → vm_specs: null
   solver 回 `INPUT_ERROR: no (bucket, network) cell exists in network 'xxx'`。
 - 讀取端只需要 `get_book(from=當月)`，輸出可直接塞
   `CapacityPlanRequest.demand_book`。
-- **驗收**：Capacity 負責人一輪月度規劃全走帳本，Excel 只剩匯入來源；
-  W1 匯入後刪除的月份確實從報表消失，填 0 的月份確實以零成長出現。
+
+#### 驗收條件
+
+**A. 語意**（每條都是一個可寫成測試的場景；這些是最容易做錯的地方）
+
+| # | 給定 | 操作 | 必須 |
+|---|---|---|---|
+| A1 | 帳本有 `(fab-a, c1, worker, 2026-09)` | `delete` 該鍵 | `get_book` 不再回該列 |
+| A2 | 同上 | 改成需求全 0（W2） | `get_book` **仍回該列**，各維度為 0 |
+| A3 | 帳本有 fab-a 三列 | 匯入只含其中兩列的 CSV（W1） | 第三列**消失**；`deleted=1` 且 `deleted_keys` 指出是誰 |
+| A4 | 帳本有 fab-a、fab-b 各若干列 | 匯入只含 fab-a 的 CSV | **fab-b 完全不動** |
+| A5 | 任意帳本 | 匯入含重複鍵的 CSV | 整批拒絕，**帳本零改變**（不是部分寫入） |
+| A6 | 任意帳本 | 匯入時在寫入中途注入失敗 | **帳本零改變**（交易性） |
+| A7 | 空帳本 | 同一份 CSV **連續匯入兩次** | 兩次產生的 `demand_id` **完全相同** |
+| A8 | 任意帳本 | 匯入含未定義 spec 名的 CSV | 報錯，訊息**列出目錄內容**；帳本零改變 |
+| A9 | 任意帳本 | 任一次 W1/W2/W3 | 回應的 `added/updated/deleted` 與實際差異**逐筆相符** |
+
+A7 特別重要:它是 demand_id 決定性發號的唯一驗證方式,而發號一旦錯了,
+兌現率會在 E4 才爆炸,那時已經很難回頭修。
+
+**B. 整合**（證明它接得上下一站）
+
+- `get_book(from=當月)` 的輸出**不經任何手工轉換**直接放進
+  `CapacityPlanRequest.demand_book` → POST `/v1/capacity/plan` 回 200 且
+  `success=true`。這是 G1 完成的硬指標——若還需要中間轉換層，欄位對映就
+  還沒對齊。
+- 三態的端到端效果:A1 刪掉的月份**不出現在報表**;A2 填 0 的月份
+  **出現且 `node_adds_total=0`**。
+
+**C. 成果**（可能要等一兩個月才驗得到，不擋交付）
+
+- Capacity 負責人**一輪完整月度規劃全走帳本**，Excel 只作為匯入來源。
+- 帳本列數與實際規劃中的 cluster×role×月 數相符（沒有「還有一半在某人的
+  試算表裡」）。
 
 #### 後續增強（第一階段不做）
 
@@ -386,7 +441,34 @@ CSV "spec" = 空          → Any            → vm_specs: null
 
 - **規劃與執行共用同一快照來源**——這是一致性保證的地基，不要為規劃另抄一份。
 - 快照要能以 (fab, 時間點) 匯出存檔（G7 回放要用）。
-- **驗收**：canonical run 的 request 全自動組裝，零手工欄位。
+
+#### 驗收條件
+
+**A. 語意**
+
+| # | 給定 | 必須 |
+|---|---|---|
+| A1 | 一台機器,其 rack 有 `available_group=ag-3`、`bgp_number=bgp-x` | 產出的 `Baremetal.topology.ag == "ag-3"`、`network == "bgp-x"` |
+| A2 | 一台 `pool=pool-ml` 的機器 | 產出的 `Baremetal.pool == "pool-ml"`;共用機器為 `""` |
+| A3 | 一台 OS 未 ready、一台維修中、一台保留機 | 前兩台**在** `in_stock`,保留機**不在**（planning profile） |
+| A4 | 一張 PO 20 台、其中 5 台已到貨進 Inventory | `committed_stock` 該筆 `count == 15`,且那 5 台**同時出現在** `in_stock`——總數 20 不是 25 |
+| A5 | 一張 PO 標了 `available_from=2026-10` | 產出的 committed 條目帶該值 |
+| A6 | 同一時刻連續呼叫兩次 | 產出**逐欄位相同**（快照要可重現，否則 G7 回放沒有意義） |
+
+A4 是最容易錯的一條:漏扣就把同一批機器的容量算兩次,規劃會以為容量充足
+而少買,且完全不會報錯。
+
+**B. 整合**
+
+- 產出的 request **零手工欄位**直接 POST `/v1/capacity/plan` → 200 且
+  `success=true`。
+- 與人工組裝的同期 request 做欄位級 diff → **差異為 0**（第一次上線時做一次
+  對照即可，之後靠 A1–A6）。
+- 匯出的快照可存檔、可重新載入產生**位元相同**的 request（G7 前置）。
+
+**C. 成果**
+
+- 一次 canonical run 從按下按鈕到拿到報表**不需要任何人工填欄位**。
 
 ### G3 — Filter profile 制度化（roadmap E2；一致性關鍵）
 
@@ -401,8 +483,35 @@ Go filter stage 抽成兩個**具名** profile：
 - 差集維護成**明文清單**（文件 + 版本），新增任何 filter 必須宣告進哪個
   profile——防「新 filter 只掛 execution，planning 從此高估卻無人發現」。
 - G2 的快照聚合用 `planning` profile 出規劃輸入；執行期照舊 `execution`。
-- **驗收**：差集清單存在且被 code review 強制；solver repo 的
-  `tests/test_consistency_replay.py` 手抄了這張表——改表時兩邊同步改。
+
+#### 驗收條件
+
+**A. 語意**
+
+| # | 給定 | 必須 |
+|---|---|---|
+| A1 | 一批含四種狀態的機器 | 兩個 profile 各自輸出的機器集合，**差集恰好等於表上那三列**，多一台少一台都算失敗 |
+| A2 | 全部機器都是 ready | 兩個 profile 輸出**完全相同** |
+| A3 | 程式碼裡新增一個未宣告 profile 的 filter | **CI 或編譯期擋下**（例如 filter 註冊必須帶 profile 參數，缺少就編譯不過） |
+
+A3 是這一項的**真正價值所在**。差集清單寫在文件上只是紀錄；讓「忘記宣告」
+變成**不可能編譯**，才是制度化。若做不到編譯期，至少要有一條測試遍歷所有
+已註冊 filter 並斷言每個都宣告了 profile。
+
+**B. 對抗性驗收（守門員自己要被驗證會叫）**
+
+- 故意在 `execution` profile 加一個排除某台 ready 機器的 filter 而不宣告
+  → **G7 的回放必須紅燈**。
+- 故意把「保留機」從兩邊排除改成只排除 execution → **回放必須紅燈**。
+
+一個從來不會紅的守門員，和一個壞掉的守門員，從外面看是一樣的。這兩條要
+真的跑過一次，不是寫在文件上。
+
+**C. 成果**
+
+- 差集清單有版本、有 owner；solver repo 的
+  `tests/test_consistency_replay.py`（`PLANNING_STATES` / `EXECUTION_STATES`）
+  與它一致——**改表時兩邊同步改**是 code review checklist 的一項。
 
 ### G4 — Plan 存檔（roadmap E3）
 
@@ -411,7 +520,28 @@ Go filter stage 抽成兩個**具名** profile：
 - 存檔的 response 之後**原封不動**作為 `ReconcileRequest.plan.report` 塞回；
   request 裡的 demand_book 作為 `plan.demand_snapshot`。不要另造格式。
 - response 的 `config_fingerprint` 一起落帳（M2）。
-- **驗收**：任一 `plan_id` 可完整取回當時的輸入輸出。
+
+#### 驗收條件
+
+**A. 語意**
+
+| # | 給定 | 必須 |
+|---|---|---|
+| A1 | 任一 `plan_id` | 取回的 request + response **與當時送出/收到的位元相同**（不是「欄位差不多」——存的若是重新序列化過的物件，欄位順序或 null/預設值處理的差異會在 reconcile 時變成假漂移） |
+| A2 | 同上 | `config_fingerprint` 存得到、取得回 |
+| A3 | 帳本在存檔後被修改 | 取回的 `demand_snapshot` **仍是當時那份**（存檔是快照不是參照） |
+
+**B. 整合**
+
+- 取回的 response **不經任何轉換**塞進 `ReconcileRequest.plan.report`、
+  取回的 demand_book 塞進 `plan.demand_snapshot` → POST
+  `/v1/capacity/reconcile` 回 200 且 `success=true`。這是 G4 完成的硬指標。
+- 若 JSON 外放 object storage：指標列與 blob **不可能不同步**（同一交易寫入，
+  或 blob 先寫、指標後寫且指標帶 checksum）。
+
+**C. 成果**
+
+- 每次 canonical run 都有存檔，沒有「那次的計畫找不到了」的月份。
 
 ### G5 — demand_id 一條龍（roadmap E3）
 
@@ -424,7 +554,31 @@ Go filter stage 抽成兩個**具名** profile：
   執行紀錄、committed 到貨狀態）：
   `已規劃 → 等待採買/到貨 → 可執行 → 建置中 → 已完成 / 卡關`。solver 無狀態，
   不存這個狀態機。
-- **驗收**：新 build/add-node 帶單率可量測且 > 目標值。
+
+#### 驗收條件
+
+**A. 語意**
+
+| # | 給定 | 必須 |
+|---|---|---|
+| A1 | 建置時選了需求單 | 送給 solver 的 placement request **不含 demand_id**（契約沒這欄位；有的話代表你動了不該動的地方） |
+| A2 | 建置成功 | 落一筆 `ExecutionRecord`，`status=success`、`demand_id` 正確 |
+| A3 | 建置**失敗** | **一樣落帳**，`status=failed` + `infeasible_cause`。漏掉失敗案例會讓兌現率虛高 |
+| A4 | 建置時**沒選**需求單 | `demand_id=null` 落帳，且該筆會被 reconcile 計入計畫外比率 |
+| A5 | 同一張需求單分兩次建置 | 兩筆紀錄，reconcile 加總後與計畫數比對 |
+| A6 | 需求單狀態機 | 是**衍生查詢**，不是欄位——改了 plan 或執行紀錄，狀態自動變；DB 裡沒有一個會過期的 `status` 欄 |
+
+**B. 整合**
+
+- 把 `ExecutionRecord` 餵進 `ReconcileRequest.actual.executions` →
+  reconcile 算得出非 null 的 `fulfillment_rate`。
+- 刻意讓某張單只執行一半 → `fulfillment_rate` 確實是 50%，且 `drifts` 有一
+  筆 `category=demand`、`delta=-N`。
+
+**C. 成果**
+
+- 新 build/add-node 的**帶單率**可量測（`1 − unplanned_ratio`）且達到目標值。
+- `unjoinable_planned_vms` 趨近 0（帳本列都有 demand_id）。
 
 ### G6 — 編排（roadmap E4）
 
@@ -438,7 +592,32 @@ Go filter stage 抽成兩個**具名** profile：
   INPUT_ERROR——別拿 12 月的 plan 對 3 月的帳。
 - 指標為 null = 不可量測（分母為空），UI 顯示「—」，**不要**畫成 0%。
 - `unjoinable_planned_vms > 0` 是帳本衛生警報（有列沒 demand_id），要浮出。
-- **驗收**：第一份月結漂移報告產出且被 Capacity 負責人實際使用。
+
+#### 驗收條件
+
+**A. 語意**
+
+| # | 給定 | 必須 |
+|---|---|---|
+| A1 | 某指標分母為 0（例如該月沒有任何採買計畫） | API 回 `null`，UI 顯示「—」;**任何地方都不出現 0%** |
+| A2 | plan 涵蓋 2026-01、`as_of=2026-03-15` | 收到 `INPUT_ERROR`，UI 給明確訊息（不是空白畫面或 500） |
+| A3 | 某 fab-月規劃失敗 | 該月的 what-if 數字**不進**任何 Go 端二次聚合 |
+| A4 | 一個 cell 該月計畫到貨 3 台、實到 1 台 | `machine_adds` 算出 1，`supply_hit_rate` 反映短缺，`drifts` 有對應的 supply 列 |
+| A5 | 同一份輸入跑兩次 reconcile | 結果相同（純函式，沒有隱藏狀態） |
+| A6 | plan 與 reconcile 的 config 指紋不同 | **照跑不擋**，兩個指紋都呈現在 UI 上並標注 |
+
+**B. 整合**
+
+- 月度 canonical run 一鍵完成:G2 快照 + G1 帳本 → plan → G4 存檔,**中間
+  無人工步驟**。
+- reconcile 三個資料源（G4 存檔、當下快照、G5 落帳）自動組裝,手動觸發與
+  cron 走**同一段程式碼**。
+
+**C. 成果**
+
+- 第一份月結漂移報告產出，**且被 Capacity 負責人實際用來做決策**（不是產出
+  就算數——沒人看的報表等於沒有）。
+- 四指標連續三個月有數字（不是一堆 null），代表資料鏈真的通了。
 
 ### G7 — 一致性回放（roadmap E5）
 
@@ -460,7 +639,39 @@ Go filter stage 抽成兩個**具名** profile：
 - 判定邏輯直接翻譯 `tests/test_consistency_replay.py::replay`（約 40 行，
   含判定優先序：filter 先於 divergence；差集表在同檔 `PLANNING_STATES` /
   `EXECUTION_STATES` 常數）。
-- **驗收**：CI 綠燈 + 定期真快照回放在跑。
+
+#### 驗收條件
+
+**A. 語意**（四級判定各驗一次）
+
+| # | 給定 | 必須判定為 |
+|---|---|---|
+| A1 | 全部機器 ready，容量充足 | `consistent` |
+| A2 | 需求超過總容量 | `plan_infeasible`（沒有承諾就沒有要守的） |
+| A3 | 承諾壓在 OS 未 ready 的機器上 | `explained_by_profile_delta`（容忍） |
+| A4 | execution view 少一台 ready 機器 | `broken:undeclared_filter_delta` |
+| A5 | 兩 view 相同但 config 指紋不同且②不可行 | `broken:divergence` |
+| A6 | A4 與 A5 **同時發生** | 報 **filter**（判定優先序:view 都錯了再談引擎分歧會誤導修方向） |
+
+**B. 對抗性驗收（最重要的一條）**
+
+**故意弄壞，確認它會叫**：
+
+1. 在 execution profile 偷加一個排除某台 ready 機器的 filter → 回放**必須
+   紅燈**，且指出是 filter 漂移而非容量不足。
+2. 把 execution 的 config 換一份（例如調 `max_per_bm`）→ 回放**必須紅燈**，
+   且指出是 config/引擎漂移。
+3. 修好之後 → 回放**必須恢復綠燈**。
+
+這三步要真的跑過一次並留下紀錄。**一個從未紅過的守門員，與一個壞掉的
+守門員，從外面看完全一樣**——而這一項的全部價值就在它會不會叫。
+
+**C. 整合與成果**
+
+- 快照三份（raw + 兩 profile）可匯出、可重放,重放產生**位元相同**的 request。
+- 定期 job 在跑（頻率依快照成本決定，週一次起跳），紅燈有人收到通知。
+- 連續三個月無紅燈，或紅燈都能追到具體的 filter/config 變更——代表守門
+  真的在守，而不是靜默通過。
 
 ---
 
