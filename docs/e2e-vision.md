@@ -1,8 +1,10 @@
 # E2E Vision — 從農場到餐桌：Provision 端到端自動化願景
 
 > **作者**: Claude (claude-code) × dysiang（設計討論共筆）
-> **日期**: 2026-07-27
-> **狀態**: Design 草稿 — 待 review，不含實作
+> **日期**: 2026-07-27（末次更新 2026-07-29）
+> **狀態**: 設計已 review；**solver 端 S1–S6 全數實作完成**（ADR-002～006），
+> Go 端 G1–G7 待實作（交接文件：`docs/go-e2e-contracts.md`，harness：
+> `docs/go-harness/`）
 > **前置文件**: `docs/capacity-planning.md`（Phase 1–3 已實作、43 條決議）、
 > `docs/design-review-scheduler-solver.md`、`docs/go-scheduler-guide.md`
 > **本文 Decision Log 從 #1 起新編**，與 capacity-planning.md 的 #1–#43 互不衝突
@@ -81,8 +83,9 @@ ownership 在 Go Scheduler Service 與上游（Capacity 負責人、H/W team）�
 - **A. 需求帳本管道（S1→S2）**：Excel/口頭 → 結構化 `DemandEntry` 帳本 +
   upsert API + demand_id 發號。沒有它，E2E 的起點永遠是手工。
 - **B. 現況快照管道（S2、S7 共用）**：Inventory → 一鍵聚合出 `in_stock` +
-  `existing_distributions` + `existing_bm_occupancy` + `procurement_caps` +
-  `committed_stock`。**規劃與執行共用同一快照來源**是一致性保證的地基。
+  `existing_distributions` + `existing_bm_occupancy` + `committed_stock`
+  （`procurement_caps` 暫不送，見決議 #26）。**規劃與執行共用同一快照來源**
+  是一致性保證的地基。
 - **C. 事件與回饋管道（S3→S10）**：採購確認（→committed_stock）、到貨
   （→committed 畢業）、除役（→fleet `release`）、實際放置（→執行落帳）、
   月結對帳（→校準）。這條管道是校準迴路的載體。
@@ -444,8 +447,8 @@ group-by，不是新功能；「池的命中率」是四指標的一個切面，
 
 | # | 契約 | 內容 | 依賴 | 優先序 |
 |---|---|---|---|---|
-| G1 | **需求帳本 API** | (cluster, role, month) 帳本：upsert / 刪列 / CSV 匯入 / `get_book(from=當月)` / **demand_id 發號**；(進階) `get_book_as_of` | — | **P0** |
-| G2 | **快照聚合 API** | 一鍵組出 `CapacityPlanRequest` 系統側輸入：in_stock（planning profile）、existing_*、procurement_caps、**committed 推導**（PO − 已入 Inventory）、`available_from` 存放、**pool 標籤** | Inventory、PO 表 API（已有）| **P0** |
+| G1 | **需求帳本 API** | (fab, cluster, role, month) 帳本：**四條寫入路徑語意分離**（bulk_replace 取代 / upsert 稀疏 / delete 刪列 / 填 0 不成長）、`get_book(from=當月)`、**demand_id 決定性發號**；(進階) `get_book_as_of`。細節見 `docs/go-e2e-contracts.md` G1 | — | **P0** |
+| G2 | **快照聚合 API** | 一鍵組出 `CapacityPlanRequest` 系統側輸入：in_stock（planning profile；AG/BGP 由 rack 欄位 join、pool 由機器欄位）、existing_*、**committed 推導**（PO − 已入 Inventory）、`available_from`、機型型錄。`procurement_caps` **暫不送**（決議 #26：無機位上限資料） | Inventory、PO 表 API（已有）| **P0** |
 | G3 | **Filter Profile 制度化** | `planning`/`execution` 具名 + 顯式差集（已定案）+ 新 filter 強制宣告歸屬 | G2 | **P1** |
 | G4 | **Plan 快照持久化** | canonical run 的 request+response 整包存檔（plan_id、created_at、config_fingerprint）| — | **P1** |
 | G5 | **demand_id 透傳與執行落帳** | UI 建置選需求單；placement 帶 pass-through metadata；executions 落帳（含計畫外執行）| G1 | **P1** |
@@ -454,14 +457,17 @@ group-by，不是新功能；「池的命中率」是四指標的一個切面，
 
 ### Solver 端（S1–S6，全部 additive，各自 plan-first + ADR）
 
-| # | 改動 | 內容 |
-|---|---|---|
-| S1 | `CommittedStock.available_from` | 人工維護生效月；空=當月（向後相容）|
-| S2 | 覆蓋標註輸出 | per-demand coverage counts + demand_id 回吐 |
-| S3 | `/v1/capacity/reconcile` | 純函式對帳（見設計主題 2）——**已實作**（決議 #24、ADR-005）|
-| S4 | `config_fingerprint` | 所有 response 回吐（plan 與 placement）|
-| S5 | 一致性測試（solver 側）| 合成快照雙跑單元測試——**已實作**（決議 #25、ADR-006）|
-| S6 | 獨佔池 | models pool 欄位 + capacity_planner candidate 推導 + 採買 pool 標籤 + 池滿雙開關 |
+**全部已實作完成**（2026-07-29）。
+
+| # | 改動 | 內容 | 落地 |
+|---|---|---|---|
+| S1 | `CommittedStock.available_from` | 人工維護生效月；空=當月（向後相容）| ✅ ADR-002 |
+| S2 | 覆蓋標註輸出 | per-demand coverage counts + demand_id 回吐 | ✅ ADR-002 |
+| S3 | `/v1/capacity/reconcile` | 純函式對帳（見設計主題 2）| ✅ 決議 #24、ADR-005 |
+| S4 | `config_fingerprint` | 所有 response 回吐（plan 與 placement）| ✅ ADR-002 |
+| S5 | 一致性測試（solver 側）| 合成快照雙跑單元測試 | ✅ 決議 #25、ADR-006 |
+| S6 | 獨佔池 | models pool 欄位 + capacity_planner candidate 推導 + 採買 pool 標籤；**嚴格隔離、無 spill**（決議 #22 修訂原「池滿雙開關」）| ✅ ADR-003 |
+| — | fleet events `release`（E2.5，非原 S 清單）| 事件簿 + 事前凍結 + 儀表排除 | ✅ 決議 #23、ADR-004 |
 
 ---
 
@@ -483,16 +489,20 @@ group-by，不是新功能；「池的命中率」是四指標的一個切面，
 
 各階段獨立可交付、可回滾（全 additive）：
 
-| 階段 | 內容 | 價值假設 | 驗收方式 |
-|---|---|---|---|
-| **E0** | S1 + S2 + S4（solver 端小改）| 輸入更誠實（committed 生效月）、輸出可追蹤 | 單元測試 + `/verify-solver` |
-| **E1** | G1 需求帳本 + UI Load/Save（既有決議 #41 演進項）| 需求數位化 = E2E 有起點 | Capacity 負責人一輪月度規劃全走帳本，Excel 只剩匯入來源 |
-| **E2** | G2 快照聚合 + G3 filter profile + **S6 獨佔池** | canonical run 一鍵化、規劃輸入零手工、規劃不再高估池容量 | plan 輸入全自動組裝；差集文件化有指紋；池容量帳正確 |
-| **E2.5** | fleet events `release`（既有決議 #40，設計已定）| 機隊漂移可入模，E4 指標更準 | 除役月容量正確釋放、報表標注 |
-| **E3** | G4 plan 存檔 + G5 demand_id 一條龍 | 兌現率**可量測**的前提；需求單追蹤 UI 上線 | 新 build/add-node 帶單率 > 目標值 |
-| **E4** | S3 reconcile + G6 編排 | 命中率讓計畫品質可見、可歸因；週量測 | 第一份月結漂移報告產出且被負責人實際使用 |
-| **E5** | S5 + G7 一致性守門 | 「承諾放得下」不沉默劣化 | CI 綠燈 + 定期真快照回放 |
-| 隊尾 | no-buy what-if（節點級，E4 後）；跨 fab 調撥（既有 Phase 4）；Day-2 migration/rebalance | | |
+| 階段 | 內容 | 價值假設 | 驗收方式 | 狀態 |
+|---|---|---|---|---|
+| **E0** | S1 + S2 + S4（solver 端小改）| 輸入更誠實（committed 生效月）、輸出可追蹤 | 單元測試 + `/verify-solver` | ✅ 完成 |
+| **E1** | G1 需求帳本 + UI Load/Save（既有決議 #41 演進項）| 需求數位化 = E2E 有起點 | Capacity 負責人一輪月度規劃全走帳本，Excel 只剩匯入來源 | ⏳ Go 端待做 |
+| **E2** | G2 快照聚合 + G3 filter profile + **S6 獨佔池** | canonical run 一鍵化、規劃輸入零手工、規劃不再高估池容量 | plan 輸入全自動組裝；差集文件化有指紋；池容量帳正確 | S6 ✅ / G2·G3 ⏳ |
+| **E2.5** | fleet events `release`（既有決議 #40，設計已定）| 機隊漂移可入模，E4 指標更準 | 除役月容量正確釋放、報表標注 | ✅ 完成（solver 側）|
+| **E3** | G4 plan 存檔 + G5 demand_id 一條龍 | 兌現率**可量測**的前提；需求單追蹤 UI 上線 | 新 build/add-node 帶單率 > 目標值 | ⏳ Go 端待做 |
+| **E4** | S3 reconcile + G6 編排 | 命中率讓計畫品質可見、可歸因；週量測 | 第一份月結漂移報告產出且被負責人實際使用 | S3 ✅ / G6 ⏳ |
+| **E5** | S5 + G7 一致性守門 | 「承諾放得下」不沉默劣化 | CI 綠燈 + 定期真快照回放 | S5 ✅ / G7 ⏳ |
+| 隊尾 | no-buy what-if（節點級，E4 後）；跨 fab 調撥（既有 Phase 4）；Day-2 migration/rebalance | | | 未動 |
+
+**目前位置**：solver 端全數完成，**剩下的全部在 Go 端**。建議 Go 端仍照
+E1 → E2 → E3 → E4 → E5 的順序（帳本是 demand_id 之根；快照聚合是一致性
+地基）；solver 端已就緒，不構成任何階段的阻擋。
 
 排序原則：**功能面先於命中率**（E1–E3 先把鏈串起來，E4–E5 再量測與守門）；
 E1 先於 E2（帳本是 demand_id 之根）；fleet events 提前到 E2.5（早於回饋迴路，
@@ -512,6 +522,17 @@ E1 先於 E2（帳本是 demand_id 之根）；fleet events 提前到 E2.5（早
    （屬 Capacity 負責人 ownership，solver 只供數字）。
 5. **需求單追蹤 UI 的歸屬**：正式版住大 UI（K8s Auto API 平台）還是先在
   solver 的無狀態 UI 沙盒 demo（比照決議 #41 的三角色）。
+6. **獨佔 group 的識別方式**（決議 #26 ② 的待補件）：現有 bmg 有些只是調度
+   範圍框選、不是獨佔語意。需要一個 `exclusive` 旗標或命名約定,否則每個
+   bmg 都被當成一個池、共用容量會被切散。
+7. **`baremetal_group_tenant_quota` 的語意**：一個 group 只關聯一個 tenant
+   （＝獨佔池，quota 只是形式）還是允許多 tenant 共用 group 各有額度
+   （＝共享池+額度，與 pool 的硬隔離是兩種機制，不可混用）。同時要確認
+   cluster→tenant 是否一對一可查（`DemandEntry.pool` 靠它帶值）。
+8. **保留機的可查詢性**（M1 差集表前提）：「保留=送人、不算我方容量」目前
+   是明確的機器狀態，還是散在備註/口頭約定？差集表需要它可被 filter 查到。
+9. **fleet_events 的寫入介面歸屬**：除役排程目前靠人輸入。表落 Inventory DB
+   （決議 #26 ①）已定，但輸入 UI 掛在哪、誰有權限寫，待定。
 
 ---
 
@@ -570,6 +591,8 @@ reconcile 漂移列表與四個頭條指標（含週對帳點 sparkline）。
 | 23 | **E2.5 fleet events `release` 落地**（依 #40 既定三語意：只做 release / 整台釋放 / 事前凍結），加一個實作期新決定：**凍結機的剩餘空間排除於健康儀表**（nominal / slots / stranded / balance），cells 快照仍完整呈現該機 | 凍結機不接新節點，其空位不是可用餘裕——照算即高估（D1 型說謊）；快照是狀態帳、儀表是可用度，兩者本就不同座標 | ADR-004；報表新增 `released_bms` / `frozen_bms` 標注 |
 | 24 | **S3 `/v1/capacity/reconcile` 落地**，v1 語意定案：**單月對帳**（as_of 所在月）；四指標分母為空時=**null 不是 0%**；無 demand_id 的計畫行**排除於兌現率並回報 unjoinable**（不冒充 miss）；供給實到台數由 Go 以 `machine_adds` 落帳（庫存 count diff 不需 solver）；漂移歸因規則式——供給不符的格子由 supply row 帶過容量差註記、**只有無法用供給解釋的容量位移才標 fleet**；fab 總量差在 5% 內才歸因 placement | 對帳進 solver 的唯一硬理由是可落地量重算（`in_stock_slots` per cell，決議 #5 同理）；假指標比沒指標糟（不可量測≠0%）；重複歸因是噪音、假單一歸因是說謊 | ADR-005；`BucketMonthCell.in_stock_slots` 為此新增（凍結機計 0，與 #23 一致）|
 | 25 | **S5 一致性回放落地**（M3 solver 側）：`tests/test_consistency_replay.py` 的 replay harness 依 M1 已定差集表推導兩個 view 雙跑；判定分四級——`consistent` / `plan_infeasible`（無承諾可守）/ `explained_by_profile_delta` / `broken`。兩個實作期裁決：**未申報的 view 差在 solve 前用集合比對抓**（用 solve 推斷會與申報差集混淆）；**filter 判定優先於 divergence**（view 都錯了再談引擎分歧是誤導修方向）| 守門「plan 可行 ⇒ execution 可行」；紅燈條件=②失敗且原因不在顯式差集（D1/D2 的沉默說謊）| ADR-006；跨 repo 真實快照層為 G7（Go 端同兩呼叫走 HTTP）|
+| 26 | **Go 端資料層與 pool/bmg 定案**（2026-07-29 與 Inventory 討論後）：① **無 Go scheduler DB**，所有持久化落 Inventory DB（建議 `plan_*` 前綴分區）；② **pool 是 baremetal 的新欄位**，不從 bmg 推導，不變式 = **一個 bmg 的成員必須同 pool**（bmg ⊆ pool）；③ AG/BGP **不新增欄位**，由 rack 的 `available_group` / `bgp_number` join 取得；④ **無機位上限資料** → 不送 `procurement_caps`，視為理想無上限；⑤ **無機器異動歷史** → `machine_adds` v1 用「plan 存檔的 in_stock ∖ 當下快照」差集,v2 再補 append-only transition log；⑥ **`network` 需人填**（cluster 目前對不回 BGP），UI 用下拉非自由文字；⑦ VM spec 目錄 SSOT = **Inventory API**，帳本存名稱、組 request 時解析；⑧ 提單即入 committed(採購請求表)，**PO 編號後補**，規劃不等 PO | ② pool 是所有權(跨 cluster、跨時間穩定，且要能貼在**尚未買進的機器**上)，bmg 是調度範圍(隨 cluster 生滅)；形狀不同不可互相代替,但不變式讓執行期隔離**自動成立**、go-scheduler 零改動。④⑤ 是現況限制而非設計選擇——④ 的代價是 `space` 缺口分類永不觸發、某 AG 實體塞滿時會高估;⑤ 的代價是月中到又月中走的機器抓不到 | `docs/go-e2e-contracts.md`（Go 端交接文件）、`docs/go-harness/`（Go 端 Claude harness）|
+| 27 | **需求帳本寫入語意四分**（W1 bulk_replace 取代 / W2 upsert 稀疏 / W3 delete 刪列 / W4 填 0 不成長）：CSV 匯入 = **W1 取代**，scope = 檔案內出現的 fab 集合、重複鍵報錯不合併、全有或全無且單一交易；**第一階段回應必須回吐異動計數**（added/updated/deleted + deleted_keys），dry-run 預覽與樂觀鎖列後續增強 | 三態語意(缺列=未規劃 / 全 0=不成長)讓半完成的匯入**看起來像合法資料**,規劃會照跑不報錯;拿 upsert 模擬匯入則「使用者以為刪掉的月份」不會消失。計數回吐成本近乎為零(交易內本來就算得出來),讓誤刪至少事後可見 | 對照實作:solver repo `app/web_static/js/demand-csv.js`、`report-form.js` |
 
 ---
 
