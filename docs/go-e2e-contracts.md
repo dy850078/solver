@@ -260,18 +260,78 @@
 
 ### G1 — 需求帳本（roadmap E1；一切的起點）
 
-住 Go 端的持久化帳本，鍵 = `(fab, cluster_id, node_role, period)`，值 =
-DemandEntry 其餘欄位。
+持久化帳本（Inventory DB），鍵 = `(fab, cluster_id, node_role, period)`，
+值 = DemandEntry 其餘欄位。
 
-- API：`upsert(entries[])`（同鍵覆蓋 last-write-wins）、`bulk_import(CSV)`
-  （欄位見 capacity-planning 決議 #42：`fab, cluster, role, period,
-  cpu_cores, memory_gib|memory_mib 擇一, storage_gb, pods, spec, network`；
-  **匯入取代全部、重複鍵報錯**）、`delete(key)`、`get_book(from=當月)`。
-- **發號**：建立時產生穩定 `demand_id`。過渡期（CSV 匯入）用鍵值決定性生成
-  （如 `fab-clusterA-worker-2026-09`），同鍵重匯 id 不變。
-- `pool` 欄位由 Go 從 cluster 註冊表填，不讓使用者手填。
+#### 三態語意（所有寫入路徑都必須保住）
+
+| 帳本狀態 | 意思 | 報表行為 |
+|---|---|---|
+| **沒有這一列** | 該月**未規劃** | 該月不出現在報表 |
+| **有列、所有需求維度全 0** | 明確「**不成長**」 | 出現，`node_adds = 0` |
+| **有列、任一維 > 0** | 有需求 | 正常規劃（0 的那一維 = 不設下限，不是「用 0」） |
+
+**「刪列」與「把列填 0」是兩個不同的意圖**，不可用同一個操作表達，也不可
+用軟刪除把兩者混為一談。這是所有寫入 API 的共同約束。
+
+#### 四條寫入路徑（語意各不相同，必須分開實作）
+
+| # | 操作 | 語意 | 範圍 | 觸發來源 |
+|---|---|---|---|---|
+| W1 | `bulk_replace(entries[], scope)` | **取代**：scope 內既有列全部刪除後寫入新列 | 見下 | CSV / Excel 匯入 |
+| W2 | `upsert(entries[])` | **稀疏合併**：同鍵覆蓋（last-write-wins），未提及的列不動 | 只有送進來的鍵 | 表單編輯、網格貼上附加 |
+| W3 | `delete(keys[])` | **刪列** → 該月回到「未規劃」 | 只有指定的鍵 | UI 刪除按鈕 |
+| W4 | （不是 API）填 0 | 走 W2，值全 0 → 「確定不成長」 | — | 表單編輯 |
+
+**W1 與 W2 不可互相取代**：拿 W2 模擬匯入，CSV 裡被拿掉的列不會消失（使用
+者以為「我刪掉那個月了」但帳本還在）；拿 W1 模擬單列編輯，會把整個 scope
+的其他列洗掉。
+
+#### W1（CSV 匯入）的完整規則
+
+沿用決議 #42，solver repo 的 what-if UI 已依此實作（
+`app/web_static/js/demand-csv.js`、`report-form.js`，可直接對照）：
+
+- **欄位**：`fab, cluster, role, period, cpu_cores, memory_gib|memory_mib
+  擇一, storage_gb, pods, spec(空=Any), network`。`cluster`/`period` 必填；
+  **欄序不拘**（按表頭名對映）；**未知欄警告後忽略**。
+- **重複鍵報錯**：同一次匯入內出現重複 `(fab, cluster, role, period)` →
+  整批拒絕，**不做 last-wins 合併**（合併會讓使用者不知道自己覆蓋了什麼）。
+- **全有或全無**：任一列有錯 → 整批不寫入。**必須在單一交易內完成**
+  「刪除 scope 內既有列 + 寫入新列 + 重複鍵檢查」。分成 delete 再 insert
+  兩步而中途失敗，會留下半新半舊的帳本——而三態語意讓這種狀態**看起來像
+  合法資料**（缺的列被讀成「未規劃」），規劃會照跑且不報錯。
+- **scope 建議 = CSV 裡出現的 fab 集合**，不是整本。理由：負責人實際上一次
+  只處理一兩個 fab 的 Excel，若匯入單一 fab 的檔案卻清掉其他 19 個 fab 的
+  資料是災難級誤刪。「整本取代」若真的需要，做成獨立操作並要求額外確認。
+- **匯入前必須顯示影響預覽**：本次將**新增 N 列 / 覆蓋 M 列 / 刪除 K 列**，
+  以及影響哪些 fab。刪除數字尤其要醒目——那些是使用者「從 Excel 拿掉」而
+  可能沒意識到會消失的月份。
+- **前端可以先解析**：讀檔、編碼、欄位對映、預覽、錯誤標紅放前端體驗最好，
+  Go 不需要碰 CSV bytes。但**重複鍵檢查與交易性必須在伺服器端再做一次**
+  ——前端預檢是 UX，擋不住兩個人同時匯入。
+
+#### demand_id 發號
+
+- 建立時產生**穩定**的 `demand_id`；**一旦發出不可變、不可重用**。
+- **W1 匯入的列必須用鍵值決定性生成**（例如 `fab-cluster-role-period` 的
+  串接或雜湊）。若每次匯入重發新 id，同一行需求在重灌 Excel 後會變成新
+  id，先前所有 `plan_execution_record` 的 join 全部斷開，兌現率歸零且查不
+  出原因。
+- W1 覆蓋既有列時**沿用原 id**（同鍵 → 同 id，決定性生成天然成立）。
+- 這隱含一個限制：目前**一個鍵只能有一列需求**。若未來要允許同一
+  `(fab, cluster, role, period)` 拆成多筆，決定性發號方案必須重新設計。
+
+#### 其他
+
+- `pool` / `network` 的來源：`pool` 由 Go 從 cluster→tenant 對映自動填，
+  **不讓使用者手填**；`network`（BGP）目前 cluster 對不回去，**需要人填**，
+  UI 應做成「該 fab 有哪些 BGP 域」的下拉選單而非自由文字——打錯字會讓
+  solver 回 `INPUT_ERROR: no (bucket, network) cell exists in network 'xxx'`。
+- 讀取端只需要 `get_book(from=當月)`，輸出可直接塞
+  `CapacityPlanRequest.demand_book`。
 - **驗收**：Capacity 負責人一輪月度規劃全走帳本，Excel 只剩匯入來源；
-  `get_book` 的輸出可直接塞 `CapacityPlanRequest.demand_book`。
+  W1 匯入後刪除的月份確實從報表消失，填 0 的月份確實以零成長出現。
 
 ### G2 — 現況快照聚合（roadmap E2）
 
@@ -375,3 +435,9 @@ Go filter stage 抽成兩個**具名** profile：
 6. 狀態字串只 branch 前綴（`INPUT_ERROR:` / `INFEASIBLE` / `BLOCKED:`），
    訊息內文會演化。
 7. pool 沒有 spill——別在 Go 端加「池滿借共用」的 fallback，那會繞過決議 #22。
+8. 不要用 upsert 實作 CSV 匯入（W1）——匯入是**取代**，用 upsert 的話
+   CSV 裡被拿掉的列不會消失，使用者以為刪掉了、帳本裡還在。
+9. 不要把「刪列」和「填 0」做成同一個操作——前者是未規劃、後者是確定不
+   成長，規劃結果完全不同。
+10. 不要讓 CSV 匯入的 demand_id 隨機發號——重灌一次 Excel 就把所有執行
+    紀錄的 join 打斷。
