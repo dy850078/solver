@@ -350,3 +350,81 @@ def test_node_groups_unknown_spec_rejected():
     with pytest.raises(Exception) as exc:
         GenerateRequest(node_groups=[{"role": "worker", "count": 1, "spec": "nope"}])
     assert "unknown vm_specs" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# node_groups: failover reads the active demand source (regression: it used
+# to read the legacy roles dict and silently skip in node_groups mode)
+# ---------------------------------------------------------------------------
+
+
+def test_node_groups_failover_emits_per_cluster_rule():
+    """node_groups with master+learner → failover rules actually built."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, clusters=2, racks=6, vm_specs=_SPECS, failover=True,
+        node_groups=[
+            {"role": "master", "count": 3, "ip_type": "routable", "spec": "small"},
+            {"role": "learner", "count": 3, "ip_type": "routable", "spec": "small"},
+        ],
+    ))
+    assert "failover_skipped" not in resp.diagnostics
+    assert len(resp.request.failover_rules) == 2
+    for rule in resp.request.failover_rules:
+        assert rule.fault_domain == "ag"
+        assert rule.primary.cluster_id == rule.backup.cluster_id
+
+
+def test_node_groups_failover_skipped_without_learner():
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, vm_specs=_SPECS, failover=True,
+        node_groups=[
+            {"role": "master", "count": 3, "ip_type": "routable", "spec": "small"},
+        ],
+    ))
+    assert resp.request.failover_rules == []
+    assert "failover_skipped" in resp.diagnostics
+
+
+# ---------------------------------------------------------------------------
+# elastic sizing: fail fast instead of runaway fleets
+# ---------------------------------------------------------------------------
+
+
+def test_elastic_profile_rejects_vm_it_cannot_host():
+    """Zero-capacity field + demand in that field → 400 naming the field,
+    not a 100k-BM fleet (regression: ingress-level timeouts)."""
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(GenerateRequest(
+            seed=1, racks=6, vm_specs=_SPECS,
+            node_groups=[
+                {"role": "worker", "count": 3, "ip_type": "routable", "spec": "small"},
+            ],
+            bm_profiles=[BmProfile(
+                name="diskless",
+                capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=0),
+            )],
+        ))
+    assert exc.value.status_code == 400
+    assert "diskless" in exc.value.detail
+    assert "storage_gb" in exc.value.detail
+
+
+def test_elastic_profile_guard_raises_instead_of_runaway():
+    """Absurdly small (but nonzero) capacity → 400 at the ceiling, never a
+    silently returned mega-request."""
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(GenerateRequest(
+            seed=1, racks=6, vm_specs=_SPECS,
+            node_groups=[
+                {"role": "worker", "count": 30, "ip_type": "routable", "spec": "big"},
+            ],
+            bm_profiles=[BmProfile(
+                name="tiny",
+                capacity=Resources(cpu_cores=16, memory_mib=64_000, storage_gb=1),
+            )],
+        ))
+    assert exc.value.status_code == 400
+    assert "exceeded" in exc.value.detail
+    assert "tiny" in exc.value.detail

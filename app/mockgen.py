@@ -36,9 +36,15 @@ from .models import (
     Topology,
     VM,
 )
-from .solver import VMPlacementSolver
+from .solver import RESOURCE_FIELDS, VMPlacementSolver
 
 router = APIRouter(prefix="/api/mock", tags=["mock"])
+
+# Hard ceiling for elastic fleet sizing. Any realistic mock scenario is a few
+# hundred BMs at most; hitting this means capacity/demand are pathologically
+# mismatched, and we fail loudly instead of returning a runaway fleet that
+# times out every consumer downstream (browser, ingress, solver).
+_MAX_ELASTIC_BMS = 5_000
 
 
 # ---------------------------------------------------------------------------
@@ -430,13 +436,40 @@ class _Generator:
             for cap, roles in specs:
                 if serves(roles, served):
                     have = have + cap
+            # Fail fast: a resource field where this profile has zero capacity
+            # but residual demand remains can never be covered by adding more
+            # copies — the loop below would spin until the guard and hand back
+            # a runaway fleet. Name the exact fields instead.
+            deficient = [
+                f for f in RESOURCE_FIELDS
+                if getattr(p.capacity, f) == 0 and getattr(need, f) > getattr(have, f)
+            ]
+            if deficient:
+                needs = {f: getattr(need, f) - getattr(have, f) for f in deficient}
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"bm_profile {p.name!r} has zero capacity in {deficient} but "
+                        f"the VMs it serves still demand {needs}; adding more copies "
+                        f"can never cover this — fill in those capacity fields or "
+                        f"drop the demand"
+                    ),
+                )
             copies = 0
-            guard = 0
-            while (not self._covers(have, need) or copies < (min_pool if self._pool_mode else num_ags)) and guard < 100_000:
+            while not self._covers(have, need) or copies < (min_pool if self._pool_mode else num_ags):
+                if added + copies >= _MAX_ELASTIC_BMS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"elastic sizing for bm_profile {p.name!r} exceeded "
+                            f"{_MAX_ELASTIC_BMS} baremetals (need={need!r}, "
+                            f"have={have!r}); profile capacity is far too small "
+                            f"for the demand — check the capacity fields"
+                        ),
+                    )
                 specs.append((p.capacity, served))
                 have = have + p.capacity
                 copies += 1
-                guard += 1
             added += copies
         if elastic:
             self.diag["elastic_added"] = added
@@ -573,11 +606,25 @@ class _Generator:
 
     # -- rules / config -----------------------------------------------------
 
+    def _role_counts(self) -> dict[str, int]:
+        """Per-cluster VM count for each role, from whichever demand source is
+        active: node_groups when set (a role may span several groups —
+        aggregate), else the legacy roles dict."""
+        if self.req.node_groups:
+            counts: dict[str, int] = {}
+            for g in self.req.node_groups:
+                counts[g.role] = counts.get(g.role, 0) + g.count
+            return counts
+        return dict(self.req.roles)
+
     def _build_failover_rules(self) -> list[FailoverRule]:
         if not self.req.failover:
             return []
         # Require both roles to exist, else the backup selector resolves empty.
-        if self.req.roles.get("master", 0) < 1 or self.req.roles.get("learner", 0) < 1:
+        # Counts must come from the active demand source — reading req.roles
+        # here while demand came from node_groups silently skipped the rule.
+        counts = self._role_counts()
+        if counts.get("master", 0) < 1 or counts.get("learner", 0) < 1:
             self.diag["failover_skipped"] = "needs >=1 master and >=1 learner per cluster"
             return []
         # One rule per cluster so masters are backed by learners of the SAME
