@@ -46,6 +46,13 @@ router = APIRouter(prefix="/api/mock", tags=["mock"])
 # times out every consumer downstream (browser, ingress, solver).
 _MAX_ELASTIC_BMS = 5_000
 
+# Escalation rounds for elastic sizing: the analytic lower bounds (capacity,
+# spread, headcount) are usually within 0–1 BMs of the true minimum; each
+# round adds one BM to the implicated pool and re-verifies. Ten rounds of
+# slack means "the bounds were off by 10" — at that point the input is wrong,
+# not the sizing.
+_MAX_ESCALATIONS = 10
+
 
 # ---------------------------------------------------------------------------
 # Built-in per-role baseline demand — the fallback when a role has no explicit
@@ -403,7 +410,36 @@ class _Generator:
             gpu_count=math.ceil(demand.gpu_count / tightness),
         )
 
-    def _build_baremetals(self, vms: list[VM], racks: list[Topology]) -> list[Baremetal]:
+    def _headcount_bounds(self) -> dict[str, int]:
+        """Per-role minimum number of distinct BMs implied by max-per-BM caps:
+        a group of n VMs capped at m per BM needs ceil(n/m) BMs regardless of
+        how big each BM is (a headcount bound, not a capacity bound).
+
+        Two deliberate non-multiplications:
+        - across ip_types of one role: max, not sum — the cap rules are keyed
+          per (cluster, ip_type, role), so two ip groups of the same role may
+          share the same BMs;
+        - across clusters: counts are per cluster and clusters may reuse the
+          same BMs (each cluster's rule counts separately).
+        """
+        bounds: dict[str, int] = {}
+        if self.req.node_groups:
+            agg: dict[tuple[str, str], int] = {}
+            for g in self.req.node_groups:
+                agg[(g.role, g.ip_type)] = agg.get((g.role, g.ip_type), 0) + g.count
+            for (role, ip), cap in self._group_caps.items():
+                n = agg.get((role, ip), 0)
+                if n:
+                    bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
+            return bounds
+        for role, cap in self.req.max_per_bm_by_role.items():
+            n = self.req.roles.get(role, 0)
+            if n:
+                bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
+        return bounds
+
+    def _build_baremetals(self, vms: list[VM], racks: list[Topology],
+                          min_copies: dict[str, int] | None = None) -> list[Baremetal]:
         req = self.req
         # Pool mode: any profile dedicates itself to specific roles.
         self._pool_mode = any(p.roles for p in req.bm_profiles)
@@ -417,6 +453,8 @@ class _Generator:
         elastic = [p for p in req.bm_profiles if p.count is None]
         num_ags = len({t.ag for t in racks})
         min_pool = max(req.target_spread.values(), default=1) if req.anti_affinity else 1
+        bounds = self._headcount_bounds()
+        self._elastic_copies: dict[str, int] = {}
         added = 0
 
         def serves(roles: frozenset[str], target: frozenset[str]) -> bool:
@@ -455,8 +493,23 @@ class _Generator:
                         f"drop the demand"
                     ),
                 )
+            # Headcount floor: for each role this profile serves, the max-per-BM
+            # bound needs ceil(n/m) distinct BMs; BMs already in `specs` that
+            # serve the role count toward it, this profile must add the
+            # worst-case remainder. Every copy added below serves all of this
+            # profile's roles, so the gap shrinks 1:1 with copies.
+            head_gap = 0
+            for role, need_bms in bounds.items():
+                if served and role not in served:
+                    continue
+                existing = sum(1 for _, roles in specs
+                               if serves(roles, frozenset({role})))
+                head_gap = max(head_gap, need_bms - existing)
+            floor = max(min_pool if self._pool_mode else num_ags,
+                        head_gap,
+                        (min_copies or {}).get(p.name, 0))
             copies = 0
-            while not self._covers(have, need) or copies < (min_pool if self._pool_mode else num_ags):
+            while not self._covers(have, need) or copies < floor:
                 if added + copies >= _MAX_ELASTIC_BMS:
                     raise HTTPException(
                         status_code=400,
@@ -470,6 +523,7 @@ class _Generator:
                 specs.append((p.capacity, served))
                 have = have + p.capacity
                 copies += 1
+            self._elastic_copies[p.name] = copies
             added += copies
         if elastic:
             self.diag["elastic_added"] = added
@@ -685,6 +739,24 @@ class _Generator:
         cfg.update(req.config_overrides)
         return SolverConfig(**cfg)
 
+    def _escalation_targets(self, result, vms: list[VM]) -> list[str]:
+        """Elastic profile names implicated by the solver's infeasibility
+        diagnostics — via the role in a failing max-per-BM rule's group_id
+        (``maxbm/{cluster}/{ip}/{role}``) or the role of a VM with no eligible
+        BM. Empty when nothing is attributable (caller falls back to all)."""
+        diag = result.diagnostics or {}
+        roles: set[str] = set()
+        for r in diag.get("infeasible_max_per_bm_rules", []):
+            roles.add(str(r.get("group_id", "")).rsplit("/", 1)[-1])
+        role_by_vm = {vm.id: vm.node_role.value for vm in vms}
+        for vm_id in diag.get("vms_with_no_eligible_bm", []):
+            if vm_id in role_by_vm:
+                roles.add(role_by_vm[vm_id])
+        if not roles:
+            return []
+        return [p.name for p in self.req.bm_profiles
+                if p.count is None and (not p.roles or roles & set(p.roles))]
+
     # -- orchestration ------------------------------------------------------
 
     def generate(self) -> GenerateResponse:
@@ -692,25 +764,51 @@ class _Generator:
         racks = self._build_racks()
         vms = self._build_vms()
         self._validate_ip_for_anti_affinity(vms)
-        bms = self._build_baremetals(vms, racks)
-        self._assign_candidates(vms, bms)
-        ground_truth = self._place(vms, bms)
 
-        placement = PlacementRequest(
-            vms=vms,
-            baremetals=bms,
-            max_per_bm_rules=self._build_max_per_bm_rules(),
-            failover_rules=self._build_failover_rules(),
-            config=self._build_config(),
-        )
+        elastic_names = [p.name for p in req.bm_profiles if p.count is None]
+        min_copies: dict[str, int] = {}
+        trail: list[dict[str, object]] = []
+        result = None
+
+        # Escalate-until-feasible: the analytic floors in _build_baremetals
+        # are necessary conditions only (packing fragmentation and rule
+        # interplay can still bite), so verify with the real solver and add
+        # one BM to the implicated pool per round. Fixed-count profiles are
+        # the user's explicit ask — never inflated; without them (or without
+        # verify) this collapses to a single build.
+        for round_no in range(_MAX_ESCALATIONS + 1):
+            self.diag.pop("unplaced_ground_truth", None)
+            bms = self._build_baremetals(vms, racks, min_copies)
+            self._assign_candidates(vms, bms)
+            ground_truth = self._place(vms, bms)
+            placement = PlacementRequest(
+                vms=vms,
+                baremetals=bms,
+                max_per_bm_rules=self._build_max_per_bm_rules(),
+                failover_rules=self._build_failover_rules(),
+                config=self._build_config(),
+            )
+            if not req.verify:
+                break
+            result = VMPlacementSolver(placement).solve()
+            if result.success or not elastic_names or round_no == _MAX_ESCALATIONS:
+                break
+            trail.append({"bms": len(bms), "status": result.solver_status})
+            for name in self._escalation_targets(result, vms) or elastic_names:
+                min_copies[name] = self._elastic_copies.get(name, 0) + 1
 
         self.diag["num_vms"] = len(vms)
         self.diag["num_baremetals"] = len(bms)
         self.diag["num_ags"] = len({t.ag for t in racks})
+        if trail:
+            self.diag["auto_escalated"] = {
+                "rounds": len(trail),
+                "trail": trail + [{"bms": len(bms),
+                                   "status": result.solver_status}],
+            }
 
         feasibility = "unverified"
-        if req.verify:
-            result = VMPlacementSolver(placement).solve()
+        if result is not None:
             self.diag["solver_status"] = result.solver_status
             self.diag["solver_unplaced"] = result.unplaced_vms
             feasibility = "verified" if result.success else "infeasible"

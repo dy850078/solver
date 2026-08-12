@@ -94,14 +94,24 @@ solver 的 `auto_generate_anti_affinity` 把 VM 依 `(cluster_id, ip_type, node_
 
 BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 
-- **profile 省略 `count`（彈性）**：生成器依 `tightness` 估算需要幾台，複製該機型直到
-  `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）且每個 AG 至少一台。此模式下容量必然充足。
-- **profile 指定 `count`（固定）**：機隊規格與數量完全照給，`tightness` 被忽略。容量可能不足，屬 best-effort。
+- **profile 省略 `count`（彈性）**：語意是「**這些需求最少需要幾台**」。生成器取三個
+  必要條件下限的 max 作為起點：
+  1. **容量界**：複製該機型直到 `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）
+  2. **spread 界**：每個 AG 至少一台（`anti_affinity` 時為 `max(target_spread)`）
+  3. **張數界**：max-per-BM 規則下，n 台 VM、每 BM 上限 m 的群組需要 `ceil(n/m)` 台
+     **不同的** BM（跨群組取 max、不是 sum——不同群組可共用 BM；跨 cluster 不相乘）
+  接著 `verify=true` 時進入 **escalate-until-feasible**：以真實 solver 驗證，仍
+  INFEASIBLE 就對被牽連的 pool +1 台重試（上限 10 輪；bin-packing 碎片與規則交互
+  是解析下限看不到的，靠這層收斂）。有 escalation 時 diagnostics 會帶
+  `auto_escalated: {rounds, trail}`。
+- **profile 指定 `count`（固定）**：機隊規格與數量完全照給，`tightness` 被忽略，
+  **不會被 escalation 加碼**。容量可能不足，屬 best-effort。
 
 無論哪種，產出後若 `verify=true`，會在程序內跑一次真實 `VMPlacementSolver`：
 - `OPTIMAL`/`FEASIBLE` → `feasibility = "verified"`
 - 其他 → `feasibility = "infeasible"`，並把 `solver_status` 與診斷帶回
-- `verify=false` → `feasibility = "unverified"`
+  （彈性 profile 存在時代表 10 輪加機器也救不了，輸入本身矛盾）
+- `verify=false` → `feasibility = "unverified"`（此時只有解析下限生效，無 escalation）
 
 這讓「保證可解」不是靠人工推導不變式，而是**真的跑一次 solver 自我證明**。
 

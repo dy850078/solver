@@ -428,3 +428,96 @@ def test_elastic_profile_guard_raises_instead_of_runaway():
     assert exc.value.status_code == 400
     assert "exceeded" in exc.value.detail
     assert "tiny" in exc.value.detail
+
+
+# ---------------------------------------------------------------------------
+# elastic sizing: headcount floor (Layer 1) + escalate-until-feasible (Layer 2)
+# ---------------------------------------------------------------------------
+
+
+def test_elastic_floor_covers_max_per_bm():
+    """5 masters + 5 learners at max_per_bm=1 need 5 distinct BMs even when
+    2 huge BMs would cover the raw capacity — the headcount bound must win,
+    with no escalation rounds needed."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, ags=3,
+        vm_specs={"s1": Resources(cpu_cores=8, memory_mib=65_536, storage_gb=750)},
+        node_groups=[
+            {"role": "master", "count": 5, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 1},
+            {"role": "learner", "count": 5, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 1},
+            {"role": "l4lb-storage", "count": 3, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 1},
+            {"role": "infra", "count": 5, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 2},
+        ],
+        bm_profiles=[BmProfile(
+            name="ctrl",
+            capacity=Resources(cpu_cores=192, memory_mib=1_507_328, storage_gb=7680),
+            roles=["master", "learner", "infra", "l4lb-storage"],
+        )],
+        failover=True,
+    ))
+    assert resp.feasibility == "verified"
+    # max over groups: ceil(5/1)=5 (not the capacity bound of 2-3)
+    assert len(resp.request.baremetals) == 5
+    assert "auto_escalated" not in resp.diagnostics
+
+
+def test_elastic_floor_counts_fixed_bms():
+    """Fixed-count BMs serving the same role reduce the elastic gap: bound 5,
+    3 fixed → elastic adds only 2 more (spread floor permitting)."""
+    cap = Resources(cpu_cores=192, memory_mib=1_507_328, storage_gb=7680)
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, ags=3, anti_affinity=False,
+        vm_specs={"s1": Resources(cpu_cores=8, memory_mib=65_536, storage_gb=750)},
+        node_groups=[
+            {"role": "master", "count": 5, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 1},
+        ],
+        bm_profiles=[
+            BmProfile(name="fixed", capacity=cap, count=3, roles=["master"]),
+            BmProfile(name="elastic", capacity=cap, roles=["master"]),
+        ],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 5   # 3 fixed + 2 elastic
+
+
+def test_escalation_resolves_fragmentation():
+    """Capacity bound says 4 BMs (5×32c / 48c at tightness 1.0) but each BM
+    fits only ONE 32c VM — bin-packing fragmentation the analytic floors
+    can't see. Escalation must add the 5th BM and re-verify."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, ags=3, anti_affinity=False, tightness=1.0,
+        vm_specs={"w": Resources(cpu_cores=32, memory_mib=16_000, storage_gb=100)},
+        node_groups=[
+            {"role": "worker", "count": 5, "ip_type": "routable", "spec": "w"},
+        ],
+        bm_profiles=[BmProfile(
+            name="node",
+            capacity=Resources(cpu_cores=48, memory_mib=256_000, storage_gb=2000),
+        )],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 5
+    esc = resp.diagnostics["auto_escalated"]
+    assert esc["rounds"] >= 1
+    assert esc["trail"][-1]["status"] in ("OPTIMAL", "FEASIBLE")
+
+
+def test_escalation_caps_and_reports():
+    """A VM larger than the profile in one dimension (nonzero, so the
+    zero-capacity fail-fast doesn't trip) can never place; escalation must
+    stop at the cap and report the trail instead of spinning."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, ags=3, anti_affinity=False,
+        vm_specs={"huge": Resources(cpu_cores=100, memory_mib=16_000, storage_gb=100)},
+        node_groups=[
+            {"role": "worker", "count": 2, "ip_type": "routable", "spec": "huge"},
+        ],
+        bm_profiles=[BmProfile(
+            name="small",
+            capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000),
+        )],
+    ))
+    assert resp.feasibility == "infeasible"
+    esc = resp.diagnostics["auto_escalated"]
+    assert esc["rounds"] == 10
+    assert all(t["status"] == "INFEASIBLE" for t in esc["trail"])
