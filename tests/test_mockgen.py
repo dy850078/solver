@@ -680,3 +680,39 @@ def test_shared_cap_not_expanded_per_cluster():
                     if r.selector and r.selector.cluster_id == "shared"]
     assert len(shared_rules) == 1
     assert shared_rules[0].max_per_bm == 2
+
+
+def test_scope_and_exclusive_are_independent_axes():
+    """All four scope × exclusive combinations are expressible (ADR-011 §2.5):
+    scope decides HOW MANY copies of the group exist, exclusive decides HOW
+    its VMs occupy BMs. Collapsing them into one flag would lose the
+    diagonal."""
+    def gen(scope, exclusive):
+        return generate_mock_request(GenerateRequest(
+            seed=1, clusters=3, racks=6, ags=3, vm_specs=_ECO_SPECS,
+            node_groups=[
+                {"role": "master", "count": 2, "ip_type": "non-routable", "spec": "cp"},
+                {"role": "lb", "count": 3, "ip_type": "routable", "spec": "f5",
+                 "scope": scope, "exclusive": exclusive},
+            ],
+            bm_profiles=[
+                BmProfile(name="gen", roles=["master"],
+                          capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)),
+                BmProfile(name="eco", roles=["lb"],
+                          capacity=Resources(cpu_cores=32, memory_mib=128_000, storage_gb=1000)),
+            ],
+        ))
+
+    for scope, exclusive, n_lb, cids, n_rules in [
+        ("cluster", False, 9, {"cluster-1", "cluster-2", "cluster-3"}, 0),
+        ("cluster", True,  9, {"cluster-1", "cluster-2", "cluster-3"}, 3),
+        ("shared",  False, 3, {"shared"}, 0),
+        ("shared",  True,  3, {"shared"}, 1),
+    ]:
+        resp = gen(scope, exclusive)
+        lbs = [v for v in resp.request.vms if v.node_role == "lb"]
+        label = f"scope={scope} exclusive={exclusive}"
+        assert resp.feasibility == "verified", label
+        assert len(lbs) == n_lb, label                      # scope drives count
+        assert {v.cluster_id for v in lbs} == cids, label
+        assert len(resp.request.exclusive_bm_rules) == n_rules, label

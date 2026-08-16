@@ -33,6 +33,16 @@ Eco-system 節點(F5 / LVSLB / Bastion)有兩個既有模型表達不了的性�
    `(cluster_id, ip_type, node_role)`,家族的 node_role 本來就不同,
    拆細 id 沒有分組收益,只會多吃 UI 色盤 slot(8 色上限,ADR-009 的
    natural-sort 修正正是為了色盤稀缺);要單看某家族用 Role filter。
+5. **合併成單一 `eco: bool` 旗標** vs **`scope` 與 `exclusive` 兩軸**
+   (採用)。兩者回答的是**不同問題**,且四種組合都有真實情境:
+
+   | | 非獨占 | 獨占(C6) |
+   |---|---|---|
+   | **cluster scope** | 一般節點(master/worker) | 每 cluster 自有的專用 appliance |
+   | **shared scope** | 全 cluster 共用但可共機的池(如共用監控/log 節點) | F5 / LVSLB / Bastion(本案) |
+
+   合併成一個旗標會讓對角線的兩格無法表達。**排除:把兩個正交維度
+   壓成一個布林,是用今天的用例綁死明天的模型。**
 
 ## 3. 最終決策
 
@@ -67,6 +77,26 @@ code-review 紀律。在數十台 BM 的規模,`add_max_equality` 的成本是�
 於是選擇**用一條約束把不變量寫死在模型裡**,讓 z 對未來任何讀者、任何
 用途(含目標函數)都語意精確。一側化是數萬 BM 規模才值得的最佳化,
 屆時降級並回頭引用本段論證。
+
+**兩軸各自落在哪一層**(常見誤解,寫清楚):
+
+- `exclusive` → **solver 契約**。它變成 `ExclusiveBaremetalRule`,C6 進
+  CP-SAT 模型。**`exclusive` ≠ `max_per_bm=1`**:後者只說「同群成員不
+  同機」,外人照樣可以擠上同一台;前者說「整台機器沒有別人」。實測同一
+  組輸入(2 台 f5 + 2 台 worker / 2 台 BM):`max_per_bm=1` 解出
+  `bm-2: [f5-1, w-1, w-2]`(worker 與 f5 共機),`exclusive` 則
+  INFEASIBLE(`failed_at: "exclusive"`)。C6 在數學上蘊含
+  `max_per_bm=1`(第三條),但反之不成立。
+- `scope` → **僅存在於 mockgen**,`PlacementRequest` 裡沒有這個概念。
+  solver 只看得到 `cluster_id="shared"` 的 VM。之所以仍需要這個旗標,
+  是因為 mockgen 的輸入語意是「per-cluster 模板 × N clusters」,而
+  `node_groups` 沒有 cluster_id 欄位(它由展開迴圈產生)——`scope` 是
+  用來說「這一組**不要**參與展開」。換句話說:**在 request 層,shared
+  確實就只是 cluster_id 的值;在 generator 層,它是「不要複製 N 份」
+  的指令**,而後者才是真正無法用其他既有旋鈕表達的東西。
+  (考慮過改成更通用的 `cluster_id: str | None` 覆寫欄位——None 走展開、
+  給值就照用。捨棄:它允許指向不存在的 cluster,而 `scope` 只表達真正
+  需要的二分,錯誤空間更小。)
 
 **其餘落點**:
 - `app/models.py:322` `ExclusiveBaremetalRule` + `PlacementRequest.exclusive_bm_rules`

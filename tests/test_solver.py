@@ -1394,3 +1394,25 @@ class TestExclusiveOccupancy:
         r = solve(vms, bms, exclusive_rules=[ExclusiveBaremetalRule(group_id="bad")])
         assert not r.success
         assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_max_per_bm_one_is_weaker_than_exclusive(self):
+        """max_per_bm=1 and exclusive are NOT the same rule (ADR-011 §4):
+        the cap only keeps members off each other's machines, while
+        exclusive also bars outsiders. Same input, different outcomes."""
+        def build(max_rules=(), excl_rules=()):
+            vms = ([make_vm(f"f5-{i}", role="f5", cluster="shared") for i in (1, 2)]
+                   + [make_vm(f"w-{i}", role="worker") for i in (1, 2)])
+            return solve(vms, [make_bm("bm-1"), make_bm("bm-2")],
+                         exclusive_rules=list(excl_rules),
+                         max_per_bm_rules=list(max_rules))
+
+        sel = GroupSelector(cluster_id="shared", node_role="f5")
+        capped = build(max_rules=[MaxPerBaremetalRule(group_id="mx", selector=sel, max_per_bm=1)])
+        assert capped.success
+        a = amap(capped)
+        assert a["f5-1"] != a["f5-2"]                       # members split…
+        assert {a["w-1"], a["w-2"]} & {a["f5-1"], a["f5-2"]}  # …but outsiders co-locate
+
+        exclusive = build(excl_rules=[ExclusiveBaremetalRule(group_id="ex", selector=sel)])
+        assert not exclusive.success                        # 4 VMs cannot fit 2 solo BMs
+        assert exclusive.diagnostics["constraint_check"]["failed_at"] == "exclusive"
