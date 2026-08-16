@@ -4,9 +4,14 @@
 // distributions) flows through the "Advanced overrides (JSON)" box, which is
 // deep-merged over the form-built params.
 
-// Known-role catalog (app/models.py NodeRole) — datalist SUGGESTIONS only;
-// roles are open strings (ADR-010) and any ^[\w.-]+$ value is accepted.
-const ROLES = ["master", "learner", "worker", "infra", "l4lb-storage", "bastion"];
+// Known-role catalog — datalist SUGGESTIONS only; roles are open strings
+// (ADR-010) and any ^[\w.-]+$ value is accepted. First six mirror the
+// backend NodeRole enum; the rest are common eco-system roles worth a
+// one-click pick. The datalist dropdown scrolls natively when long.
+const ROLES = [
+  "master", "learner", "worker", "infra", "l4lb-storage", "bastion",
+  "f5", "lvslb",
+];
 
 const DEFAULTS = {
   clusters: 1,
