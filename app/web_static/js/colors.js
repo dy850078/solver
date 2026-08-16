@@ -19,8 +19,13 @@ let agSlot = new Map();
 let clusterOrder = [];
 let clusterSlot = new Map();
 
+// Natural (numeric-aware) order, so "cluster-10" sorts after "cluster-9".
+// Plain lexicographic sort put cluster-10 second, letting it steal a color
+// slot while cluster-8/9 both overflowed into the neutral gray.
+const naturalCompare = new Intl.Collator(undefined, { numeric: true }).compare;
+
 function assign(values) {
-  const order = Array.from(values).filter(Boolean).sort();
+  const order = Array.from(values).filter(Boolean).sort(naturalCompare);
   return [order, new Map(order.map((v, i) => [v, i < SLOTS ? i + 1 : null]))];
 }
 
