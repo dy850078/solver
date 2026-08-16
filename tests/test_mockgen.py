@@ -481,14 +481,15 @@ def test_elastic_floor_counts_fixed_bms():
 
 
 def test_escalation_resolves_fragmentation():
-    """Capacity bound says 4 BMs (5×32c / 48c at tightness 1.0) but each BM
-    fits only ONE 32c VM — bin-packing fragmentation the analytic floors
-    can't see. Escalation must add the 5th BM and re-verify."""
+    """Fragmentation no analytic floor can see: 20c VMs on a 48c BM are not
+    'big' (2×20 ≤ 48 — the pack floor is blind) yet only 2 fit per BM, so
+    7 VMs need 4 BMs while the capacity bound says ceil(140/48)=3.
+    Escalation must add the 4th BM and re-verify."""
     resp = generate_mock_request(GenerateRequest(
         seed=1, racks=6, ags=3, anti_affinity=False, tightness=1.0,
-        vm_specs={"w": Resources(cpu_cores=32, memory_mib=16_000, storage_gb=100)},
+        vm_specs={"w": Resources(cpu_cores=20, memory_mib=16_000, storage_gb=100)},
         node_groups=[
-            {"role": "worker", "count": 5, "ip_type": "routable", "spec": "w"},
+            {"role": "worker", "count": 7, "ip_type": "routable", "spec": "w"},
         ],
         bm_profiles=[BmProfile(
             name="node",
@@ -496,7 +497,7 @@ def test_escalation_resolves_fragmentation():
         )],
     ))
     assert resp.feasibility == "verified"
-    assert len(resp.request.baremetals) == 5
+    assert len(resp.request.baremetals) == 4
     esc = resp.diagnostics["auto_escalated"]
     assert esc["rounds"] >= 1
     assert esc["trail"][-1]["status"] in ("OPTIMAL", "FEASIBLE")
@@ -521,3 +522,50 @@ def test_escalation_caps_and_reports():
     esc = resp.diagnostics["auto_escalated"]
     assert esc["rounds"] == 10
     assert all(t["status"] == "INFEASIBLE" for t in esc["trail"])
+
+
+# ---------------------------------------------------------------------------
+# elastic sizing: pairwise packing floor (bin-packing L2 bound)
+# ---------------------------------------------------------------------------
+
+_BIG = Resources(cpu_cores=32, memory_mib=393_216, storage_gb=750)   # >½ BM mem
+_SMALL = Resources(cpu_cores=8, memory_mib=65_536, storage_gb=750)
+_CTRL = Resources(cpu_cores=94, memory_mib=737_280, storage_gb=3072)
+
+
+def test_pack_floor_big_items_at_tightness_one():
+    """2×393216 MiB > 737280 → one big VM per BM, so 2 clusters × 5 infra
+    need 10 BMs even though the capacity bound at tightness 1.0 says ~7.
+    The pack floor must get there analytically — zero escalation rounds."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, clusters=2, racks=6, ags=3, tightness=1.0,
+        vm_specs={"small": _SMALL, "big": _BIG},
+        node_groups=[
+            {"role": "master", "count": 5, "ip_type": "non-routable", "spec": "small", "max_per_bm": 1},
+            {"role": "l4lb-storage", "count": 3, "ip_type": "non-routable", "spec": "small", "max_per_bm": 1},
+            {"role": "infra", "count": 5, "ip_type": "non-routable", "spec": "big", "max_per_bm": 1},
+        ],
+        bm_profiles=[BmProfile(name="ctrl", capacity=_CTRL,
+                               roles=["master", "infra", "l4lb-storage"])],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 10
+    assert "auto_escalated" not in resp.diagnostics
+
+
+def test_pack_floor_credits_fixed_bms():
+    """Fixed BMs each absorb one big item (737280 // 393216 = 1): 5 big VMs
+    with 3 fixed ctrl BMs → elastic adds only 2."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, racks=6, ags=3, tightness=1.0, anti_affinity=False,
+        vm_specs={"big": _BIG},
+        node_groups=[
+            {"role": "infra", "count": 5, "ip_type": "non-routable", "spec": "big"},
+        ],
+        bm_profiles=[
+            BmProfile(name="fixed", capacity=_CTRL, count=3, roles=["infra"]),
+            BmProfile(name="elastic", capacity=_CTRL, roles=["infra"]),
+        ],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 5   # 3 fixed + 2 elastic

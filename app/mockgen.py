@@ -505,8 +505,32 @@ class _Generator:
                 existing = sum(1 for _, roles in specs
                                if serves(roles, frozenset({role})))
                 head_gap = max(head_gap, need_bms - existing)
+            # Pairwise packing floor (bin-packing L2 bound): a VM demanding
+            # more than half this profile's capacity in some dimension can
+            # never share a BM with another such VM (two >50% items overflow),
+            # so the COUNT of these big items bounds the fleet from below —
+            # summed across clusters, unlike the headcount bound. The capacity
+            # bound misses this entirely (it treats VMs as divisible), which
+            # at tightness 1.0 left a gap escalation's +1 could not climb.
+            # Existing BMs are credited with an upper estimate of how many big
+            # items each could host (cap // smallest big item), so this floor
+            # errs low — escalation covers any remainder, never overshoot.
+            pack_gap = 0
+            for f in RESOURCE_FIELDS:
+                cap_f = getattr(p.capacity, f)
+                if cap_f <= 0:
+                    continue
+                bigs = [getattr(vm.demand, f) for vm in vms
+                        if (not served or vm.node_role.value in served)
+                        and getattr(vm.demand, f) * 2 > cap_f]
+                if not bigs:
+                    continue
+                slots = sum(getattr(cap_e, f) // min(bigs)
+                            for cap_e, roles in specs if serves(roles, served))
+                pack_gap = max(pack_gap, len(bigs) - slots)
             floor = max(min_pool if self._pool_mode else num_ags,
                         head_gap,
+                        pack_gap,
                         (min_copies or {}).get(p.name, 0))
             copies = 0
             while not self._covers(have, need) or copies < floor:

@@ -94,12 +94,15 @@ solver 的 `auto_generate_anti_affinity` 把 VM 依 `(cluster_id, ip_type, node_
 
 BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 
-- **profile 省略 `count`（彈性）**：語意是「**這些需求最少需要幾台**」。生成器取三個
+- **profile 省略 `count`（彈性）**：語意是「**這些需求最少需要幾台**」。生成器取四個
   必要條件下限的 max 作為起點：
   1. **容量界**：複製該機型直到 `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）
   2. **spread 界**：每個 AG 至少一台（`anti_affinity` 時為 `max(target_spread)`）
   3. **張數界**：max-per-BM 規則下，n 台 VM、每 BM 上限 m 的群組需要 `ceil(n/m)` 台
      **不同的** BM（跨群組取 max、不是 sum——不同群組可共用 BM；跨 cluster 不相乘）
+  4. **配對界**（bin-packing L2）：某資源維度需求 **> 單台容量一半**的 VM 兩兩不能
+     同機，其**總數**（跨 cluster 累加）直接是台數下界——容量界把 VM 當可切分的
+     液體，看不到這件事；`tightness=1.0` 時這是最常見的 INFEASIBLE 來源
   接著 `verify=true` 時進入 **escalate-until-feasible**：以真實 solver 驗證，仍
   INFEASIBLE 就對被牽連的 pool +1 台重試（上限 10 輪；bin-packing 碎片與規則交互
   是解析下限看不到的，靠這層收斂）。有 escalation 時 diagnostics 會帶
