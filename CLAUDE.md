@@ -14,7 +14,7 @@ authoritative.
 
 ```
 app/
-├── solver.py        # VMPlacementSolver — CP-SAT model, constraints C1–C5, objective
+├── solver.py        # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
 ├── splitter.py      # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 ├── split_solver.py  # Orchestrates splitter + solver joint solve (split-and-solve endpoint)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
@@ -45,10 +45,17 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   - **C4** — max-per-BM: no single BM hosts more than `max_per_bm` VMs of a group.
   - **C5** — failover N-1: per bucket b of `fault_domain`:
     `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
-  - New constraints get the next label (C6, C7, …), a `CONSTRAINT Cn:` comment
+  - **C6** — exclusive occupancy: members of an `exclusive_bm_rules` group
+    occupy their BM alone (appliance semantics — no outsiders AND no group
+    siblings; reified via `add_max_equality`, see ADR-011).
+  - New constraints get the next label (C7, C8, …), a `CONSTRAINT Cn:` comment
     with the math in the builder method, and dedicated tests.
 - **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
   — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
+  C6 has NO auto-generation — exclusivity is always an explicit rule.
+- **node_role is an open string** (`^[\w.-]+$`, ADR-010): the `NodeRole` enum
+  is an advisory known-roles catalog (defaults, UI suggestions), not a gate.
+  Cross-cluster shared eco-system groups use `cluster_id="shared"` (ADR-011).
 - **Solver flow** in `solver.py` is staged: Step A (eligibility = candidate
   filtering ∩ fits-in-capacity) → Step B (rule validation + selector expansion +
   auto-generation) → Step C (build CP-SAT model + objective) → Step D (solve,

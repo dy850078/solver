@@ -156,8 +156,8 @@ def test_role_pools_restrict_candidates():
         for bid in vm.candidate_baremetals:
             # Every candidate BM must come from a profile serving this role.
             assert by_id[bid] is not None
-    worker = next(v for v in resp.request.vms if v.node_role.value == "worker")
-    master = next(v for v in resp.request.vms if v.node_role.value == "master")
+    worker = next(v for v in resp.request.vms if v.node_role == "worker")
+    master = next(v for v in resp.request.vms if v.node_role == "master")
     assert set(worker.candidate_baremetals).isdisjoint(master.candidate_baremetals)
 
 
@@ -191,16 +191,17 @@ def test_max_per_bm_by_role_expands_per_cluster():
     assert len(rules) == 2  # one per cluster, master only
     for rule in rules:
         assert rule.max_per_bm == 1
-        assert rule.selector.node_role.value == "master"
+        assert rule.selector.node_role == "master"
         assert rule.selector.ip_type == "non-routable"
         assert rule.selector.cluster_id in {"cluster-1", "cluster-2"}
     assert {r.selector.cluster_id for r in rules} == {"cluster-1", "cluster-2"}
     assert resp.feasibility == "verified"
 
 
-def test_max_per_bm_by_role_rejects_unknown_role():
+def test_max_per_bm_by_role_rejects_bad_format():
+    """Format violations are still hard errors (membership no longer is)."""
     with pytest.raises(Exception):
-        GenerateRequest(roles={"worker": 1}, max_per_bm_by_role={"nope": 1})
+        GenerateRequest(roles={"worker": 1}, max_per_bm_by_role={"bad role!": 1})
 
 
 def test_failover_emits_per_cluster_rule():
@@ -293,7 +294,7 @@ def test_node_groups_same_role_two_specs():
         ],
     ))
     assert resp.feasibility == "verified"
-    workers = [v for v in resp.request.vms if v.node_role.value == "worker"]
+    workers = [v for v in resp.request.vms if v.node_role == "worker"]
     cpus = sorted(v.demand.cpu_cores for v in workers)
     assert cpus == [4, 4, 4, 16, 16]      # 3 small + 2 big, same role & ip_type
 
@@ -309,7 +310,7 @@ def test_node_groups_split_role_across_ip_types():
         ],
     ))
     assert resp.feasibility == "verified"
-    ips = {(v.node_role.value, v.ip_type) for v in resp.request.vms}
+    ips = {(v.node_role, v.ip_type) for v in resp.request.vms}
     assert ("worker", "routable") in ips and ("worker", "non-routable") in ips
 
 
@@ -326,7 +327,7 @@ def test_node_groups_max_per_bm_rule_emitted():
     rules = resp.request.max_per_bm_rules
     assert len(rules) == 1
     r = rules[0]
-    assert (r.selector.node_role.value, r.selector.ip_type, r.max_per_bm) == \
+    assert (r.selector.node_role, r.selector.ip_type, r.max_per_bm) == \
         ("worker", "routable", 1)
 
 
@@ -340,10 +341,22 @@ def test_node_groups_empty_ip_with_anti_affinity_rejected():
     assert "node group" in exc.value.detail
 
 
-def test_node_groups_unknown_role_rejected():
+def test_node_groups_open_roles_accepted_with_advisory():
+    """Roles are open strings now (ADR-010): unknown roles generate fine and
+    are surfaced as an advisory, not rejected."""
+    resp = generate_mock_request(GenerateRequest(
+        seed=1, anti_affinity=False,
+        node_groups=[{"role": "ceph-mon", "count": 2, "ip_type": "non-routable"}],
+    ))
+    assert resp.feasibility == "verified"
+    assert resp.diagnostics["unknown_roles"] == ["ceph-mon"]
+    assert all(v.node_role == "ceph-mon" for v in resp.request.vms)
+
+
+def test_node_groups_bad_role_format_rejected():
     with pytest.raises(Exception) as exc:
-        GenerateRequest(node_groups=[{"role": "gpu-worker", "count": 1}])
-    assert "role" in str(exc.value)
+        GenerateRequest(node_groups=[{"role": "bad role!", "count": 1}])
+    assert "node_role" in str(exc.value)
 
 
 def test_node_groups_unknown_spec_rejected():
@@ -569,3 +582,101 @@ def test_pack_floor_credits_fixed_bms():
     ))
     assert resp.feasibility == "verified"
     assert len(resp.request.baremetals) == 5   # 3 fixed + 2 elastic
+
+
+# ---------------------------------------------------------------------------
+# shared-scope groups + exclusive (C6) eco-system pools — ADR-011
+# ---------------------------------------------------------------------------
+
+_ECO_SPECS = {
+    "cp": Resources(cpu_cores=8, memory_mib=65_536, storage_gb=200),
+    "f5": Resources(cpu_cores=16, memory_mib=32_000, storage_gb=100),
+}
+
+
+def _eco_request(**over):
+    d = dict(
+        seed=1, clusters=5, racks=6, ags=3, vm_specs=_ECO_SPECS,
+        node_groups=[
+            {"role": "master", "count": 3, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1},
+            {"role": "worker", "count": 2, "ip_type": "routable", "spec": "cp"},
+            {"role": "lb", "count": 6, "ip_type": "routable", "spec": "f5",
+             "scope": "shared", "exclusive": True},
+        ],
+        bm_profiles=[
+            BmProfile(name="general", capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000),
+                      roles=["master", "worker"]),
+            BmProfile(name="f5-node", capacity=Resources(cpu_cores=24, memory_mib=65_536, storage_gb=500),
+                      roles=["lb"]),
+        ],
+    )
+    d.update(over)
+    return GenerateRequest(**d)
+
+
+def test_shared_group_built_once_not_per_cluster():
+    """5 clusters sharing 6 LBs → exactly 6 LB VMs under cluster_id='shared',
+    not 30."""
+    resp = generate_mock_request(_eco_request())
+    lbs = [v for v in resp.request.vms if v.node_role == "lb"]
+    assert len(lbs) == 6
+    assert all(v.cluster_id == "shared" for v in lbs)
+
+
+def test_exclusive_group_emits_c6_rule_and_solo_bms():
+    """The shared exclusive group emits ONE C6 rule, sizing gives each LB its
+    own BM, and the verified solve keeps those BMs solo."""
+    resp = generate_mock_request(_eco_request())
+    assert resp.feasibility == "verified"
+    excl = resp.request.exclusive_bm_rules
+    assert len(excl) == 1
+    assert excl[0].selector.cluster_id == "shared"
+    assert excl[0].selector.node_role == "lb"
+    # verify solo occupancy in the ground truth
+    by_bm: dict[str, list[str]] = {}
+    for a in resp.ground_truth:
+        by_bm.setdefault(a.baremetal_id, []).append(a.vm_id)
+    lb_ids = {v.id for v in resp.request.vms if v.node_role == "lb"}
+    for bm_id, occupants in by_bm.items():
+        if any(o in lb_ids for o in occupants):
+            assert len(occupants) == 1, f"{bm_id} not solo: {occupants}"
+
+
+def test_exclusive_role_requires_dedicated_pool():
+    """An exclusive role sharing a bm_profile with normal roles → 400."""
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(_eco_request(bm_profiles=[
+            BmProfile(name="mixed", capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000),
+                      roles=["master", "worker", "lb"]),
+        ]))
+    assert exc.value.status_code == 400
+    assert "mixes exclusive" in exc.value.detail
+
+
+def test_role_both_exclusive_and_not_rejected():
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(_eco_request(node_groups=[
+            {"role": "lb", "count": 2, "ip_type": "routable", "spec": "f5",
+             "scope": "shared", "exclusive": True},
+            {"role": "lb", "count": 1, "ip_type": "routable", "spec": "f5"},
+        ]))
+    assert exc.value.status_code == 400
+    assert "exclusive and non-exclusive" in exc.value.detail
+
+
+def test_shared_cap_not_expanded_per_cluster():
+    """A shared group's max_per_bm becomes ONE rule on cluster_id='shared',
+    not one per cluster."""
+    resp = generate_mock_request(_eco_request(node_groups=[
+        {"role": "master", "count": 3, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1},
+        {"role": "lb", "count": 4, "ip_type": "routable", "spec": "f5",
+         "scope": "shared", "max_per_bm": 2},
+    ], bm_profiles=[
+        BmProfile(name="general", capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)),
+    ]))
+    shared_rules = [r for r in resp.request.max_per_bm_rules
+                    if r.selector and r.selector.cluster_id == "shared"]
+    assert len(shared_rules) == 1
+    assert shared_rules[0].max_per_bm == 2

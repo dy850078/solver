@@ -56,6 +56,7 @@ export function inkForCluster(cl) {
 /** "cluster-3" → "c3"; anything else keeps a short readable stem. */
 export function clusterShort(cl) {
   if (!cl) return "?";
+  if (cl === "shared") return "sh";
   const m = /^cluster-(\d+)$/.exec(cl);
   return m ? `c${m[1]}` : cl.slice(0, 4);
 }

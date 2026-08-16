@@ -273,7 +273,14 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 
 .role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 4px; align-items: center; }
 /* Node-group rows add a role select up front and a remove button at the end. */
-.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 46px 26px; }
+.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 40px 30px 30px 26px; }
+.group-flag {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: var(--font-micro); color: var(--text-subtle); cursor: pointer;
+  user-select: none;
+}
+.group-flag input { accent-color: var(--accent); margin: 0; width: 11px; height: 11px; }
+.group-flag:hover { color: var(--text-base); }
 .group-rows { display: flex; flex-direction: column; gap: 6px; }
 .role-row--group .cap-remove { height: 26px; padding: 0; font-size: 11px; }
 .role-row + .role-row { margin-top: 6px; }

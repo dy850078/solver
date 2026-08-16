@@ -1,0 +1,34 @@
+{
+  "seed": 1,
+  "clusters": 5,
+  "vm_specs": {
+    "Spec1": { "cpu_cores": 8,  "memory_mib": 65536, "storage_gb": 750 },
+    "F5":    { "cpu_cores": 16, "memory_mib": 32768, "storage_gb": 200 }
+  },
+  "node_groups": [
+    { "role": "master",       "count": 3, "ip_type": "non-routable", "spec": "Spec1", "max_per_bm": 1 },
+    { "role": "l4lb-storage", "count": 2, "ip_type": "non-routable", "spec": "Spec1", "max_per_bm": 1 },
+    { "role": "f5",      "count": 6, "ip_type": "routable", "spec": "F5",
+      "scope": "shared", "exclusive": true },
+    { "role": "bastion", "count": 2, "ip_type": "routable", "spec": "Spec1",
+      "scope": "shared", "exclusive": true }
+  ],
+  "bm_profiles": [
+    {
+      "name": "ctrl",
+      "roles": ["master", "l4lb-storage"],
+      "capacity": { "cpu_cores": 94, "memory_mib": 737280, "storage_gb": 3072 }
+    },
+    {
+      "name": "eco",
+      "roles": ["f5", "bastion"],
+      "capacity": { "cpu_cores": 24, "memory_mib": 98304, "storage_gb": 1000 }
+    }
+  ],
+  "racks": 6,
+  "ags": 3,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 },
+  "tightness": 1.0,
+  "config_overrides": { "w_headroom": 0 }
+}

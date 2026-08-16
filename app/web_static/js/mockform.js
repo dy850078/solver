@@ -4,12 +4,13 @@
 // distributions) flows through the "Advanced overrides (JSON)" box, which is
 // deep-merged over the form-built params.
 
-// All NodeRole values from the backend (app/models.py NodeRole).
+// Known-role catalog (app/models.py NodeRole) — datalist SUGGESTIONS only;
+// roles are open strings (ADR-010) and any ^[\w.-]+$ value is accepted.
 const ROLES = ["master", "learner", "worker", "infra", "l4lb-storage", "bastion"];
 
 const DEFAULTS = {
   clusters: 1,
-  // Node groups: role stays constrained to NodeRole, but the same role may
+  // Node groups: role is free text (known roles suggested); the same role may
   // appear in several groups (e.g. two worker specs / ip_types).
   node_groups: [
     { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
@@ -79,17 +80,40 @@ function refreshSpecDropdowns() {
 
 // ─── Node group rows (role · count · ip_type · spec · max/BM) ───
 
+function ensureRoleDatalist() {
+  if (document.getElementById("role-suggestions")) return;
+  const dl = el("datalist", { id: "role-suggestions" },
+    ROLES.map((r) => el("option", { value: r })));
+  document.body.appendChild(dl);
+}
+
 function groupRow(p = {}) {
-  const role = el("select", { class: "select group-role" },
-    ROLES.map((r) => el("option", { value: r, text: r, selected: r === (p.role || "worker") })));
+  // Roles are open strings (ADR-010): free text with the known catalog as
+  // datalist suggestions, so ceph-mon / f5 / lb… need no frontend release.
+  ensureRoleDatalist();
+  const role = el("input", {
+    class: "input group-role", type: "text",
+    placeholder: "role", value: p.role || "worker", spellcheck: "false",
+  });
+  // `input.list` is a read-only property, so the el() helper's property path
+  // can't set it — the association must go through the attribute.
+  role.setAttribute("list", "role-suggestions");
   const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
   const ip = el("select", { class: "select group-ip" },
     IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));
   const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
   const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
   if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
+  const shared = el("label", { class: "group-flag", title: "Shared across all clusters (one pool, cluster_id=shared)" }, [
+    el("input", { type: "checkbox", class: "group-shared", checked: p.scope === "shared" }),
+    el("span", { text: "sh" }),
+  ]);
+  const excl = el("label", { class: "group-flag", title: "Exclusive: each VM owns its BM outright (C6)" }, [
+    el("input", { type: "checkbox", class: "group-excl", checked: !!p.exclusive }),
+    el("span", { text: "ex" }),
+  ]);
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
-  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, remove]);
+  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, shared, excl, remove]);
   remove.addEventListener("click", () => {
     if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
   });
@@ -262,6 +286,8 @@ export function readMockParams() {
     };
     const mx = Number(row.querySelector(".group-maxbm").value);
     if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
+    if (row.querySelector(".group-shared").checked) g.scope = "shared";
+    if (row.querySelector(".group-excl").checked) g.exclusive = true;
     node_groups.push(g);
   }
 
@@ -347,6 +373,7 @@ export function populateMockForm(preset) {
     groups = p.node_groups.map((g) => ({
       role: g.role, count: g.count, ip_type: g.ip_type ?? "",
       spec: g.spec ?? "", max_per_bm: g.max_per_bm ?? "",
+      scope: g.scope ?? "cluster", exclusive: !!g.exclusive,
     }));
   } else {
     const presetRoles = p.roles ?? {};

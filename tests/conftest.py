@@ -43,7 +43,7 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
     )
 
 
-def solve(vms, bms, rules=None, failover_rules=None, **config_overrides):
+def solve(vms, bms, rules=None, failover_rules=None, exclusive_rules=None, **config_overrides):
     """Solve with default config, overridable.
 
     Auto-fills candidate_baremetals with all BM ids for any VM that has
@@ -64,6 +64,7 @@ def solve(vms, bms, rules=None, failover_rules=None, **config_overrides):
         vms=backfilled_vms, baremetals=bms,
         anti_affinity_rules=rules or [],
         failover_rules=failover_rules or [],
+        exclusive_bm_rules=exclusive_rules or [],
         config=SolverConfig(**cfg),
     )
     return VMPlacementSolver(request).solve()

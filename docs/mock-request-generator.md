@@ -62,7 +62,8 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `target` | `"solve"` | v1 僅支援 `solve` |
 | | `verify` | `true` | 產後用真實 solver 自我驗證 |
 | Cluster/VM | `clusters` | 1 | cluster 數 |
-| | `roles` | `{master:3,worker:3,infra:2}` | 每 cluster 各 role 的 VM 數 |
+| | `node_groups` | `[]` | **建議的需求來源**（設定後 roles/ip_type_by_role/spec_by_role/max_per_bm_by_role 全被忽略）：每項 `{role, count, ip_type, spec?, max_per_bm?, scope?, exclusive?}`。role 為開放字串（ADR-010）；`scope:"shared"` = 跨 cluster 共用、只生成一次（cluster_id=`"shared"`）；`exclusive:true` = appliance 獨占整機，自動產 C6 規則且該 role 需專屬 bm_profile pool（ADR-011） |
+| | `roles` | `{master:3,worker:3,infra:2}` | (legacy) 每 cluster 各 role 的 VM 數 |
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
@@ -150,7 +151,8 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 8. Validation Rules
 
 - `anti_affinity=true` 時，任何 `count ≥ 2` 的 role 必須在 `ip_type_by_role` 有非空值，否則回 **400**（因為空 `ip_type` 會被 solver 自動分組靜默略過，導致規則失效）。
-- `roles` 的 key 必須是合法 `NodeRole`。
+- role 為開放字串（格式 `^[\w.-]+$`，ADR-010）；不在已知目錄的 role 以 diagnostics `unknown_roles` 提示、不阻擋。
+- `exclusive` 群組必須有專屬 bm_profile pool（與一般 role 混用同一 profile → **400**）；同一 role 不得同時出現在 exclusive 與非 exclusive 群組（→ **400**）。
 - `bm_profiles` 至少一項；`capacity` 四維非負。
 - `target_spread`/`config_overrides` 交由現有 `SolverConfig` validator 把關。
 

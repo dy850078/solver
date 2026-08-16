@@ -119,13 +119,29 @@ class Baremetal(BaseModel):
 # ---------------------------------------------------------------------------
 
 class NodeRole(str, Enum):
-    """Node role enum. str mixin allows Pydantic to parse directly from JSON strings."""
+    """Known-roles catalog. ADVISORY, not a validation gate: node_role fields
+    are open strings (the role directory is owned by the Go scheduler /
+    operations, not this sidecar), and this enum only feeds defaults and UI
+    suggestions. Logic that branches on a specific role (e.g. mockgen's
+    master→learner failover convention) references these members by name."""
     MASTER = "master"
     LEARNER = "learner"
     WORKER = "worker"
     INFRA = "infra"
     L4LB = "l4lb-storage"
     BASTION = "bastion"
+
+
+# Roles are open strings (see NodeRole docstring); only the FORMAT is hard-
+# validated — membership in the known catalog is advisory, checked by callers
+# that care (e.g. mockgen surfaces unknown_roles in diagnostics).
+_ROLE_RE = re.compile(r"^[\w.-]+$")
+
+
+def validate_role(v: str) -> str:
+    if not v or not _ROLE_RE.match(v):
+        raise ValueError(f"node_role {v!r} must be non-empty and match ^[\\w.-]+$")
+    return v
 
 
 class VM(BaseModel):
@@ -144,10 +160,15 @@ class VM(BaseModel):
     id: str
     hostname: str = ""
     demand: Resources
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"
     ip_type: str = ""
     cluster_id: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
+
+    @field_validator("node_role")
+    @classmethod
+    def _role_format(cls, v: str) -> str:
+        return validate_role(v)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +189,7 @@ class GroupSelector(BaseModel):
     """
     cluster_id: str | None = None
     ip_type: str | None = None
-    node_role: NodeRole | None = None
+    node_role: str | None = None
 
     def is_empty(self) -> bool:
         return self.cluster_id is None and self.ip_type is None and self.node_role is None
@@ -296,6 +317,22 @@ class MaxPerBaremetalRule(BaseModel):
     vm_ids: list[str] = Field(default_factory=list)
     selector: GroupSelector | None = None
     max_per_bm: int
+
+
+class ExclusiveBaremetalRule(BaseModel):
+    """
+    "Every member of this group occupies its baremetal ALONE."
+
+    Appliance semantics (C6): a BM hosting a group member hosts nothing
+    else — no outsider VM AND no other member of the same group (e.g. each
+    F5 owns one machine outright). Cluster-shared eco-system pools are
+    expressed by selecting on the shared cluster_id.
+
+    Group membership: provide exactly one of `vm_ids` or `selector`.
+    """
+    group_id: str = ""
+    vm_ids: list[str] = Field(default_factory=list)
+    selector: GroupSelector | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +474,7 @@ class PlacementRequest(BaseModel):
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
@@ -487,7 +525,7 @@ class ResourceRequirement(BaseModel):
     explicit VMs with empty candidates are rejected with INPUT_ERROR.
     """
     total_resources: Resources
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"
     cluster_id: str = ""
     ip_type: str = ""
     vm_specs: list[Resources] | None = None
@@ -532,7 +570,7 @@ class SplitPlacementRequest(BaseModel):
 
 class SplitDecision(BaseModel):
     """How many VMs of a given spec the solver chose for one role."""
-    node_role: NodeRole
+    node_role: str
     vm_spec: Resources
     count: int
 
@@ -660,7 +698,7 @@ class RequirementCoverage(BaseModel):
     """
     requirement_index: int
     cluster_id: str = ""
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"
     in_stock: int = 0
     committed: int = 0
     new_buy: int = 0
@@ -734,7 +772,7 @@ class DemandEntry(BaseModel):
     demand (a 0 dimension is unconstrained, not "uses 0").
     """
     cluster_id: str
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"
     period: str                       # e.g. "2026-07"; ISO order = sort order
     # Incremental demand; 0 on a dimension = no lower bound on it.
     cpu_cores: int = Field(default=0, ge=0)
@@ -979,7 +1017,7 @@ class DemandCoverage(BaseModel):
     """RequirementCoverage joined back to its demand-book row (E0/S2)."""
     demand_id: str | None = None
     cluster_id: str
-    node_role: NodeRole
+    node_role: str
     period: str
     fab: str = ""
     in_stock: int = 0
@@ -1056,7 +1094,7 @@ class ExecutionRecord(BaseModel):
     """
     demand_id: str | None = None
     cluster_id: str = ""
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"
     vm_count: int = Field(ge=0)
     status: Literal["success", "failed"]
     period: str                       # "YYYY-MM" the execution belongs to

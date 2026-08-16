@@ -1311,3 +1311,86 @@ class TestConfigFingerprint:
         resp = client.post("/v1/placement/solve", json=body)
         assert resp.status_code == 200
         assert re.fullmatch(r"[0-9a-f]{12}", resp.json()["config_fingerprint"])
+
+
+# ===========================================================================
+# 8. C6: Exclusive occupancy (appliance semantics)
+# ===========================================================================
+
+from app.models import ExclusiveBaremetalRule
+
+
+class TestExclusiveOccupancy:
+
+    def _excl(self, role="f5", cluster="shared"):
+        return ExclusiveBaremetalRule(
+            group_id=f"excl/{cluster}/{role}",
+            selector=GroupSelector(cluster_id=cluster, node_role=role),
+        )
+
+    def test_members_never_share_a_bm(self):
+        """Two exclusive F5s on three BMs → distinct BMs (solo even within
+        the group)."""
+        vms = [make_vm(f"f5-{i}", role="f5", cluster="shared") for i in (1, 2)]
+        bms = [make_bm(f"bm-{i}") for i in (1, 2, 3)]
+        r = solve(vms, bms, exclusive_rules=[self._excl()])
+        assert r.success
+        a = amap(r)
+        assert a["f5-1"] != a["f5-2"]
+
+    def test_outsiders_barred_from_member_bms(self):
+        """1 F5 + 3 workers on 2 BMs: all workers must pile on the non-F5 BM
+        even though capacity would prefer spreading."""
+        vms = [make_vm("f5-1", role="f5", cluster="shared")] + [
+            make_vm(f"w-{i}", role="worker") for i in range(3)
+        ]
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        r = solve(vms, bms, exclusive_rules=[self._excl()])
+        assert r.success
+        a = amap(r)
+        f5_bm = a["f5-1"]
+        assert all(a[f"w-{i}"] != f5_bm for i in range(3))
+
+    def test_infeasible_when_bms_short(self):
+        """2 F5s + 1 worker on 2 BMs: F5s eat both machines solo → the
+        worker has nowhere to go."""
+        vms = [make_vm(f"f5-{i}", role="f5", cluster="shared") for i in (1, 2)] + [
+            make_vm("w-1", role="worker")
+        ]
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        r = solve(vms, bms, exclusive_rules=[self._excl()])
+        assert not r.success
+        assert "INFEASIBLE" in r.solver_status
+        assert r.diagnostics["constraint_check"]["failed_at"] == "exclusive"
+
+    def test_structural_precheck_reports_shortfall(self):
+        """3 exclusive members, 2 reachable BMs → counting pre-check fires."""
+        vms = [make_vm(f"f5-{i}", role="f5", cluster="shared") for i in (1, 2, 3)]
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        r = solve(vms, bms, exclusive_rules=[self._excl()])
+        assert not r.success
+        rules = r.diagnostics["infeasible_exclusive_rules"]
+        assert rules[0]["vm_count"] == 3
+        assert rules[0]["reachable_bms"] == 2
+
+    def test_two_exclusive_groups_stay_apart(self):
+        """F5 group and LVSLB group: members of one are outsiders to the
+        other, so 1+1 on two BMs lands on distinct machines."""
+        vms = [
+            make_vm("f5-1", role="f5", cluster="shared"),
+            make_vm("lb-1", role="lvslb", cluster="shared"),
+        ]
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        r = solve(vms, bms, exclusive_rules=[
+            self._excl("f5"), self._excl("lvslb"),
+        ])
+        assert r.success
+        a = amap(r)
+        assert a["f5-1"] != a["lb-1"]
+
+    def test_rule_without_selector_or_ids_is_input_error(self):
+        vms = [make_vm("v-1")]
+        bms = [make_bm("bm-1")]
+        r = solve(vms, bms, exclusive_rules=[ExclusiveBaremetalRule(group_id="bad")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")

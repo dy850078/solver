@@ -170,14 +170,14 @@ class ResourceSplitter:
         """
         logger.warning(
             "Requirement %d (role=%s) produced no synthetic VMs: %s",
-            req_idx, req.node_role.value, reason,
+            req_idx, req.node_role, reason,
         )
         if not has_demand(req):
             return
         self.dropped_requirements.append({
             "requirement_index": req_idx,
             "cluster_id": req.cluster_id,
-            "node_role": req.node_role.value,
+            "node_role": req.node_role,
             "reason": reason,
         })
         lit = self.model.new_bool_var(f"dropped_req_{req_idx}")
@@ -203,7 +203,7 @@ class ResourceSplitter:
             logger.error(
                 "Requirement (role=%s) has no eligible candidate_baremetals — "
                 "scheduler must provide step 3 filtering result",
-                req.node_role.value,
+                req.node_role,
             )
             return []
         candidate_set = set(eligible_ids)

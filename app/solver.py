@@ -40,6 +40,7 @@ from .models import (
     VM,
     AntiAffinityRule,
     Baremetal,
+    ExclusiveBaremetalRule,
     FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
@@ -156,6 +157,9 @@ class VMPlacementSolver:
         # Resolve per-baremetal rules (explicit + auto-generated)
         self.max_per_bm_rules: list[MaxPerBaremetalRule] = self._resolve_max_per_bm_rules()
 
+        # Resolve exclusive-occupancy rules (C6) to canonical vm_ids form.
+        self.exclusive_rules: list[ExclusiveBaremetalRule] = self._resolve_exclusive_rules()
+
         # Resolve failover rules (expand selectors into concrete VM-id lists).
         # Pre-flight check (|P| > |L| under n_minus_1 → INPUT_ERROR) lives here.
         self.failover_resolved: list[tuple[FailoverRule, list[str], list[str]]] = (
@@ -235,6 +239,8 @@ class VMPlacementSolver:
                 self._input_errors.append(
                     f"max_per_bm rule '{bm_rule.group_id}': max_per_bm must be >= 1"
                 )
+        for ex_rule in self.request.exclusive_bm_rules:
+            check(ex_rule, "exclusive_bm")
 
     def _expand_vm_ids(self, rule) -> list[str]:
         """
@@ -317,7 +323,7 @@ class VMPlacementSolver:
                 continue
             if not vm.ip_type or not vm.cluster_id:
                 continue
-            groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
+            groups[(vm.cluster_id, vm.ip_type, vm.node_role)].append(vm.id)
 
         for (cluster_id, ip_type, role), vm_ids in groups.items():
             if len(vm_ids) < 2 or not auto_spread_dims:
@@ -490,7 +496,7 @@ class VMPlacementSolver:
                 continue
             if not vm.cluster_id or not vm.ip_type:
                 continue
-            groups[(vm.cluster_id, vm.ip_type, vm.node_role.value)].append(vm.id)
+            groups[(vm.cluster_id, vm.ip_type, vm.node_role)].append(vm.id)
 
         for (cluster_id, ip_type, role), vm_ids in groups.items():
             if len(vm_ids) < 2:
@@ -516,9 +522,36 @@ class VMPlacementSolver:
         parts = [
             sel.cluster_id or "*",
             sel.ip_type or "*",
-            sel.node_role.value if sel.node_role else "*",
+            sel.node_role if sel.node_role else "*",
         ]
         return "selector/" + "/".join(parts)
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Exclusive-occupancy rules — C6 resolve
+    # ------------------------------------------------------------------
+
+    def _resolve_exclusive_rules(self) -> list[ExclusiveBaremetalRule]:
+        """Materialize C6 rules to canonical vm_ids form (mirrors C4's
+        resolve). No auto-generation — exclusivity is always an explicit
+        operational statement, never inferred."""
+        rules: list[ExclusiveBaremetalRule] = []
+        for r in self.request.exclusive_bm_rules:
+            resolved_ids = self._expand_vm_ids(r)
+            rules.append(ExclusiveBaremetalRule(
+                group_id=r.group_id or self._auto_group_id_for_selector(r.selector),
+                vm_ids=resolved_ids,
+            ))
+            if not resolved_ids:
+                self.advisories.append({
+                    "type": "exclusive_bm_rule_empty",
+                    "severity": "warning",
+                    "group_id": r.group_id,
+                    "message": (
+                        f"exclusive_bm rule '{r.group_id}' resolved to 0 VMs — "
+                        f"the rule has no effect."
+                    ),
+                })
+        return rules
 
     # ------------------------------------------------------------------
     # Step C: Build the CP-SAT model
@@ -779,6 +812,48 @@ class VMPlacementSolver:
                 ]
                 if vars_on_bm:
                     self.model.add(sum(vars_on_bm) <= rule.max_per_bm)
+
+    def _add_exclusive_constraints(self):
+        """
+        CONSTRAINT C6: Exclusive occupancy — every member of an exclusive
+        group occupies its baremetal ALONE (appliance semantics: e.g. one F5
+        owns one machine outright; nothing else lands there, not even
+        another F5 of the same group).
+
+        For each rule group G, for each BM b:
+          z_b == max(assign[v,b] : v ∈ G)      (reified "G occupies b")
+          assign[u,b] + z_b <= 1               ∀ u ∉ G   (outsiders barred)
+          Σ assign[v,b] (v ∈ G) <= 1           (members don't share either)
+
+        Full reification (add_max_equality) is chosen over the cheaper
+        one-sided form (z_b >= assign[v,b] only): the one-sided form is
+        provably equivalent on the assign-projection, but only while z stays
+        out of the objective and no other code reads z as "group is present"
+        — two preconditions future changes could silently break. At this
+        model's scale the equality costs nothing and keeps z semantically
+        exact for any future reader. Full argument: ADR-011 §4.
+        """
+        for rule in self.exclusive_rules:
+            members = set(rule.vm_ids)
+            if not members:
+                continue
+            for bm_id in self.bm_map:
+                member_vars = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in rule.vm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                if not member_vars:
+                    continue
+                z = self.model.new_bool_var(f"excl_{rule.group_id}__{bm_id}")
+                self.model.add_max_equality(z, member_vars)
+                self.model.add(sum(member_vars) <= 1)
+                for vm in self.request.vms:
+                    if vm.id in members:
+                        continue
+                    key = (vm.id, bm_id)
+                    if key in self.assign:
+                        self.model.add(self.assign[key] + z <= 1)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -1177,6 +1252,7 @@ class VMPlacementSolver:
             self._add_anti_affinity_constraints()
             self._add_failover_constraints()
             self._add_max_per_bm_constraints()
+            self._add_exclusive_constraints()
             self._add_bm_group_cap_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
@@ -1249,6 +1325,7 @@ class VMPlacementSolver:
             dim_to_bms=self.dim_to_bms,
             effective_rules=self.effective_rules,
             max_per_bm_rules=self.max_per_bm_rules,
+            exclusive_rules=self.exclusive_rules,
             failover_resolved=self.failover_resolved,
             config=self.config,
             num_variables=len(self.assign),
