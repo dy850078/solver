@@ -68,6 +68,21 @@
   --chip-serious-text: #9a3d16;
   --chip-critical-text: #ab2424;
 
+  /* Categorical identity slots — validated dataviz palette, fixed order,
+     never cycled. Solid use (cluster badges) pairs each slot with an ink
+     that stays readable on it; tinted use (AG pills, matrix cells) mixes
+     the slot color into the surface. Values beyond slot 8 fall back to
+     the neutral slot; the text label carries identity from there. */
+  --cat-1: #2a78d6; --cat-1-ink: #ffffff;
+  --cat-2: #eb6834; --cat-2-ink: #ffffff;
+  --cat-3: #1baf7a; --cat-3-ink: #06281c;
+  --cat-4: #eda100; --cat-4-ink: #3d2b00;
+  --cat-5: #e87ba4; --cat-5-ink: #4a1226;
+  --cat-6: #008300; --cat-6-ink: #ffffff;
+  --cat-7: #4a3aa7; --cat-7-ink: #ffffff;
+  --cat-8: #e34948; --cat-8-ink: #ffffff;
+  --cat-none: #898781; --cat-none-ink: #ffffff;
+
   /* Chart chrome */
   --meter-track: #e4e4e7;
   --grid-hairline: #ececea;
@@ -123,6 +138,18 @@ html[data-theme="dark"] {
   --chip-warning-text: #fac95e;
   --chip-serious-text: #f3a988;
   --chip-critical-text: #e88a8a;
+
+  /* Categorical slots — same eight hues stepped for the dark surface
+     (validated as a set), not an automatic flip of the light steps. */
+  --cat-1: #3987e5; --cat-1-ink: #ffffff;
+  --cat-2: #d95926; --cat-2-ink: #ffffff;
+  --cat-3: #199e70; --cat-3-ink: #ffffff;
+  --cat-4: #c98500; --cat-4-ink: #241800;
+  --cat-5: #d55181; --cat-5-ink: #ffffff;
+  --cat-6: #008300; --cat-6-ink: #ffffff;
+  --cat-7: #9085e9; --cat-7-ink: #1b1746;
+  --cat-8: #e66767; --cat-8-ink: #3d0f0f;
+  --cat-none: #898781; --cat-none-ink: #ffffff;
 
   --meter-track: #2c2c2a;
   --grid-hairline: #2c2c2a;

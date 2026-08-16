@@ -36,6 +36,14 @@
     </div>
   </div>
   <div class="app-header__actions">
+    <button id="sidebar-toggle" class="app-header__link sidebar-toggle" type="button"
+            aria-pressed="false" title="Hide input panel">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2.5" width="12" height="11" rx="1.5"/>
+        <path d="M6 2.5v11"/>
+      </svg>
+      Panel
+    </button>
     <a class="app-header__link" href="report.html" title="Capacity Report">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
@@ -168,6 +176,10 @@
       <header class="card__header">
         <h2 class="card__title">Topology</h2>
         <div class="card__header-right">
+          <label class="cap-toggle" title="Show per-BM capacity bars">
+            <input type="checkbox" id="show-capacity">
+            <span>Capacity</span>
+          </label>
           <label class="select-inline">
             <span class="select-inline__label">Group by</span>
             <select id="group-by" class="select select--compact">

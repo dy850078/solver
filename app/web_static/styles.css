@@ -86,6 +86,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   max-height: calc(100vh - var(--header-h) - 40px);
   overflow-y: auto;
 }
+
+/* Collapsed input panel: results take the full width; the header "Panel"
+   button (aria-pressed) is the only way in and out, so it stays visible. */
+body.sidebar-collapsed .app-main { grid-template-columns: 1fr; }
+body.sidebar-collapsed .sidebar,
+body.sidebar-collapsed #sidebar-resizer { display: none; }
+.sidebar-toggle[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
 .content { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 
 /* ─────────────────────────────────────────────────────────────
@@ -680,27 +690,99 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font-style: italic;
 }
 
-/* ─── VM chip ──────────────────────────────────────────────── */
+/* ─── VM chip ──────────────────────────────────────────────────
+   Neutral body + solid cluster badge: saturated color lives only on
+   the small badge (identity), the large chip area stays quiet. AG is
+   NOT painted on chips — it is a per-BM constant already shown by the
+   BM header pill (and the matrix). */
 .vm-chip {
   display: inline-flex;
-  align-items: center;
-  padding: 3px 9px;
+  align-items: stretch;
+  overflow: hidden;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   font-size: 10.5px;
   font-weight: 500;
-  color: #fff;
-  background: var(--ag-color, var(--text-subtle));
+  color: var(--text-base);
+  background: var(--bg-subtle);
   border-radius: var(--radius-sm);
   letter-spacing: -0.01em;
   cursor: pointer;
   transition: filter 100ms, transform 100ms;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.18);
-  border: 1px solid color-mix(in srgb, var(--ag-color) 70%, black 25%);
+  border: 1px solid var(--border-base);
 }
 .vm-chip:hover {
-  filter: brightness(1.1);
+  filter: brightness(0.97);
   transform: translateY(-1px);
+  border-color: var(--border-strong);
 }
+html[data-theme="dark"] .vm-chip:hover { filter: brightness(1.15); }
+.vm-chip__badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0 5px;
+}
+.vm-chip__host {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px 3px 6px;
+}
+
+/* ─── Per-BM capacity micro-bars ───────────────────────────────
+   Non-binding rows use a recessive gray fill (texture, not signal);
+   only the binding dimension wears the warning amber. */
+.bm__cap {
+  margin: 0 0 7px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border-base);
+}
+.cap {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin: 2px 0;
+}
+.cap__label {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 9.5px;
+  color: var(--text-subtle);
+}
+.cap__bar {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--meter-track);
+  overflow: hidden;
+}
+.cap__pre { background: color-mix(in srgb, var(--text-subtle) 38%, transparent); }
+.cap__placed { background: color-mix(in srgb, var(--text-subtle) 62%, transparent); }
+.cap--hot .cap__placed { background: var(--status-warning); }
+.cap--hot .cap__pre { background: color-mix(in srgb, var(--status-warning) 45%, transparent); }
+.cap__num {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 9.5px;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cap--hot .cap__num { color: var(--chip-warning-text); font-weight: 600; }
+
+/* Capacity toggle in the Topology card header */
+.cap-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.cap-toggle input { accent-color: var(--accent); margin: 0; }
+.cap-toggle:hover { color: var(--text-base); }
 
 /* ─── Legend ───────────────────────────────────────────────── */
 .legend {
@@ -719,6 +801,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
   width: 10px; height: 10px;
   border-radius: 3px;
   flex-shrink: 0;
+}
+.legend__dim {
+  color: var(--text-subtle);
+  font-weight: 500;
+  margin-right: 4px;
+}
+.legend__dim:not(:first-child) { margin-left: 12px; }
+.legend-badge {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 2px 5px;
+  flex-shrink: 0;
+}
+.legend-tint {
+  width: 22px; height: 13px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--ag-color) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ag-color) 32%, transparent);
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -802,7 +905,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg-surface);
 }
 .matrix__cell--filled {
-  background: color-mix(in srgb, var(--cell-color) calc(var(--cell-alpha) * 100%), white);
+  background: color-mix(in srgb, var(--cell-color) calc(var(--cell-alpha) * 100%), var(--bg-surface));
   color: var(--text-base);
   font-weight: 600;
 }
