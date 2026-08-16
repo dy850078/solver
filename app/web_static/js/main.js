@@ -343,8 +343,11 @@ function spinnerEl() {
   return d;
 }
 
-// Drag the right edge of the sidebar to resize it; width persists in localStorage.
-function initSidebarResize() {
+// Sidebar chrome: a drag handle on the divider to resize (persists), and a
+// chevron tab ON that divider to collapse. Collapsed, the tab docks to the
+// left screen edge — collapse and expand always live on the same line, so
+// the control never has to be hunted down elsewhere in the UI.
+function initSidebarChrome() {
   const sidebar = document.querySelector(".sidebar");
   if (!sidebar) return;
   const root = document.documentElement;
@@ -357,9 +360,34 @@ function initSidebarResize() {
   handle.id = "sidebar-resizer";
   document.body.appendChild(handle);
 
-  const place = () => { handle.style.left = sidebar.getBoundingClientRect().right + "px"; };
-  place();
+  const tab = document.createElement("button");
+  tab.id = "sidebar-collapse-tab";
+  tab.type = "button";
+  tab.innerHTML = `<svg viewBox="0 0 8 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 1.5 2 6l3.5 4.5"/></svg>`;
+  document.body.appendChild(tab);
+
+  const collapsed = () => document.body.classList.contains("sidebar-collapsed");
+  const place = () => {
+    if (collapsed()) {
+      tab.style.left = "0px";
+    } else {
+      const right = sidebar.getBoundingClientRect().right;
+      handle.style.left = right + "px";
+      tab.style.left = (right - 10) + "px";
+    }
+  };
+  const setCollapsed = (on) => {
+    document.body.classList.toggle("sidebar-collapsed", on);
+    tab.title = on ? "Show input panel" : "Hide input panel";
+    tab.setAttribute("aria-expanded", String(!on));
+    localStorage.setItem("solver-sidebar-collapsed", on ? "1" : "0");
+    place();
+  };
+  setCollapsed(localStorage.getItem("solver-sidebar-collapsed") === "1");
   window.addEventListener("resize", place);
+
+  tab.addEventListener("click", () => setCollapsed(!collapsed()));
+  handle.addEventListener("dblclick", () => setCollapsed(true));
 
   handle.addEventListener("mousedown", (e) => {
     e.preventDefault();
@@ -416,28 +444,8 @@ async function runSolver() {
   }
 }
 
-// Collapse/expand the whole input sidebar (header button); persists.
-function initSidebarCollapse() {
-  const btn = $("#sidebar-toggle");
-  if (!btn) return;
-  const apply = (collapsed) => {
-    document.body.classList.toggle("sidebar-collapsed", collapsed);
-    btn.setAttribute("aria-pressed", String(collapsed));
-    btn.title = collapsed ? "Show input panel" : "Hide input panel";
-    // Reposition the drag handle after layout changes.
-    window.dispatchEvent(new Event("resize"));
-  };
-  apply(localStorage.getItem("solver-sidebar-collapsed") === "1");
-  btn.addEventListener("click", () => {
-    const collapsed = !document.body.classList.contains("sidebar-collapsed");
-    localStorage.setItem("solver-sidebar-collapsed", collapsed ? "1" : "0");
-    apply(collapsed);
-  });
-}
-
 function init() {
-  initSidebarResize();
-  initSidebarCollapse();
+  initSidebarChrome();
   renderMockForm($("#mock-form"));
   populateExamples();
 
