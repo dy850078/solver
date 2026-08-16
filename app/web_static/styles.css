@@ -92,10 +92,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 body.sidebar-collapsed .app-main { grid-template-columns: 1fr; }
 body.sidebar-collapsed .sidebar,
 body.sidebar-collapsed #sidebar-resizer { display: none; }
-.sidebar-toggle[aria-pressed="true"] {
-  color: var(--accent);
-  background: var(--accent-soft);
+/* Same ghost treatment as the other header links (a <button> needs the
+   browser chrome reset the links get for free). State lives in the icon:
+   the sidebar strip is filled while the panel is open, hollow when hidden —
+   the layout itself already announces the change, so the button stays quiet. */
+.sidebar-toggle {
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
 }
+.sidebar-toggle[aria-pressed="true"] .panel-fill { opacity: 0; }
 .content { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
 
 /* ─────────────────────────────────────────────────────────────
