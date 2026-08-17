@@ -126,6 +126,17 @@ git diff mirror/release-to-gitlab master -- <嫌疑檔案>
 - systemd unit / container env / shell profile 的環境變數
 - 或一個 `.gitignore` 掉的 `.env`
 - pip index / proxy → `PIP_INDEX_URL` 環境變數或 `pip.conf`（本來就不該在 pyproject.toml）
+- 本機專屬的 git ignore 規則 → `.git/info/exclude`（git 不追蹤,永不衝突）
+
+### 已完成的 externalize（本專案現況）
+
+| 原本的本地修改 | 現在的做法 | 對應 |
+|---|---|---|
+| Makefile `PYTHON ?= python3.13` → 3.12 | `export PYTHON=python3.12` | `?=` 本來就吃環境變數 |
+| pyproject `requires-python >=3.13` | 已放寬為 `>=3.12` | codebase 無 3.13-only 語法 |
+| 移除 `swagger_ui_bundle` import、自建 `/static` 掛載 | `SWAGGER_STATIC_DIR` 指向 vendored 目錄 | 套件改為 optional dependency |
+| `/healthz` → `/health` | upstream 已是 `/health` | 無 delta |
+| `.gitignore` 本機規則 | `.git/info/exclude` | git 不追蹤 |
 
 ---
 
