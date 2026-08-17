@@ -47,7 +47,7 @@ python -m app.server --port 50051
 
 ```bash
 curl http://localhost:50051/health
-# "ok"
+# {"status":"ok"}
 ```
 
 ### 3. Minimal solve request (inline JSON)

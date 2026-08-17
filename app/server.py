@@ -14,7 +14,6 @@ import os
 import sys
 from pathlib import Path
 
-import swagger_ui_bundle
 import uvicorn
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -43,7 +42,33 @@ from .split_solver import solve_split_placement
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-_SWAGGER_STATIC_DIR = Path(swagger_ui_bundle.__file__).parent
+def _resolve_swagger_static_dir() -> Path | None:
+    """Where the local Swagger UI assets live, most specific source first.
+
+    1. ``SWAGGER_STATIC_DIR`` — a vendored copy. Deployments that cannot
+       install ``swagger-ui-bundle`` (closed networks without that package
+       in their index) point this at their own directory.
+    2. the ``swagger_ui_bundle`` package, when it is installed.
+    3. neither — /docs then says so, and nothing else is affected.
+
+    The package is an optional docs convenience, never a runtime
+    requirement: importing it at module scope would take the whole solver
+    down wherever it is unavailable.
+    """
+    override = os.environ.get("SWAGGER_STATIC_DIR", "").strip()
+    if override:
+        path = Path(override)
+        if path.is_dir():
+            return path
+        logger.warning("SWAGGER_STATIC_DIR=%s is not a directory; ignoring it", override)
+    try:
+        import swagger_ui_bundle
+    except ImportError:
+        return None
+    return Path(swagger_ui_bundle.__file__).parent
+
+
+_SWAGGER_STATIC_DIR = _resolve_swagger_static_dir()
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -70,8 +95,10 @@ api = FastAPI(
     docs_url=None,  # disable default /docs (loads from CDN, blank without network)
 )
 
-# Serve Swagger UI static assets locally
-api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
+# Serve Swagger UI static assets locally (skipped when none are available —
+# see _resolve_swagger_static_dir)
+if _SWAGGER_STATIC_DIR is not None:
+    api.mount("/swagger-static", StaticFiles(directory=str(_SWAGGER_STATIC_DIR)), name="swagger-static")
 
 api.include_router(examples_api.router)
 api.include_router(mockgen.router)
@@ -96,6 +123,17 @@ else:
 @api.get("/docs", include_in_schema=False)
 def custom_swagger_ui() -> HTMLResponse:
     """Swagger UI served from local static assets (no CDN dependency)."""
+    if _SWAGGER_STATIC_DIR is None:
+        return HTMLResponse(
+            "<h1>API docs unavailable</h1>"
+            "<p>No local Swagger UI assets were found. Install the "
+            "<code>swagger-ui-bundle</code> package, or point "
+            "<code>SWAGGER_STATIC_DIR</code> at a directory holding "
+            "<code>swagger-ui-bundle.js</code> and <code>swagger-ui.css</code>.</p>"
+            '<p>The schema itself is always available at <a href="/openapi.json">'
+            "/openapi.json</a>.</p>",
+            status_code=503,
+        )
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title="VM Placement Solver — API Docs",
@@ -135,8 +173,10 @@ def capacity_reconcile(request: ReconcileRequest) -> ReconcileReport:
 
 
 @api.get("/health")
-def health() -> str:
-    return "ok"
+def health() -> dict:
+    """Liveness probe. Returns an object rather than a bare string so
+    fields can be added without breaking clients that already parse it."""
+    return {"status": "ok"}
 
 
 def main() -> None:

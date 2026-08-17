@@ -2,20 +2,23 @@
 name = "vm-placement-solver"
 version = "0.1.0"
 description = "Python-based VM placement optimizer using OR-Tools CP-SAT solver"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "ortools>=9.9",
     "pydantic>=2.0",
     "fastapi>=0.100",
     "uvicorn>=0.20",
-    "swagger-ui-bundle>=0.0.9",
     "pandas==2.3.3",
 ]
 
 [project.optional-dependencies]
+# swagger-ui-bundle only backs /docs. It is an extra so deployments whose
+# index does not carry it still install cleanly; those vendor the assets and
+# point SWAGGER_STATIC_DIR at them instead (see app/server.py).
 dev = [
     "pytest>=7.0",
     "httpx>=0.24",
+    "swagger-ui-bundle>=0.0.9",
 ]
 
 [project.scripts]

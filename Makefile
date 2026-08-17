@@ -5,8 +5,9 @@
 #   make run         # start the HTTP server (http://localhost:50051, UI at /ui)
 #   make test        # run the test suite
 #
-# Override defaults on the command line, e.g.:
+# Override defaults on the command line or from the environment, e.g.:
 #   make run PORT=8080
+#   make install PYTHON=python3.12      # or: export PYTHON=python3.12
 #   make cli INPUT=examples/sample_request.json OUTPUT=output/result.json
 
 PYTHON ?= python3.13
