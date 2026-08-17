@@ -20,6 +20,12 @@ wheels/
 .installed.cfg
 *.egg
 
+# Tool caches — most versions drop a self-ignoring .gitignore inside, but
+# not all, and this project configures both pytest and mypy.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Virtual environments
 venv/
 env/

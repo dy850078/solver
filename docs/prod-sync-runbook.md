@@ -166,7 +166,12 @@ done
 | pyproject `requires-python >=3.13` | 已放寬為 `>=3.12` | codebase 無 3.13-only 語法 |
 | 移除 `swagger_ui_bundle` import、自建 `/static` 掛載 | `SWAGGER_STATIC_DIR` 指向 vendored 目錄 | 套件改為 optional dependency |
 | `/health` 回 `{"status":"ok"}` | upstream 已對齊此格式 | probe 設定在 repo 外,回傳格式是契約 |
-| `.gitignore` 本機規則 | `.git/info/exclude` | git 不追蹤 |
+| `.gitignore` 的 `*_cache` | upstream 已補 cache 規則 | pytest/mypy/ruff |
+| `.gitignore` 的 `benchmark_*` | `.git/info/exclude` | 本機產物,git 不追蹤 |
+
+> **不要保留生產版的 `.gitignore`** —— 它只有 4 行,沒有忽略 `.venv/`、
+> `.env`、`output/`、`*.log`。尤其 `.env` 正是本階段要用來放環境值的檔案,
+> 沒忽略等於把設定(可能含憑證)推上 repo 的風險。upstream 版本嚴格更完整。
 
 ---
 
