@@ -28,10 +28,15 @@ GitHub: dy850078/solver
                                     ↓
                          GitLab 生產 repo (master)   ← deploy 綁定在此,不可換 repo
                                     │
-                                git pull --ff-only
+                          merge 進 master 觸發 deploy pipeline
                                     ↓
                                生產機器
 ```
+
+**部署模型**:生產機器不做 `git pull`。
+**MR merge 進 master 的那一刻就是 deploy**,pipeline 會自己把 code 送上去。
+所以 push 前的驗證是上線前最後一道關卡 —— 這也是 `scripts/sync-from-upstream.sh`
+把所有檢查做完、卻刻意不幫你 push 的原因。
 
 **已確認的前提**
 - 生產 repo 與 mirror **無共同歷史** → 需要 Phase 2 的一次性移植
@@ -350,36 +355,54 @@ feature branch 開發完 → PR（自動 target `release-to-gitlab`）→ review
 
 ```bash
 cd solver-prod
-git fetch mirror
-git switch -c sync/$(date +%Y-%m-%d) origin/master
-git merge mirror/release-to-gitlab
-#   Phase 1 完成後:應該永遠自動 merge 成功
-#   若 conflict → upstream 動到了你 A 類以外的東西,值得看一眼
-
-make install && make test
-make cli INPUT=examples/success_basic.json
-
-git push origin sync/2026-08-18
-# → GitLab 開 MR (sync/* → master) → review → merge
+./scripts/sync-from-upstream.sh
 ```
 
-**部署 = MR merge 進 master 的那一刻。**
+這支 script 把 3.2 的手動步驟包起來,並且**永遠不會 push**。
+它做的事,依序:
 
-### 3.3 生產機器
+| 階段 | 檢查 | 失敗代表 |
+|---|---|---|
+| Preflight | `mirror` remote 存在、tracked 檔案沒有未 commit 變更、分支名沒被佔用、目前在哪個 branch | 環境沒準備好,先修 |
+| Fetch | 兩邊 remote 都 fetch;`mirror` 沒有新東西就直接結束 | pipeline 可能還沒跑 |
+| | 列出 incoming commits ——「**這就是 MR 會 deploy 的東西**」 | |
+| Merge | 從 `origin/master` 開 `sync/YYYY-MM-DD`,merge mirror | conflict → upstream 動到你也客製的檔案 |
+| Install | `make install`（並在 `PIP_INDEX_URL` 有設但 `UV_INDEX_URL` 沒設時警告） | 內網 index 沒吃到 |
+| Test | `make test` | |
+| CLI | `make cli` 等效,斷言 `solver_status` 是 OPTIMAL/FEASIBLE | 只跑不夠,要看結果 |
+| Smoke | 真的起 server,斷言 `/health` 回 `{"status":"ok"}`、`POST /v1/placement/solve` 會解 | liveness probe 的契約 |
+| Contract | 與 `origin/master` 比對 endpoint / 環境變數 / `pyproject.toml`+`uv.lock` 變動 | 這些設定在 repo 外面,要同步改 |
+
+**任一檢查失敗 → 印出「Do not push」並把分支留在原地讓你查。**
+全過 → 印出 `git push origin sync/YYYY-MM-DD` 讓**你自己決定**要不要送。
+
+常用選項:
 
 ```bash
-git pull --ff-only
-# pyproject.toml / uv.lock 有變動時重裝依賴:
-make install
+./scripts/sync-from-upstream.sh --no-smoke      # 不方便起 server 時
+./scripts/sync-from-upstream.sh --keep-going    # 一次看完所有失敗,不要 fail-fast
+./scripts/sync-from-upstream.sh --verify-only   # 解完 conflict 後,只重跑驗證
+./scripts/sync-from-upstream.sh --branch sync/hotfix --mirror-ref mirror/other-branch
 ```
+
+驗證通過後,**你自己** push 並在 GitLab 開 MR (`sync/*` → `master`)。
+
+### 3.3 Deploy
+
+MR merge 進 `master` → deploy pipeline 自動送上生產機器。
+**生產機器不需要（也不應該）手動 `git pull`。**
+
+`pyproject.toml` / `uv.lock` 有變動時要確認 deploy pipeline 有重裝依賴 ——
+script 的 Contract 階段就是為了在 push 前先讓你看到這件事。
 
 ### 紀律
 
 - **sync 分支要短命**:每次從 master 新開、當天走完 MR 收掉。
   留長期分支 = 在 fork 裡重新養出一個 delta 問題。
 - **master 設 protected**（只准 MR 進入）→ 沒有人能直接推生產 code。
-- `--ff-only` 是免費的漂移偵測器:有人手癢直接改生產 repo 並 commit,
-  它會拒絕合併而不是靜默輾過去。
+  因為 merge 就是 deploy,這條規則等於「沒有人能繞過 review 上線」。
+- **script 的 preflight 是免費的漂移偵測器**:有人手癢直接改工作區並 commit,
+  它會擋在 sync 開始之前,而不是把那些改動靜默夾帶進 MR 一起 deploy。
 
 ---
 
@@ -398,10 +421,14 @@ Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。此時可二選�
 維持 Phase 3 流程,但每次 merge 都是自動成功的純轉發。
 好處:保留 MR 作為審計記錄與人工放行點,A 類檔案也能繼續存在。
 
+> 因為 merge = deploy,A 等於把上線變成無人值守。
+> `sync-from-upstream.sh` 的驗證只在 B 才有機會跑到 ——
+> 除非另外把等價的檢查搬進 pipeline,否則選 A 就是拿掉上線前那道關卡。
+
 **最終狀態**
 ```
-GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產 repo
-                                                    → 生產機器 git pull --ff-only
+GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產 repo master
+                                                    → deploy pipeline → 生產機器
 ```
 
 ---
@@ -412,8 +439,16 @@ GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產
 - [x] Phase 0:盤點完成（delta = server.py / pyproject / Makefile / .gitignore）
 - [x] Phase 1:externalize 完成並流進 mirror（PR #31、#32）
 - [x] Phase 2:移植手術 + 對齊完成，delta 歸零
-- [ ] Phase 3:跑過至少一輪例行同步
+- [x] Phase 3:例行同步自動化（`scripts/sync-from-upstream.sh`）
+- [ ] Phase 3:用該 script 跑過至少一輪真實同步
 - [ ] Phase 4:選定 A 或 B 並設定完成
+
+## 相關 script
+
+| Script | 用途 |
+|---|---|
+| `scripts/sync-from-upstream.sh` | Phase 3 例行同步:fetch → merge → 驗證 → 交由你決定是否 push |
+| `scripts/compare-with-upstream.sh` | Phase 0 盤點:三區塊 diff 報告 + endpoint/環境變數契約交叉檢查 |
 
 ---
 
