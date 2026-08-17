@@ -243,12 +243,39 @@ commit message 裡寫下每個檔案保留的原因 —— 下一次同步時,
 
 ```bash
 git push origin adopt-upstream        # 先推分支,master 完全沒被碰
-
-make install
-make test                             # 應為全綠
-make cli INPUT=examples/success_basic.json
-# 起服務煙測:打 /health、跑一次真實 request、確認環境變數有生效
 ```
+
+**先更新 venv。** `.venv/` 被 gitignore,切換分支不會動它 —— 移植後裡面裝的
+還是舊 code 的依賴。`make install` 不會重建 venv（`.venv/bin/python` 已存在,
+該 target 直接跳過）,只會把套件裝進去:
+
+```bash
+export PYTHON=python3.12              # Makefile 的 ?= 會讓環境變數勝出
+export PIP_INDEX_URL=https://<內部索引>/simple    # 封閉網路
+make install                          # = pip install -e ".[dev]"
+```
+
+**驗證分兩層**,能跑多少跑多少:
+
+| 層級 | 指令 | 需要 | 驗什麼 |
+|---|---|---|---|
+| 邏輯正確性 | `make test` | dev extras（pytest、httpx） | code 本身 —— GitHub CI 已驗過,這裡是複驗 |
+| **環境相容性** | CLI + 煙測 | 只要 runtime deps | **這份 code 在這個環境能不能跑** ← 生產端真正該驗的 |
+
+```bash
+make cli INPUT=examples/success_basic.json
+
+export SWAGGER_STATIC_DIR=/path/to/vendored/swagger
+make run &
+curl -s :50051/health      # 必須是 {"status":"ok"} —— probe 契約
+curl -s :50051/openapi.json | head -c 100
+curl -s -X POST :50051/v1/placement/solve \
+     -H 'Content-Type: application/json' \
+     -d @examples/success_basic.json | head -c 200
+```
+
+> 內部索引若沒有 `pytest` / `httpx`,生產端就跳過 `make test`,改在工作機上跑
+> 全套;生產端只做環境相容性那一層。**別為了跑測試把 dev 套件塞進生產環境。**
 
 驗證不過 → 修分支或直接棄用,**master 從頭到尾沒動過,生產零風險**。
 
