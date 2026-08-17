@@ -9,6 +9,8 @@
 #     --verify-only      skip fetch+merge, just re-run the checks on HEAD
 #     --no-smoke         skip the live server smoke test
 #     --keep-going       run every check even after one fails
+#     --log-file PATH    sync-log path, repo root  (default SYNC_LOG.md)
+#     --no-log           do not append a sync-log entry
 #
 # It never pushes. Merging the resulting MR into master is what deploys to
 # production, so the decision to push stays with a human — this script's job
@@ -22,6 +24,9 @@ SYNC_BRANCH=""
 RUN_SMOKE=1
 KEEP_GOING=0
 VERIFY_ONLY=0
+WRITE_LOG=1
+SYNC_LOG="SYNC_LOG.md"
+LOG_MAX=50
 SMOKE_PORT="${SMOKE_PORT:-55051}"
 CLI_EXAMPLE="examples/success_basic.json"
 
@@ -33,7 +38,9 @@ while [ $# -gt 0 ]; do
     --verify-only) VERIFY_ONLY=1; shift ;;
     --no-smoke)   RUN_SMOKE=0; shift ;;
     --keep-going) KEEP_GOING=1; shift ;;
-    -h|--help)    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --log-file)   SYNC_LOG="$2"; shift 2 ;;
+    --no-log)     WRITE_LOG=0; shift ;;
+    -h|--help)    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -77,6 +84,8 @@ finish() {
     printf '   Nothing has been pushed. When you are ready:\n\n'
     printf '     %sgit push origin %s%s\n\n' "$BOLD" "$SYNC_BRANCH" "$RESET"
     printf '   then open the MR into master in GitLab — %smerging it deploys%s.\n' "$BOLD" "$RESET"
+    [ "$WRITE_LOG" = 1 ] \
+      && printf '   The MR touches %s at the root, so the pipeline will fire.\n' "$SYNC_LOG"
     backout_hint "   To back out instead:  "
     exit 0
   fi
@@ -186,6 +195,64 @@ if [ "$VERIFY_ONLY" = 1 ]; then
 else
   fetch_and_merge
 fi
+
+# ---------------------------------------------------------------- sync log
+# The deploy pipeline triggers on a change at the repository root, and a sync
+# merge on its own may touch nothing there — upstream could have changed only
+# app/ or tests/. Appending here guarantees the MR always has a root-level
+# change, and the file doubles as the deploy history: one entry, one MR, one
+# deploy.
+#
+# It lives only in this repo, never upstream, so it never conflicts (git keeps
+# a file only one side ever touched). It does mean the repo is permanently
+# non-identical to the mirror — see the Phase 4 note in the runbook.
+write_sync_log() {
+  [ "$WRITE_LOG" = 1 ] || return 0
+  step "Sync log ($SYNC_LOG)"
+
+  # An entry for this sync is already committed if the file differs from base.
+  # Keeps repeated --verify-only runs from stacking duplicate entries.
+  if ! git diff --quiet "$BASE_REF" -- "$SYNC_LOG"; then
+    ok "already carries an entry for this sync — not appending a second one"
+    return 0
+  fi
+
+  if [ ! -f "$SYNC_LOG" ]; then
+    cat > "$SYNC_LOG" <<'HDR'
+# Sync log
+
+Append-only record of upstream syncs into this repository. One entry is one
+MR into `master`, which is one deploy.
+
+Written by `scripts/sync-from-upstream.sh`; it also guarantees every sync MR
+touches a file at the repository root, which is what the deploy pipeline
+triggers on.
+HDR
+    ok "created $SYNC_LOG"
+  fi
+
+  local count
+  count=$(git log --no-merges --oneline "$BASE_REF..HEAD" | wc -l | tr -d ' ')
+  {
+    printf '\n## %s — %s\n\n' "$(date +'%Y-%m-%dT%H:%M:%S%z')" "$SYNC_BRANCH"
+    printf -- '- upstream: %s @ %s\n' "$MIRROR_REF" \
+      "$(git rev-parse --short "$MIRROR_REF" 2>/dev/null || echo 'unknown')"
+    printf -- '- base:     %s @ %s\n' "$BASE_REF" "$(git rev-parse --short "$BASE_REF")"
+    printf -- '- %s commit(s):\n' "$count"
+    git log --no-merges --format='  - %h %s' "$BASE_REF..HEAD" | head -"$LOG_MAX"
+    [ "$count" -gt "$LOG_MAX" ] && printf -- '  - … and %s more\n' "$((count - LOG_MAX))"
+  } >> "$SYNC_LOG"
+
+  git add -- "$SYNC_LOG" || { fail "could not stage $SYNC_LOG"; return 0; }
+  if git commit -qm "Record upstream sync into $SYNC_BRANCH"; then
+    ok "appended $count-commit entry, committed as $(git rev-parse --short HEAD)"
+  else
+    fail "could not commit $SYNC_LOG"
+  fi
+}
+
+write_sync_log
+guard
 
 # ------------------------------------------------------------------ verify
 step "Install dependencies"

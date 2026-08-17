@@ -1,6 +1,6 @@
 # 生產環境同步 Runbook
 
-把「每次手動複製檔案」換成「git pull」的完整流程。
+把「每次手動複製檔案」換成「一條可驗證的 git 流水線」的完整流程。
 
 ## 適用情境
 
@@ -12,7 +12,7 @@
 2. upstream 若改到被「跳過複製」的檔案,該更新會被靜默遺漏
 3. 每次更新都是高風險的手工作業
 
-本 runbook 的目標是把這三件事收斂成 `git pull --ff-only`。
+本 runbook 的目標是把這三件事收斂成一條指令:`./scripts/sync-from-upstream.sh`。
 
 ## 架構
 
@@ -323,7 +323,9 @@ git fetch origin
 git reset --hard origin/master
 ```
 
-> 這是**唯一一次**需要 reset。之後 master 只前進不改寫,永遠是 `git pull --ff-only`。
+> 這是**唯一一次**需要 reset。之後 master 只前進不改寫,每次同步都走
+> `sync/*` 分支 + MR,工作區用 `git fetch && git switch master && git merge --ff-only`
+> 跟上即可。
 > 執行前確認生產機器上沒有未 commit 的重要東西（Phase 0 已經盤點過就安全）。
 > `.env`、`.venv/` 等未追蹤檔案不受 reset 影響。
 
@@ -367,6 +369,7 @@ cd solver-prod
 | Fetch | 兩邊 remote 都 fetch;`mirror` 沒有新東西就直接結束 | pipeline 可能還沒跑 |
 | | 列出 incoming commits ——「**這就是 MR 會 deploy 的東西**」 | |
 | Merge | 從 `origin/master` 開 `sync/YYYY-MM-DD`,merge mirror | conflict → upstream 動到你也客製的檔案 |
+| Sync log | 在根路徑的 `SYNC_LOG.md` append 一筆「時間戳 + upstream/base SHA + commit 清單」並 commit | 見下方說明 |
 | Install | `make install`（並在 `PIP_INDEX_URL` 有設但 `UV_INDEX_URL` 沒設時警告） | 內網 index 沒吃到 |
 | Test | `make test` | |
 | CLI | `make cli` 等效,斷言 `solver_status` 是 OPTIMAL/FEASIBLE | 只跑不夠,要看結果 |
@@ -382,10 +385,38 @@ cd solver-prod
 ./scripts/sync-from-upstream.sh --no-smoke      # 不方便起 server 時
 ./scripts/sync-from-upstream.sh --keep-going    # 一次看完所有失敗,不要 fail-fast
 ./scripts/sync-from-upstream.sh --verify-only   # 解完 conflict 後,只重跑驗證
+./scripts/sync-from-upstream.sh --no-log        # 不寫 SYNC_LOG.md（見下）
 ./scripts/sync-from-upstream.sh --branch sync/hotfix --mirror-ref mirror/other-branch
 ```
 
 驗證通過後,**你自己** push 並在 GitLab 開 MR (`sync/*` → `master`)。
+
+#### `SYNC_LOG.md` — 為什麼要有
+
+deploy pipeline 是靠「根路徑有檔案變動」觸發的,但一次 sync 很可能只動到
+`app/` 或 `tests/`,根路徑一個字都沒改 → **MR merge 了卻不會 deploy**。
+script 因此在 merge 之後、驗證之前,固定往根目錄的 `SYNC_LOG.md` append 一筆:
+
+```markdown
+## 2026-08-18T09:12:03+0800 — sync/2026-08-18
+
+- upstream: mirror/release-to-gitlab @ 0333ba2
+- base:     origin/master @ c3e635d
+- 3 commit(s):
+  - 0333ba2 upstream: touch README
+  - ...
+```
+
+一筆 = 一個 MR = 一次 deploy,所以它同時是**部署歷史**。
+
+幾個行為上的細節:
+
+- **不會 conflict**。upstream 從來沒有這個檔案,只有單側新增的檔案 git 會直接保留。
+- **不會重複寫**。判斷依據是「這個分支的 `SYNC_LOG.md` 是否已異於 `$BASE_REF`」,
+  所以 `--verify-only` 重跑幾次都只有一筆。
+- **conflict 解完後才寫**。merge 失敗時 script 直接結束,那筆是在你
+  `--verify-only` 時才補上的 —— 否則 MR 會缺少根路徑變動而不觸發 deploy。
+- 檔名可用 `--log-file` 換,或 `--no-log` 完全關掉。
 
 ### 3.3 Deploy
 
@@ -408,7 +439,8 @@ script 的 Contract 階段就是為了在 push 前先讓你看到這件事。
 
 ## Phase 4 — 終態
 
-Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。此時可二選一:
+Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。原本可二選一,
+但採用 `SYNC_LOG.md` 之後**已經確定走 B**;A 留在這裡是為了記錄為什麼不選它。
 
 **選項 A — 全自動**
 生產 repo 開 GitLab 內建 **pull mirroring**
@@ -417,18 +449,22 @@ Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。此時可二選�
 > 只適合 delta=0:它會強制對齊分支,有本地 commit 會被輾掉或同步失敗。
 > 若 A 類檔案仍留在生產 repo,**不能用這個選項**,走 B。
 
-**選項 B — 保留 MR 關卡**
-維持 Phase 3 流程,但每次 merge 都是自動成功的純轉發。
-好處:保留 MR 作為審計記錄與人工放行點,A 類檔案也能繼續存在。
+> **`SYNC_LOG.md` 已經讓選項 A 出局。**
+> 它是永久的 A 類檔案(只存在生產 repo),pull mirroring 會把它輾掉;
+> 而且 A 沒有 MR,也就沒有「根路徑變動」這個觸發點可言。
+> 這不是遺憾 —— A 本來就等於拿掉 script 那道上線前的驗證關卡。
+> 真的想全自動,正確做法是把等價的驗證搬進 pipeline,而不是改用 A。
 
-> 因為 merge = deploy,A 等於把上線變成無人值守。
-> `sync-from-upstream.sh` 的驗證只在 B 才有機會跑到 ——
-> 除非另外把等價的檢查搬進 pipeline,否則選 A 就是拿掉上線前那道關卡。
+**選項 B — 保留 MR 關卡（現況即此）**
+維持 Phase 3 流程,但每次 merge 都是自動成功的純轉發。
+好處:保留 MR 作為審計記錄與人工放行點,A 類檔案也能繼續存在,
+`SYNC_LOG.md` 也在這裡才有意義。
 
 **最終狀態**
 ```
-GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產 repo master
-                                                    → deploy pipeline → 生產機器
+GitHub merge PR → pipeline 掃描 → mirror
+   → sync-from-upstream.sh (merge + 驗證 + SYNC_LOG.md) → 你 push → MR
+   → merge 進生產 repo master → deploy pipeline → 生產機器
 ```
 
 ---
@@ -441,7 +477,8 @@ GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產
 - [x] Phase 2:移植手術 + 對齊完成，delta 歸零
 - [x] Phase 3:例行同步自動化（`scripts/sync-from-upstream.sh`）
 - [ ] Phase 3:用該 script 跑過至少一輪真實同步
-- [ ] Phase 4:選定 A 或 B 並設定完成
+- [x] Phase 4:選定 B（保留 MR 關卡；`SYNC_LOG.md` 使 A 不可行）
+- [ ] Phase 4:確認 deploy pipeline 在 `pyproject.toml`/`uv.lock` 變動時會重裝依賴
 
 ## 相關 script
 
