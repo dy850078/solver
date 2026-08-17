@@ -251,9 +251,14 @@ git push origin adopt-upstream        # 先推分支,master 完全沒被碰
 
 ```bash
 export PYTHON=python3.12              # Makefile 的 ?= 會讓環境變數勝出
-export PIP_INDEX_URL=https://<內部索引>/simple    # 封閉網路
-make install                          # = pip install -e ".[dev]"
+export PIP_INDEX_URL=https://<內部索引>/simple    # 封閉網路(uv 也吃這個變數)
+make install
 ```
+
+> **venv 是 uv 建的?** `uv venv` 預設不把 pip 裝進 venv（uv 自己管套件),
+> 所以舊版 Makefile 的 `python -m pip` 會噴 `No module named pip`。
+> 現在 Makefile 會自動偵測:uv 在 PATH 就用 uv,否則用 venv+pip;
+> 兩者皆無時給出明確指示而不是難懂的 traceback。
 
 **驗證分兩層**,能跑多少跑多少:
 
