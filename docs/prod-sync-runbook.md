@@ -216,8 +216,9 @@ git diff mirror/release-to-gitlab master -- <檔案>
 ### 2.1 舊歷史存檔（保險）
 
 ```bash
-git branch master-legacy master
-git push origin master-legacy
+# 帶日期的名稱比 master-legacy 好:語意明確,且多次移植不會撞名
+git branch retain-master-before-upstream/$(date +%Y-%m-%d) master
+git push origin retain-master-before-upstream/$(date +%Y-%m-%d)
 ```
 
 ### 2.2 建立新血脈分支
@@ -233,7 +234,7 @@ git switch -c adopt-upstream mirror/release-to-gitlab
 
 ```bash
 # 2.0 清單裡「保留生產版」的每一個檔案(含 A 類生產專屬檔案)
-git checkout master-legacy -- <檔案A> <檔案B> ...
+git checkout retain-master-before-upstream/<日期> -- <檔案A> <檔案B> ...
 git add -A
 git commit -m "prod: local-only files and retained customizations"
 ```
@@ -319,10 +320,22 @@ git reset --hard origin/master
 
 > 這是**唯一一次**需要 reset。之後 master 只前進不改寫,永遠是 `git pull --ff-only`。
 > 執行前確認生產機器上沒有未 commit 的重要東西（Phase 0 已經盤點過就安全）。
+> `.env`、`.venv/` 等未追蹤檔案不受 reset 影響。
+
+**過程中會看到的兩個正常訊息**（都不是出錯):
+
+1. 在 `adopt-upstream` 上 `git status` 顯示
+   `ahead of 'mirror/release-to-gitlab' by N commits` ——
+   分支是從 mirror ref 建的,tracking 就設在那裡。**不代表 commit 進了 mirror**;
+   commit 去哪由 `git push` 的目標決定,不是 tracking。可用
+   `git branch -u origin/master adopt-upstream` 消掉,或直接切回 master。
+2. `git switch master` 顯示 `have diverged, and have N and M different commits` ——
+   本機 master 還停在舊血脈,遠端已是新的。這正是 2.6 要解決的事,
+   **不要照 git 的建議跑 `git pull`**（會嘗試合併兩條無關歷史),用上面的 reset。
 
 ### 2.7 觀察期
 
-舊分支 `master-legacy` 保留數週當 rollback 退路,確認穩定後再考慮刪除。
+舊分支 `retain-master-before-upstream/<日期>` 保留數週當 rollback 退路,確認穩定後再考慮刪除。
 
 ---
 
@@ -395,10 +408,10 @@ GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產
 
 ## 進度追蹤
 
-- [ ] 前置檢查:pipeline 抓 `release-to-gitlab`
-- [ ] Phase 0:盤點完成,產出交給 Claude
-- [ ] Phase 1:externalize 完成並流進 mirror
-- [ ] Phase 2:移植手術 + 生產機器對齊
+- [x] 前置檢查:pipeline 抓 `release-to-gitlab`
+- [x] Phase 0:盤點完成（delta = server.py / pyproject / Makefile / .gitignore）
+- [x] Phase 1:externalize 完成並流進 mirror（PR #31、#32）
+- [x] Phase 2:移植手術 + 對齊完成，delta 歸零
 - [ ] Phase 3:跑過至少一輪例行同步
 - [ ] Phase 4:選定 A 或 B 並設定完成
 
