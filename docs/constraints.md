@@ -24,6 +24,7 @@ assign[(vm_id, bm_id)] ∈ {0, 1}
 | C3 | Anti-Affinity | 分散約束 | 規則中的 VM 在 `spread_on` 列出的每個維度上獨立分散 |
 | C4 | Max per Baremetal | 上限約束 | 同 `(cluster_id, ip_type, role)` 群組 VM 單台 BM 上限 |
 | C5 | Failover Redundancy | 互補約束 | 跨群組（如 master / learner）在 fault domain 失效後仍能補位 |
+| C6 | Exclusive Occupancy | 獨占約束 | 群組成員（appliance 如 F5 / Bastion）獨居整台 BM，機上不得有任何其他 VM |
 
 ---
 
@@ -609,6 +610,43 @@ Partial 模式: 盡量放，放不下的進 unplaced_vms
 
 ---
 
+## C6: Exclusive Occupancy（appliance 獨占整機）
+
+> 來源：`solver.py` — `_add_exclusive_constraints()`、`_resolve_exclusive_rules()`；設計：ADR-011
+
+### 公式
+
+對每條 `ExclusiveBaremetalRule` 的群組 G、每台 BM b：
+
+```
+z_b == max(assign[v,b] : v ∈ G)      (完整 reification:z_b ⟺「b 被 G 佔用」)
+assign[u,b] + z_b ≤ 1                ∀ u ∉ G   (外人禁入)
+Σ assign[v,b] (v ∈ G) ≤ 1            (同群成員也不同機 — 獨居)
+```
+
+### 語意
+
+appliance 語意：群組每個成員**獨居**一台 BM — 不與外人同機，也不與同群成員
+同機。F5 / LVSLB / Bastion 這類 eco-system 節點一機一台的營運事實由此進入
+模型契約，而非依賴 scheduler 的 candidate 過濾自律。
+
+跨 cluster 共用的 eco-system 池（如 5 個 cluster 共用 6 台 F5）以
+`cluster_id="shared"` 表達：selector `{cluster_id: "shared", node_role: "f5"}`
+選中整個共用群。不同 eco 家族靠 node_role 區分，不需要拆分 shared id。
+
+### 建模註記
+
+`z_b` 使用 `add_max_equality`（完整 reification）而非只寫 `z_b ≥ assign[v,b]`
+的一側化 — 一側化在 assign 投影上可證等價，但依賴「z 不進目標函數、不被
+他處當事實讀取」兩個隱形前提。本模型規模下等式成本為零，換得 z 對未來
+任何讀者語意精確。完整論證見 ADR-011 §4。
+
+### 無自動生成
+
+C3/C4 有 auto-gen；C6 沒有 — 獨占是明確的營運宣告，不做推斷。
+
+---
+
 ## Config 參數速查
 
 | 參數 | 影響的約束 | 說明 |
@@ -622,3 +660,4 @@ Partial 模式: 盡量放，放不下的進 unplaced_vms
 | `anti_affinity_rules`（per request） | C3 | 顯式分散規則（`spread_on` 必填、選填 `cap_per_bucket`） |
 | `max_per_bm_rules`（per request） | C4 | 顯式指定的單 BM 上限規則 |
 | `failover_rules`（per request） | C5 | 顯式跨群組 N-1 互補規則（master / learner 等） |
+| `exclusive_bm_rules`（per request） | C6 | 顯式獨占規則（appliance 獨居整機；無 auto-gen） |

@@ -1,11 +1,12 @@
 import { listExamples, getExample, solve, splitAndSolve, generateMock } from "./api.js";
 import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
-import { rebuildColorScale, legendEntries } from "./colors.js";
+import { rebuildColorScale, legendEntries, clusterLegendEntries } from "./colors.js";
 import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
 import { renderMockForm, readMockParams, populateMockForm } from "./mockform.js";
+import { escapeHtml } from "./util.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -13,6 +14,8 @@ const state = {
   request: null,
   result: null,
   groupBy: "rack",
+  // Placement first, capacity second: bars are opt-in per session.
+  showCapacity: localStorage.getItem("solver-show-capacity") === "1",
   filter: {
     clusters: new Set(),
     roles: new Set(),
@@ -85,11 +88,15 @@ function rerenderViz() {
   }
 
   // Color scale uses the unfiltered set so colors stay stable across filter changes
-  rebuildColorScale(collectAgSet(state.request, state.result));
+  const clusterSet = new Set(
+    [...buildFilterOptions(state.request, state.result).clusters.keys()]
+      .filter((c) => c && !c.startsWith("(")),
+  );
+  rebuildColorScale(collectAgSet(state.request, state.result), clusterSet);
 
   const panels = buildPanels(state.request, state.result, state.groupBy, state.filter);
-  renderRackDiagram(rackEl, panels);
-  renderLegend(legendEl, legendEntries());
+  renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity });
+  renderTopologyLegend(legendEl);
 
   const matrix = buildAgRackMatrix(state.request, state.result, state.filter);
   const hasAnyAssignments = (state.result.assignments ?? []).length > 0;
@@ -99,6 +106,26 @@ function rerenderViz() {
     matrixCard.classList.remove("hidden");
     renderMatrix(matrixEl, matrix);
   }
+}
+
+// Two legend rows sharing one palette, split by treatment: cluster = solid
+// badge (matches the chips), AG = 15% tint swatch (matches the BM pills).
+function renderTopologyLegend(el) {
+  const clusters = clusterLegendEntries();
+  const ags = legendEntries();
+  const clRow = clusters.length < 2 ? "" :
+    `<span class="legend__dim">Cluster</span>` + clusters.map((e) => `
+      <span class="legend-item">
+        <span class="legend-badge" style="background:${e.color};color:${e.ink}">${escapeHtml(e.short)}</span>
+        ${escapeHtml(e.cluster)}
+      </span>`).join("");
+  const agRow = ags.length === 0 ? "" :
+    `<span class="legend__dim">AG</span>` + ags.map((e) => `
+      <span class="legend-item">
+        <span class="legend-tint" style="--ag-color:${e.color}"></span>
+        ${escapeHtml(e.ag)}
+      </span>`).join("");
+  el.innerHTML = clRow + agRow;
 }
 
 function mapToOptions(countMap) {
@@ -316,8 +343,11 @@ function spinnerEl() {
   return d;
 }
 
-// Drag the right edge of the sidebar to resize it; width persists in localStorage.
-function initSidebarResize() {
+// Sidebar chrome: a drag handle on the divider to resize (persists), and a
+// chevron tab ON that divider to collapse. Collapsed, the tab docks to the
+// left screen edge — collapse and expand always live on the same line, so
+// the control never has to be hunted down elsewhere in the UI.
+function initSidebarChrome() {
   const sidebar = document.querySelector(".sidebar");
   if (!sidebar) return;
   const root = document.documentElement;
@@ -330,9 +360,34 @@ function initSidebarResize() {
   handle.id = "sidebar-resizer";
   document.body.appendChild(handle);
 
-  const place = () => { handle.style.left = sidebar.getBoundingClientRect().right + "px"; };
-  place();
+  const tab = document.createElement("button");
+  tab.id = "sidebar-collapse-tab";
+  tab.type = "button";
+  tab.innerHTML = `<svg viewBox="0 0 8 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 1.5 2 6l3.5 4.5"/></svg>`;
+  document.body.appendChild(tab);
+
+  const collapsed = () => document.body.classList.contains("sidebar-collapsed");
+  const place = () => {
+    if (collapsed()) {
+      tab.style.left = "0px";
+    } else {
+      const right = sidebar.getBoundingClientRect().right;
+      handle.style.left = right + "px";
+      tab.style.left = (right - 10) + "px";
+    }
+  };
+  const setCollapsed = (on) => {
+    document.body.classList.toggle("sidebar-collapsed", on);
+    tab.title = on ? "Show input panel" : "Hide input panel";
+    tab.setAttribute("aria-expanded", String(!on));
+    localStorage.setItem("solver-sidebar-collapsed", on ? "1" : "0");
+    place();
+  };
+  setCollapsed(localStorage.getItem("solver-sidebar-collapsed") === "1");
   window.addEventListener("resize", place);
+
+  tab.addEventListener("click", () => setCollapsed(!collapsed()));
+  handle.addEventListener("dblclick", () => setCollapsed(true));
 
   handle.addEventListener("mousedown", (e) => {
     e.preventDefault();
@@ -390,9 +445,19 @@ async function runSolver() {
 }
 
 function init() {
-  initSidebarResize();
+  initSidebarChrome();
   renderMockForm($("#mock-form"));
   populateExamples();
+
+  const capToggle = $("#show-capacity");
+  if (capToggle) {
+    capToggle.checked = state.showCapacity;
+    capToggle.addEventListener("change", () => {
+      state.showCapacity = capToggle.checked;
+      localStorage.setItem("solver-show-capacity", capToggle.checked ? "1" : "0");
+      rerenderViz();
+    });
+  }
 
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
   $("#mock-preset").addEventListener("change", (e) => loadMockPreset(e.target.value));

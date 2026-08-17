@@ -49,7 +49,7 @@ export function renderStats(container, result) {
       <span class="stat__label">Solve time</span>
       <span class="stat__value">${time}<span class="unit">s</span></span>
     </div>
-    <div class="stat stat--ok">
+    <div class="stat">
       <span class="stat__label">VMs placed${filtered ? " (filtered)" : ""}</span>
       <span class="stat__value">${placedDisplay}</span>
     </div>

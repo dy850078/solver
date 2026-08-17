@@ -62,7 +62,8 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `target` | `"solve"` | v1 僅支援 `solve` |
 | | `verify` | `true` | 產後用真實 solver 自我驗證 |
 | Cluster/VM | `clusters` | 1 | cluster 數 |
-| | `roles` | `{master:3,worker:3,infra:2}` | 每 cluster 各 role 的 VM 數 |
+| | `node_groups` | `[]` | **建議的需求來源**（設定後 roles/ip_type_by_role/spec_by_role/max_per_bm_by_role 全被忽略）：每項 `{role, count, ip_type, spec?, max_per_bm?, scope?, exclusive?}`。role 為開放字串（ADR-010）；`scope:"shared"` = 跨 cluster 共用、只生成一次（cluster_id=`"shared"`）；`exclusive:true` = appliance 獨占整機，自動產 C6 規則且該 role 需專屬 bm_profile pool（ADR-011） |
+| | `roles` | `{master:3,worker:3,infra:2}` | (legacy) 每 cluster 各 role 的 VM 數 |
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
 | | `ip_type_by_role` | `{}` | **顯式**設定各 role 的 ip_type；值可為字串或加權分佈 `{routable:0.5,...}`。不自動帶、不留 fallback |
@@ -94,14 +95,27 @@ solver 的 `auto_generate_anti_affinity` 把 VM 依 `(cluster_id, ip_type, node_
 
 BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 
-- **profile 省略 `count`（彈性）**：生成器依 `tightness` 估算需要幾台，複製該機型直到
-  `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）且每個 AG 至少一台。此模式下容量必然充足。
-- **profile 指定 `count`（固定）**：機隊規格與數量完全照給，`tightness` 被忽略。容量可能不足，屬 best-effort。
+- **profile 省略 `count`（彈性）**：語意是「**這些需求最少需要幾台**」。生成器取四個
+  必要條件下限的 max 作為起點：
+  1. **容量界**：複製該機型直到 `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）
+  2. **spread 界**：每個 AG 至少一台（`anti_affinity` 時為 `max(target_spread)`）
+  3. **張數界**：max-per-BM 規則下，n 台 VM、每 BM 上限 m 的群組需要 `ceil(n/m)` 台
+     **不同的** BM（跨群組取 max、不是 sum——不同群組可共用 BM；跨 cluster 不相乘）
+  4. **配對界**（bin-packing L2）：某資源維度需求 **> 單台容量一半**的 VM 兩兩不能
+     同機，其**總數**（跨 cluster 累加）直接是台數下界——容量界把 VM 當可切分的
+     液體，看不到這件事；`tightness=1.0` 時這是最常見的 INFEASIBLE 來源
+  接著 `verify=true` 時進入 **escalate-until-feasible**：以真實 solver 驗證，仍
+  INFEASIBLE 就對被牽連的 pool +1 台重試（上限 10 輪；bin-packing 碎片與規則交互
+  是解析下限看不到的，靠這層收斂）。有 escalation 時 diagnostics 會帶
+  `auto_escalated: {rounds, trail}`。
+- **profile 指定 `count`（固定）**：機隊規格與數量完全照給，`tightness` 被忽略，
+  **不會被 escalation 加碼**。容量可能不足，屬 best-effort。
 
 無論哪種，產出後若 `verify=true`，會在程序內跑一次真實 `VMPlacementSolver`：
 - `OPTIMAL`/`FEASIBLE` → `feasibility = "verified"`
 - 其他 → `feasibility = "infeasible"`，並把 `solver_status` 與診斷帶回
-- `verify=false` → `feasibility = "unverified"`
+  （彈性 profile 存在時代表 10 輪加機器也救不了，輸入本身矛盾）
+- `verify=false` → `feasibility = "unverified"`（此時只有解析下限生效，無 escalation）
 
 這讓「保證可解」不是靠人工推導不變式，而是**真的跑一次 solver 自我證明**。
 
@@ -137,7 +151,8 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 ## 8. Validation Rules
 
 - `anti_affinity=true` 時，任何 `count ≥ 2` 的 role 必須在 `ip_type_by_role` 有非空值，否則回 **400**（因為空 `ip_type` 會被 solver 自動分組靜默略過，導致規則失效）。
-- `roles` 的 key 必須是合法 `NodeRole`。
+- role 為開放字串（格式 `^[\w.-]+$`，ADR-010）；不在已知目錄的 role 以 diagnostics `unknown_roles` 提示、不阻擋。
+- `exclusive` 群組必須有專屬 bm_profile pool（與一般 role 混用同一 profile → **400**）；同一 role 不得同時出現在 exclusive 與非 exclusive 群組（→ **400**）。
 - `bm_profiles` 至少一項；`capacity` 四維非負。
 - `target_spread`/`config_overrides` 交由現有 `SolverConfig` validator 把關。
 

@@ -347,7 +347,7 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
             unreachable.append({
                 "requirement_index": idx,
                 "cluster_id": r.cluster_id,
-                "node_role": r.node_role.value,
+                "node_role": r.node_role,
                 "reason": _no_candidates_reason(r, request, cells),
             })
         reqs.append(r.model_copy(update={"candidate_baremetals": candidates}))

@@ -18,6 +18,7 @@ from .models import (
     PlacementRequest,
     AntiAffinityRule,
     Baremetal,
+    ExclusiveBaremetalRule,
     FailoverRule,
     MaxPerBaremetalRule,
     VM,
@@ -51,6 +52,7 @@ class DiagnosticsBuilder:
         dim_to_bms: dict[str, dict[str, list[str]]],
         effective_rules: list[AntiAffinityRule],
         max_per_bm_rules: list[MaxPerBaremetalRule],
+        exclusive_rules: list[ExclusiveBaremetalRule],
         failover_resolved: list[tuple[FailoverRule, list[str], list[str]]],
         config: SolverConfig,
         num_variables: int,
@@ -61,6 +63,7 @@ class DiagnosticsBuilder:
         self.dim_to_bms = dim_to_bms
         self.effective_rules = effective_rules
         self.max_per_bm_rules = max_per_bm_rules
+        self.exclusive_rules = exclusive_rules
         self.failover_resolved = failover_resolved
         self.config = config
         self.num_variables = num_variables
@@ -87,6 +90,12 @@ class DiagnosticsBuilder:
         if infeasible_bm_rules:
             diag["infeasible_max_per_bm_rules"] = infeasible_bm_rules
 
+        # 2c'. Exclusive rules — every member needs a whole BM to itself, so
+        # a group with more members than reachable BMs can never place.
+        infeasible_exclusive = self._check_exclusive_feasibility()
+        if infeasible_exclusive:
+            diag["infeasible_exclusive_rules"] = infeasible_exclusive
+
         # 2c. Failover rules — flag structurally infeasible cases (e.g.
         # |primary in worst bucket| > |backup outside that bucket|).
         infeasible_failover_rules = self._check_failover_feasibility()
@@ -104,6 +113,7 @@ class DiagnosticsBuilder:
             "variables": self.num_variables,
             "rules": len(self.effective_rules),
             "max_per_bm_rules": len(self.max_per_bm_rules),
+            "exclusive_rules": len(self.exclusive_rules),
         }
 
         return diag
@@ -216,6 +226,26 @@ class DiagnosticsBuilder:
                 })
         return infeasible
 
+    def _check_exclusive_feasibility(self) -> list[dict]:
+        """
+        C6 counting bound: solo occupancy means |G| members need |G| distinct
+        reachable BMs — capacity is irrelevant, this is pure counting.
+        """
+        infeasible = []
+        for rule in self.exclusive_rules:
+            reachable: set[str] = set()
+            for vm_id in rule.vm_ids:
+                if vm_id in self.vm_map:
+                    reachable.update(self._eligible(self.vm_map[vm_id]))
+            if len(reachable) < len(rule.vm_ids):
+                infeasible.append({
+                    "group_id": rule.group_id,
+                    "vm_count": len(rule.vm_ids),
+                    "reachable_bms": len(reachable),
+                    "bms_needed": len(rule.vm_ids),
+                })
+        return infeasible
+
     def _constraint_layer_check(self) -> dict[str, object]:
         """
         Incrementally add constraint layers and solve each to pinpoint
@@ -299,6 +329,25 @@ class DiagnosticsBuilder:
                     if pin or bin_:
                         model.add(sum(pin) + sum(bin_) <= len(backup_ids))
 
+        def add_exclusive(model, assign):
+            for rule in self.exclusive_rules:
+                members = set(rule.vm_ids)
+                if not members:
+                    continue
+                for bm_id in self.bm_map:
+                    mvars = [assign[(vid, bm_id)] for vid in rule.vm_ids
+                             if (vid, bm_id) in assign]
+                    if not mvars:
+                        continue
+                    z = model.new_bool_var(f"lx_{rule.group_id}__{bm_id}")
+                    model.add_max_equality(z, mvars)
+                    model.add(sum(mvars) <= 1)
+                    for vid in self.vm_map:
+                        if vid in members:
+                            continue
+                        if (vid, bm_id) in assign:
+                            model.add(assign[(vid, bm_id)] + z <= 1)
+
         def quick_solve(model) -> str:
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
@@ -311,6 +360,7 @@ class DiagnosticsBuilder:
             ("anti_affinity", [add_one_bm_per_vm, add_capacity, add_anti_affinity]),
             ("failover", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover]),
             ("max_per_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm]),
+            ("exclusive", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm, add_exclusive]),
         ]
 
         results: dict[str, object] = {}

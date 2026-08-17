@@ -99,6 +99,8 @@ Scheduler                                  Solver
 | `Baremetal.topology.room` | 新增、選填 | 預設 `""` |
 | `NodeRole` enum | 新增 `"learner"` | scheduler 端 enum / parser 需要識別此值 |
 | `PlacementRequest.failover_rules` | 新增、選填 | `list[FailoverRule]`（見下文） |
+| `PlacementRequest.exclusive_bm_rules` | 新增、選填 | `list[ExclusiveBaremetalRule]`（C6 獨占：群成員獨居整台 BM；`{group_id, vm_ids\|selector}`，無 auto-gen，見 ADR-011） |
+| `VM.node_role` / `GroupSelector.node_role` | **型別放寬** | enum → 開放字串（`^[\w.-]+$`）；既有值原樣相容，scheduler 可直接送新 role（ceph-mon、f5…），見 ADR-010 |
 
 ### Diagnostics 變更
 
@@ -107,6 +109,7 @@ Scheduler                                  Solver
 | `infeasible_anti_affinity_rules[].max_per_ag` | **移除**。改為 `per_dimension_caps: dict[str, int]` 與 `failed_dimensions: list[{dimension, cap_per_bucket, min_buckets_needed, reachable_buckets}]` |
 | advisory `type: "ag_spread_below_target"` | **移除**。改為 `type: "spread_below_target"`，`details.dimension` 帶維度名（每維度一條 advisory） |
 | `infeasible_failover_rules` | **新增** |
+| `infeasible_exclusive_rules` | **新增**（C6 counting pre-check：`{group_id, vm_count, reachable_bms, bms_needed}`）；`constraint_check` ladder 增加 `exclusive` 層 |
 
 ### 改寫範例
 

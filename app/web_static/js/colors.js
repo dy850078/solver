@@ -1,43 +1,74 @@
-// Modern Tailwind-inspired palette, harmonious across hues, color-blind friendly.
-const PALETTE_PRIMARY = [
-  "#6366f1", // indigo
-  "#10b981", // emerald
-  "#f59e0b", // amber
-  "#ec4899", // pink
-  "#06b6d4", // cyan
-  "#8b5cf6", // violet
-  "#84cc16", // lime
-  "#f43f5e", // rose
-  "#0ea5e9", // sky
-  "#a855f7", // purple
-];
+/**
+ * Categorical color assignment over the validated slot tokens
+ * (--cat-1..8 + per-slot inks, themed in theme.css).
+ *
+ * Returned values are var() references, so light/dark resolution happens
+ * in CSS and a theme toggle needs no re-render. Slots are assigned in
+ * fixed sorted order and NEVER cycled — values beyond 8 share the neutral
+ * slot, where the text label (chip badge / legend) still carries identity.
+ *
+ * Two dimensions share the one palette but never the same treatment:
+ * clusters render as SOLID badges, AGs as ~15% TINTS — the treatment,
+ * not a second palette, is what separates them visually.
+ */
 
-const PALETTE_OVERFLOW = [
-  ...PALETTE_PRIMARY,
-  "#14b8a6", // teal
-  "#eab308", // yellow
-  "#ef4444", // red
-  "#22c55e", // green
-  "#3b82f6", // blue
-  "#d946ef", // fuchsia
-];
-
-const MUTED = "#cbd5e1";
+const SLOTS = 8;
 
 let agOrder = [];
-let agToColor = new Map();
+let agSlot = new Map();
+let clusterOrder = [];
+let clusterSlot = new Map();
 
-export function rebuildColorScale(agSet) {
-  agOrder = Array.from(agSet).sort();
-  const palette = agOrder.length > PALETTE_PRIMARY.length ? PALETTE_OVERFLOW : PALETTE_PRIMARY;
-  agToColor = new Map(agOrder.map((ag, i) => [ag, palette[i % palette.length]]));
+// Natural (numeric-aware) order, so "cluster-10" sorts after "cluster-9".
+// Plain lexicographic sort put cluster-10 second, letting it steal a color
+// slot while cluster-8/9 both overflowed into the neutral gray.
+const naturalCompare = new Intl.Collator(undefined, { numeric: true }).compare;
+
+function assign(values) {
+  const order = Array.from(values).filter(Boolean).sort(naturalCompare);
+  return [order, new Map(order.map((v, i) => [v, i < SLOTS ? i + 1 : null]))];
 }
 
+export function rebuildColorScale(agSet, clusterSet = new Set()) {
+  [agOrder, agSlot] = assign(agSet);
+  [clusterOrder, clusterSlot] = assign(clusterSet);
+}
+
+const colorOf = (map, key) => {
+  const s = map.get(key);
+  return s ? `var(--cat-${s})` : "var(--cat-none)";
+};
+const inkOf = (map, key) => {
+  const s = map.get(key);
+  return s ? `var(--cat-${s}-ink)` : "var(--cat-none-ink)";
+};
+
 export function colorForAg(ag) {
-  if (!ag) return MUTED;
-  return agToColor.get(ag) ?? MUTED;
+  return ag ? colorOf(agSlot, ag) : "var(--cat-none)";
+}
+export function colorForCluster(cl) {
+  return cl ? colorOf(clusterSlot, cl) : "var(--cat-none)";
+}
+export function inkForCluster(cl) {
+  return cl ? inkOf(clusterSlot, cl) : "var(--cat-none-ink)";
+}
+
+/** "cluster-3" → "c3"; anything else keeps a short readable stem. */
+export function clusterShort(cl) {
+  if (!cl) return "?";
+  if (cl === "shared") return "sh";
+  const m = /^cluster-(\d+)$/.exec(cl);
+  return m ? `c${m[1]}` : cl.slice(0, 4);
 }
 
 export function legendEntries() {
   return agOrder.map((ag) => ({ ag, color: colorForAg(ag) }));
+}
+export function clusterLegendEntries() {
+  return clusterOrder.map((cl) => ({
+    cluster: cl,
+    short: clusterShort(cl),
+    color: colorForCluster(cl),
+    ink: inkForCluster(cl),
+  }));
 }

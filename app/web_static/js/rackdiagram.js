@@ -7,7 +7,7 @@
  * sub-grouped by their leaf rack so the deeper structure stays visible.
  */
 
-import { colorForAg } from "./colors.js";
+import { colorForAg, colorForCluster, inkForCluster, clusterShort } from "./colors.js";
 import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
 import { escapeHtml } from "./util.js";
 import { lookupVm, matchesFilter, isFilterActive } from "./filter.js";
@@ -48,6 +48,36 @@ function vmEntry(a, request) {
   };
 }
 
+// Capacity rows for the per-BM micro-bars. Placed demand sums over ALL
+// assignments on the BM (the filter changes what chips are shown, never the
+// physical truth). Returns null when any placed VM's demand is unknown
+// (split-and-solve synthetic ids) — a partial bar would lie.
+function capacityRows(bm, assigns, request) {
+  const total = bm.total_capacity, used = bm.used_capacity ?? {};
+  if (!total) return null;
+  const demands = assigns.map((a) => lookupVm(a.vm_id, request)?.demand);
+  if (demands.some((d) => !d)) return null;
+  const sum = (f) => demands.reduce((acc, d) => acc + (d[f] ?? 0), 0);
+  const fields = [
+    ["cpu_cores", "cpu", (v) => `${v}c`],
+    ["memory_mib", "mem", (v) => v >= 1024 ? `${Math.round(v / 1024)}Gi` : `${v}Mi`],
+    ["storage_gb", "sto", (v) => v >= 1000 ? `${(v / 1000).toFixed(1)}T` : `${v}G`],
+    ["gpu_count", "gpu", (v) => `${v}`],
+  ];
+  const rows = [];
+  for (const [f, label, fmt] of fields) {
+    const cap = total[f] ?? 0;
+    if (cap <= 0) continue;                    // no such resource on this BM
+    const pre = used[f] ?? 0;
+    const placed = sum(f);
+    rows.push({ label, pre, placed, cap, fmt, pct: (pre + placed) / cap });
+  }
+  if (!rows.length) return null;
+  const hot = Math.max(...rows.map((r) => r.pct));
+  for (const r of rows) r.hot = r.pct === hot && r.pct > 0;
+  return rows;
+}
+
 function bmEntry(bm, assignmentsByBm, request, filter) {
   const assigns = assignmentsByBm.get(bm.id) ?? [];
   const vms = assigns
@@ -58,6 +88,7 @@ function bmEntry(bm, assignmentsByBm, request, filter) {
     hostname: bm.hostname,
     ag: bm.topology?.ag || "",
     topology: bm.topology ?? {},
+    capRows: capacityRows(bm, assigns, request),
     vms,
   };
 }
@@ -150,11 +181,18 @@ export function collectAgSet(request, result) {
 
 // ─── Rendering ────────────────────────────────────────────────
 function renderVm(vm) {
-  const color = colorForAg(vm.ag);
+  // Neutral chip + solid cluster badge (color scans, "c3" text reads).
+  // The hostname drops its ".{cluster_id}" suffix only when it matches
+  // exactly — the badge now says it; the full name stays in the tooltip.
+  const full = vm.vm_hostname || vm.vm_id;
+  const sfx = vm.cluster_id ? `.${vm.cluster_id}` : "";
+  const shown = sfx && full.endsWith(sfx) ? full.slice(0, -sfx.length) : full;
+  const badge = vm.cluster_id
+    ? `<span class="vm-chip__badge" style="background:${colorForCluster(vm.cluster_id)};color:${inkForCluster(vm.cluster_id)};">${escapeHtml(clusterShort(vm.cluster_id))}</span>`
+    : "";
   return `<span class="vm-chip"
-    style="--ag-color: ${color};"
     data-vm-id="${escapeHtml(vm.vm_id)}"
-    data-vm-hostname="${escapeHtml(vm.vm_hostname || "")}"
+    data-vm-hostname="${escapeHtml(full)}"
     data-bm-id="${escapeHtml(vm.bm_id)}"
     data-bm-hostname="${escapeHtml(vm.bm_hostname || "")}"
     data-ag="${escapeHtml(vm.ag)}"
@@ -165,34 +203,50 @@ function renderVm(vm) {
     data-mem="${vm.demand?.memory_mib ?? ""}"
     data-storage="${vm.demand?.storage_gb ?? ""}"
     data-gpu="${vm.demand?.gpu_count ?? ""}"
-  >${escapeHtml(vm.vm_hostname || vm.vm_id)}</span>`;
+  >${badge}<span class="vm-chip__host">${escapeHtml(shown)}</span></span>`;
 }
 
-function renderBm(bm) {
+function renderCapacity(rows) {
+  return `<div class="bm__cap">${rows.map((r) => {
+    const pctText = `${Math.round(r.pct * 100)}%`;
+    const preW = Math.min(100, (r.pre / r.cap) * 100);
+    const placedW = Math.min(100 - preW, (r.placed / r.cap) * 100);
+    return `<div class="cap ${r.hot ? "cap--hot" : ""}"
+      title="${r.label}: used ${r.fmt(r.pre)} + placed ${r.fmt(r.placed)} of ${r.fmt(r.cap)} (${pctText}), free ${r.fmt(r.cap - r.pre - r.placed)}">
+      <span class="cap__label">${r.label}</span>
+      <span class="cap__bar"><i class="cap__pre" style="width:${preW.toFixed(1)}%"></i><i class="cap__placed" style="width:${placedW.toFixed(1)}%"></i></span>
+      <span class="cap__num">${r.fmt(r.pre + r.placed)}/${r.fmt(r.cap)}</span>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function renderBm(bm, showCapacity) {
   const empty = bm.vms.length === 0;
   const ag = bm.ag
     ? `<span class="bm__ag" style="--ag-color: ${colorForAg(bm.ag)};" data-bm-tooltip="1" data-ag="${escapeHtml(bm.ag)}" data-bm-id="${escapeHtml(bm.id)}" data-bm-hostname="${escapeHtml(bm.hostname || "")}">${escapeHtml(bm.ag)}</span>`
     : "";
+  const cap = showCapacity && bm.capRows ? renderCapacity(bm.capRows) : "";
   return `
     <li class="bm ${empty ? "bm--empty" : ""}">
       <div class="bm__head">
         <span class="bm__name">${escapeHtml(bm.hostname || bm.id)}</span>
         ${ag}
       </div>
+      ${cap}
       <div class="bm__body">
         ${empty ? `<span class="bm__placeholder">no VM assigned</span>` : bm.vms.map(renderVm).join("")}
       </div>
     </li>`;
 }
 
-function renderSubgroup(g, hasMultiple) {
+function renderSubgroup(g, hasMultiple, showCapacity) {
   const header = hasMultiple && g.label
     ? `<div class="rack__subgroup">${escapeHtml(g.label)}</div>`
     : "";
-  return `${header}<ul class="rack__bms">${g.bms.map(renderBm).join("")}</ul>`;
+  return `${header}<ul class="rack__bms">${g.bms.map((bm) => renderBm(bm, showCapacity)).join("")}</ul>`;
 }
 
-function renderPanel(panel) {
+function renderPanel(panel, showCapacity) {
   const accent = panel.accentColor ? `style="--panel-accent: ${panel.accentColor};"` : "";
   const accentClass = panel.accentColor ? "rack--accent" : "";
   const hasMultiple = panel.groups.length > 1 || (panel.groups.length === 1 && panel.groups[0].label);
@@ -203,7 +257,7 @@ function renderPanel(panel) {
         <span class="rack__meta">${escapeHtml(panel.meta)}</span>
       </header>
       <div class="rack__content">
-        ${panel.groups.map((g) => renderSubgroup(g, hasMultiple)).join("")}
+        ${panel.groups.map((g) => renderSubgroup(g, hasMultiple, showCapacity)).join("")}
       </div>
     </article>`;
 }
@@ -250,14 +304,15 @@ function attachTooltips(container) {
   });
 }
 
-export function renderRackDiagram(container, panels) {
+export function renderRackDiagram(container, panels, opts = {}) {
   const el = typeof container === "string" ? document.querySelector(container) : container;
   if (!el) return;
   if (!panels || panels.length === 0) {
     el.innerHTML = `<div class="viz-empty">No data to display.</div>`;
     return;
   }
-  el.innerHTML = `<div class="rack-grid">${panels.map(renderPanel).join("")}</div>`;
+  const showCapacity = !!opts.showCapacity;
+  el.innerHTML = `<div class="rack-grid">${panels.map((p) => renderPanel(p, showCapacity)).join("")}</div>`;
   attachTooltips(el);
 }
 

@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     Baremetal,
+    ExclusiveBaremetalRule,
     FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
@@ -35,10 +36,24 @@ from .models import (
     SolverConfig,
     Topology,
     VM,
+    validate_role,
 )
-from .solver import VMPlacementSolver
+from .solver import RESOURCE_FIELDS, VMPlacementSolver
 
 router = APIRouter(prefix="/api/mock", tags=["mock"])
+
+# Hard ceiling for elastic fleet sizing. Any realistic mock scenario is a few
+# hundred BMs at most; hitting this means capacity/demand are pathologically
+# mismatched, and we fail loudly instead of returning a runaway fleet that
+# times out every consumer downstream (browser, ingress, solver).
+_MAX_ELASTIC_BMS = 5_000
+
+# Escalation rounds for elastic sizing: the analytic lower bounds (capacity,
+# spread, headcount) are usually within 0–1 BMs of the true minimum; each
+# round adds one BM to the implicated pool and re-verifies. Ten rounds of
+# slack means "the bounds were off by 10" — at that point the input is wrong,
+# not the sizing.
+_MAX_ESCALATIONS = 10
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +100,7 @@ class BmProfile(BaseModel):
     @field_validator("roles")
     @classmethod
     def _validate_roles(cls, v: list[str]) -> list[str]:
-        valid = {r.value for r in NodeRole}
-        bad = [r for r in v if r not in valid]
-        if bad:
-            raise ValueError(f"bm_profile roles {bad} invalid; valid: {sorted(valid)}")
-        return v
+        return [validate_role(r) for r in v]
 
 
 class NodeGroup(BaseModel):
@@ -104,14 +115,17 @@ class NodeGroup(BaseModel):
     ip_type: str = ""
     spec: str = ""                 # name in vm_specs; "" = built-in baseline
     max_per_bm: int | None = None
+    # "shared": ONE group serving all clusters (cluster_id="shared"), e.g.
+    # 5 clusters sharing 6 F5s. Default: each cluster gets its own copy.
+    scope: Literal["cluster", "shared"] = "cluster"
+    # Appliance semantics (C6/ADR-011): every VM of this group owns its BM
+    # outright — nothing else lands there, not even a group sibling.
+    exclusive: bool = False
 
     @field_validator("role")
     @classmethod
     def _valid_role(cls, v: str) -> str:
-        valid = {r.value for r in NodeRole}
-        if v not in valid:
-            raise ValueError(f"unknown role {v!r}; valid: {sorted(valid)}")
-        return v
+        return validate_role(v)
 
     @field_validator("max_per_bm")
     @classmethod
@@ -167,10 +181,8 @@ class GenerateRequest(BaseModel):
     @field_validator("roles")
     @classmethod
     def _validate_roles(cls, v: dict[str, int]) -> dict[str, int]:
-        valid = {r.value for r in NodeRole}
-        bad = [k for k in v if k not in valid]
-        if bad:
-            raise ValueError(f"unknown role(s) {bad}; valid: {sorted(valid)}")
+        for k in v:
+            validate_role(k)
         if any(n < 0 for n in v.values()):
             raise ValueError("role counts must be >= 0")
         return v
@@ -178,10 +190,8 @@ class GenerateRequest(BaseModel):
     @field_validator("max_per_bm_by_role")
     @classmethod
     def _validate_max_per_bm_by_role(cls, v: dict[str, int]) -> dict[str, int]:
-        valid = {r.value for r in NodeRole}
-        bad = [k for k in v if k not in valid]
-        if bad:
-            raise ValueError(f"max_per_bm_by_role has unknown role(s) {bad}; valid: {sorted(valid)}")
+        for k in v:
+            validate_role(k)
         bad_vals = {k: n for k, n in v.items() if n < 1}
         if bad_vals:
             raise ValueError(f"max_per_bm_by_role values must be >= 1; got {bad_vals}")
@@ -235,13 +245,29 @@ class _Generator:
         self.req = req
         self.rng = random.Random(req.seed)
         self.diag: dict[str, Any] = {}
-        # Per-(role, ip_type) max-per-BM cap from node_groups (min wins when
-        # two groups share the key). Empty in the legacy dict path.
-        self._group_caps: dict[tuple[str, str], int] = {}
+        # Per-(role, ip_type) max-per-BM caps from node_groups, split by scope
+        # (a shared group's cap must NOT expand into per-cluster rules — its
+        # VMs live under cluster_id="shared"). Min wins on key collision.
+        # Both empty in the legacy dict path.
+        self._cluster_caps: dict[tuple[str, str], int] = {}
+        self._shared_caps: dict[tuple[str, str], int] = {}
         for g in req.node_groups:
             if g.max_per_bm is not None:
+                caps = self._shared_caps if g.scope == "shared" else self._cluster_caps
                 k = (g.role, g.ip_type)
-                self._group_caps[k] = min(self._group_caps.get(k, g.max_per_bm), g.max_per_bm)
+                caps[k] = min(caps.get(k, g.max_per_bm), g.max_per_bm)
+        # Roles whose VMs occupy BMs alone (C6). Role-level is enough for the
+        # generator: mixing an exclusive and a non-exclusive group of the same
+        # role would be a contradiction we reject below.
+        self._exclusive_roles: set[str] = {g.role for g in req.node_groups if g.exclusive}
+        non_excl = {g.role for g in req.node_groups if not g.exclusive}
+        both = sorted(self._exclusive_roles & non_excl)
+        if both:
+            raise HTTPException(
+                status_code=400,
+                detail=f"role(s) {both} appear in both exclusive and non-exclusive "
+                       f"node groups — a role is either appliance-like or not",
+            )
 
     # -- topology -----------------------------------------------------------
 
@@ -310,7 +336,7 @@ class _Generator:
                         id=f"{cluster_id}-{role}-{n}",
                         hostname=f"{role}-{n}.{cluster_id}",
                         demand=self._demand_for(role, ip_type),
-                        node_role=NodeRole(role),
+                        node_role=role,
                         ip_type=ip_type,
                         cluster_id=cluster_id,
                     ))
@@ -318,13 +344,33 @@ class _Generator:
 
     def _build_vms_from_groups(self) -> list[VM]:
         """One VM stream per (cluster, node_group). Ids stay contiguous per
-        (cluster, role) even when a role spans several groups."""
+        (cluster, role) even when a role spans several groups. Shared-scope
+        groups are built ONCE under cluster_id="shared" — that id is also the
+        auto-rule grouping key, so a shared pool spreads/caps as one group
+        across all clusters (ADR-011)."""
         req = self.req
         vms: list[VM] = []
+        shared = [g for g in req.node_groups if g.scope == "shared"]
+        seq_s: dict[str, int] = {}
+        for g in shared:
+            demand = req.vm_specs.get(g.spec) if g.spec else None
+            if demand is None:
+                demand = _ROLE_BASELINE.get(g.role, _ROLE_BASELINE[NodeRole.WORKER.value])
+            for _ in range(g.count):
+                n = seq_s.get(g.role, 0) + 1
+                seq_s[g.role] = n
+                vms.append(VM(
+                    id=f"shared-{g.role}-{n}",
+                    hostname=f"{g.role}-{n}.shared",
+                    demand=demand,
+                    node_role=g.role,
+                    ip_type=g.ip_type,
+                    cluster_id="shared",
+                ))
         for c in range(1, req.clusters + 1):
             cluster_id = f"cluster-{c}"
             seq: dict[str, int] = {}
-            for g in req.node_groups:
+            for g in (g for g in req.node_groups if g.scope != "shared"):
                 demand = req.vm_specs.get(g.spec) if g.spec else None
                 if demand is None:
                     demand = _ROLE_BASELINE.get(g.role, _ROLE_BASELINE[NodeRole.WORKER.value])
@@ -335,7 +381,7 @@ class _Generator:
                         id=f"{cluster_id}-{g.role}-{n}",
                         hostname=f"{g.role}-{n}.{cluster_id}",
                         demand=demand,
-                        node_role=NodeRole(g.role),
+                        node_role=g.role,
                         ip_type=g.ip_type,
                         cluster_id=cluster_id,
                     ))
@@ -365,7 +411,7 @@ class _Generator:
             return
         counts: dict[tuple[str, str], int] = {}
         for vm in vms:
-            key = (vm.cluster_id, vm.node_role.value)
+            key = (vm.cluster_id, vm.node_role)
             counts[key] = counts.get(key, 0) + 1
         offending = sorted({
             role for (_, role), n in counts.items()
@@ -397,10 +443,70 @@ class _Generator:
             gpu_count=math.ceil(demand.gpu_count / tightness),
         )
 
-    def _build_baremetals(self, vms: list[VM], racks: list[Topology]) -> list[Baremetal]:
+    def _headcount_bounds(self) -> dict[str, int]:
+        """Per-role minimum number of distinct BMs implied by max-per-BM caps:
+        a group of n VMs capped at m per BM needs ceil(n/m) BMs regardless of
+        how big each BM is (a headcount bound, not a capacity bound).
+
+        Two deliberate non-multiplications:
+        - across ip_types of one role: max, not sum — the cap rules are keyed
+          per (cluster, ip_type, role), so two ip groups of the same role may
+          share the same BMs;
+        - across clusters: counts are per cluster and clusters may reuse the
+          same BMs (each cluster's rule counts separately).
+        """
+        bounds: dict[str, int] = {}
+        if self.req.node_groups:
+            agg_c: dict[tuple[str, str], int] = {}
+            agg_s: dict[tuple[str, str], int] = {}
+            for g in self.req.node_groups:
+                agg = agg_s if g.scope == "shared" else agg_c
+                agg[(g.role, g.ip_type)] = agg.get((g.role, g.ip_type), 0) + g.count
+            for caps, agg in ((self._cluster_caps, agg_c), (self._shared_caps, agg_s)):
+                for (role, ip), cap in caps.items():
+                    n = agg.get((role, ip), 0)
+                    if n:
+                        bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
+            return bounds
+        for role, cap in self.req.max_per_bm_by_role.items():
+            n = self.req.roles.get(role, 0)
+            if n:
+                bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
+        return bounds
+
+    def _build_baremetals(self, vms: list[VM], racks: list[Topology],
+                          min_copies: dict[str, int] | None = None) -> list[Baremetal]:
         req = self.req
         # Pool mode: any profile dedicates itself to specific roles.
         self._pool_mode = any(p.roles for p in req.bm_profiles)
+
+        # Exclusive roles must live in dedicated pools: a profile serving both
+        # an exclusive and a normal role would offer capacity the sizing math
+        # counts twice (a solo-locked BM contributes nothing to anyone else).
+        if self._exclusive_roles:
+            for prof in req.bm_profiles:
+                served_roles = set(prof.roles)
+                if not served_roles:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"exclusive node group(s) {sorted(self._exclusive_roles)} "
+                            f"require dedicated bm_profile pools, but profile "
+                            f"{prof.name!r} serves all roles — give every profile "
+                            f"an explicit roles list"
+                        ),
+                    )
+                mixed = served_roles & self._exclusive_roles and served_roles - self._exclusive_roles
+                if mixed:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"bm_profile {prof.name!r} mixes exclusive role(s) "
+                            f"{sorted(served_roles & self._exclusive_roles)} with "
+                            f"non-exclusive {sorted(served_roles - self._exclusive_roles)}; "
+                            f"exclusive roles need their own dedicated profile"
+                        ),
+                    )
         # Each entry: (capacity, frozenset(roles))  — empty roles = serves all.
         specs: list[tuple[Resources, frozenset[str]]] = []
 
@@ -411,6 +517,8 @@ class _Generator:
         elastic = [p for p in req.bm_profiles if p.count is None]
         num_ags = len({t.ag for t in racks})
         min_pool = max(req.target_spread.values(), default=1) if req.anti_affinity else 1
+        bounds = self._headcount_bounds()
+        self._elastic_copies: dict[str, int] = {}
         added = 0
 
         def serves(roles: frozenset[str], target: frozenset[str]) -> bool:
@@ -423,20 +531,95 @@ class _Generator:
             # Demand this profile must help cover.
             demand = Resources()
             for vm in vms:
-                if not served or vm.node_role.value in served:
+                if not served or vm.node_role in served:
                     demand = demand + vm.demand
             need = self._required(demand, req.tightness)
             have = Resources()
             for cap, roles in specs:
                 if serves(roles, served):
                     have = have + cap
+            # Fail fast: a resource field where this profile has zero capacity
+            # but residual demand remains can never be covered by adding more
+            # copies — the loop below would spin until the guard and hand back
+            # a runaway fleet. Name the exact fields instead.
+            deficient = [
+                f for f in RESOURCE_FIELDS
+                if getattr(p.capacity, f) == 0 and getattr(need, f) > getattr(have, f)
+            ]
+            if deficient:
+                needs = {f: getattr(need, f) - getattr(have, f) for f in deficient}
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"bm_profile {p.name!r} has zero capacity in {deficient} but "
+                        f"the VMs it serves still demand {needs}; adding more copies "
+                        f"can never cover this — fill in those capacity fields or "
+                        f"drop the demand"
+                    ),
+                )
+            # Headcount floor: for each role this profile serves, the max-per-BM
+            # bound needs ceil(n/m) distinct BMs; BMs already in `specs` that
+            # serve the role count toward it, this profile must add the
+            # worst-case remainder. Every copy added below serves all of this
+            # profile's roles, so the gap shrinks 1:1 with copies.
+            head_gap = 0
+            for role, need_bms in bounds.items():
+                if served and role not in served:
+                    continue
+                existing = sum(1 for _, roles in specs
+                               if serves(roles, frozenset({role})))
+                head_gap = max(head_gap, need_bms - existing)
+            # Pairwise packing floor (bin-packing L2 bound): a VM demanding
+            # more than half this profile's capacity in some dimension can
+            # never share a BM with another such VM (two >50% items overflow),
+            # so the COUNT of these big items bounds the fleet from below —
+            # summed across clusters, unlike the headcount bound. The capacity
+            # bound misses this entirely (it treats VMs as divisible), which
+            # at tightness 1.0 left a gap escalation's +1 could not climb.
+            # Existing BMs are credited with an upper estimate of how many big
+            # items each could host (cap // smallest big item), so this floor
+            # errs low — escalation covers any remainder, never overshoot.
+            pack_gap = 0
+            for f in RESOURCE_FIELDS:
+                cap_f = getattr(p.capacity, f)
+                if cap_f <= 0:
+                    continue
+                bigs = [getattr(vm.demand, f) for vm in vms
+                        if (not served or vm.node_role in served)
+                        and getattr(vm.demand, f) * 2 > cap_f]
+                if not bigs:
+                    continue
+                slots = sum(getattr(cap_e, f) // min(bigs)
+                            for cap_e, roles in specs if serves(roles, served))
+                pack_gap = max(pack_gap, len(bigs) - slots)
+            # Solo floor: a pool of exclusive roles needs one BM per VM —
+            # occupancy is 1 by C6, so capacity math is irrelevant here.
+            solo_gap = 0
+            if served and served <= self._exclusive_roles:
+                total = sum(1 for vm in vms if vm.node_role in served)
+                existing = sum(1 for _, roles in specs if serves(roles, served))
+                solo_gap = total - existing
+            floor = max(min_pool if self._pool_mode else num_ags,
+                        head_gap,
+                        pack_gap,
+                        solo_gap,
+                        (min_copies or {}).get(p.name, 0))
             copies = 0
-            guard = 0
-            while (not self._covers(have, need) or copies < (min_pool if self._pool_mode else num_ags)) and guard < 100_000:
+            while not self._covers(have, need) or copies < floor:
+                if added + copies >= _MAX_ELASTIC_BMS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"elastic sizing for bm_profile {p.name!r} exceeded "
+                            f"{_MAX_ELASTIC_BMS} baremetals (need={need!r}, "
+                            f"have={have!r}); profile capacity is far too small "
+                            f"for the demand — check the capacity fields"
+                        ),
+                    )
                 specs.append((p.capacity, served))
                 have = have + p.capacity
                 copies += 1
-                guard += 1
+            self._elastic_copies[p.name] = copies
             added += copies
         if elastic:
             self.diag["elastic_added"] = added
@@ -479,7 +662,7 @@ class _Generator:
         if getattr(self, "_pool_mode", False):
             self.diag["candidate_mode"] = "by_role_pool"
             for vm in vms:
-                role = vm.node_role.value
+                role = vm.node_role
                 pool = [bm.id for bm in bms
                         if not self._bm_pool_roles[bm.id] or role in self._bm_pool_roles[bm.id]]
                 if not pool:
@@ -502,23 +685,34 @@ class _Generator:
         remaining = {bm.id: bm.total_capacity for bm in bms}
         # per-BM, per group counts (for the max-per-BM cap)
         group_on_bm: dict[tuple[str, str], int] = {}
+        # C6 solo occupancy: exclusive VMs need an untouched BM and lock it.
+        bm_occupants: dict[str, int] = {}
+        bm_locked: set[str] = set()
 
         assignments: list[PlacementAssignment] = []
 
         # Group VMs by the solver's auto-AA key (cluster, ip_type, role).
         groups: dict[tuple[str, str, str], list[VM]] = {}
         for vm in vms:
-            key = (vm.cluster_id, vm.ip_type, vm.node_role.value)
+            key = (vm.cluster_id, vm.ip_type, vm.node_role)
             groups.setdefault(key, []).append(vm)
 
-        def try_place_on(vm: VM, bm_id: str, group_key: str, cap_limit: int | None) -> bool:
+        def try_place_on(vm: VM, bm_id: str, group_key: str, cap_limit: int | None,
+                         solo: bool = False) -> bool:
             cap = remaining[bm_id]
+            if bm_id in bm_locked:
+                return False
+            if solo and bm_occupants.get(bm_id, 0) > 0:
+                return False
             if not vm.demand.fits_in(cap):
                 return False
             if cap_limit is not None and group_on_bm.get((bm_id, group_key), 0) >= cap_limit:
                 return False
             remaining[bm_id] = cap - vm.demand
             group_on_bm[(bm_id, group_key)] = group_on_bm.get((bm_id, group_key), 0) + 1
+            bm_occupants[bm_id] = bm_occupants.get(bm_id, 0) + 1
+            if solo:
+                bm_locked.add(bm_id)
             assignments.append(PlacementAssignment(
                 vm_id=vm.id, vm_hostname=vm.hostname,
                 baremetal_id=bm_id, bm_hostname=bm_by_id[bm_id].hostname,
@@ -528,7 +722,8 @@ class _Generator:
 
         for (cluster_id, ip_type, role), members in groups.items():
             group_key = f"{cluster_id}/{ip_type}/{role}"
-            role_cap = self._cap_for(role, ip_type)
+            role_cap = self._cap_for(role, ip_type, cluster_id)
+            solo = role in self._exclusive_roles
             # Candidate BMs shared by the group (VMs in a group share candidates).
             cand_ids = members[0].candidate_baremetals
             cand_ags = sorted({bm_by_id[i].topology.ag for i in cand_ids})
@@ -552,7 +747,7 @@ class _Generator:
                         continue
                     for bm_id in sorted(ag_bms[ag],
                                         key=lambda b: remaining[b].cpu_cores, reverse=True):
-                        if try_place_on(vm, bm_id, group_key, role_cap):
+                        if try_place_on(vm, bm_id, group_key, role_cap, solo):
                             per_ag_count[ag] += 1
                             ag_cursor = (cand_ags.index(ag) + 1) % len(cand_ags)
                             placed = True
@@ -563,7 +758,7 @@ class _Generator:
                     # Fall back: any candidate BM with capacity (cap may be relaxed).
                     for bm_id in sorted(cand_ids,
                                         key=lambda b: remaining[b].cpu_cores, reverse=True):
-                        if try_place_on(vm, bm_id, group_key, role_cap):
+                        if try_place_on(vm, bm_id, group_key, role_cap, solo):
                             placed = True
                             break
                 if not placed:
@@ -573,11 +768,50 @@ class _Generator:
 
     # -- rules / config -----------------------------------------------------
 
+    def _role_counts(self) -> dict[str, int]:
+        """Per-cluster VM count for each role, from whichever demand source is
+        active: node_groups when set (a role may span several groups —
+        aggregate; shared-scope groups are NOT per-cluster and don't count),
+        else the legacy roles dict."""
+        if self.req.node_groups:
+            counts: dict[str, int] = {}
+            for g in self.req.node_groups:
+                if g.scope != "shared":
+                    counts[g.role] = counts.get(g.role, 0) + g.count
+            return counts
+        return dict(self.req.roles)
+
+    def _build_exclusive_rules(self) -> list[ExclusiveBaremetalRule]:
+        """One C6 rule per exclusive (scope-instance, role, ip): shared groups
+        get a single rule over cluster_id="shared"; cluster-scope exclusive
+        groups get one per cluster (mirrors _build_max_per_bm_rules)."""
+        rules: list[ExclusiveBaremetalRule] = []
+        seen: set[tuple[str, str, str]] = set()
+        for g in self.req.node_groups:
+            if not g.exclusive or g.count < 1:
+                continue
+            cids = (["shared"] if g.scope == "shared"
+                    else [f"cluster-{c}" for c in range(1, self.req.clusters + 1)])
+            for cid in cids:
+                key = (cid, g.role, g.ip_type)
+                if key in seen:
+                    continue
+                seen.add(key)
+                rules.append(ExclusiveBaremetalRule(
+                    group_id=f"excl/{cid}/{g.ip_type or '*'}/{g.role}",
+                    selector=GroupSelector(cluster_id=cid, ip_type=(g.ip_type or None),
+                                           node_role=g.role),
+                ))
+        return rules
+
     def _build_failover_rules(self) -> list[FailoverRule]:
         if not self.req.failover:
             return []
         # Require both roles to exist, else the backup selector resolves empty.
-        if self.req.roles.get("master", 0) < 1 or self.req.roles.get("learner", 0) < 1:
+        # Counts must come from the active demand source — reading req.roles
+        # here while demand came from node_groups silently skipped the rule.
+        counts = self._role_counts()
+        if counts.get("master", 0) < 1 or counts.get("learner", 0) < 1:
             self.diag["failover_skipped"] = "needs >=1 master and >=1 learner per cluster"
             return []
         # One rule per cluster so masters are backed by learners of the SAME
@@ -587,17 +821,19 @@ class _Generator:
             cid = f"cluster-{c}"
             rules.append(FailoverRule(
                 rule_id=f"auto-failover-{cid}",
-                primary=GroupSelector(cluster_id=cid, node_role=NodeRole.MASTER),
-                backup=GroupSelector(cluster_id=cid, node_role=NodeRole.LEARNER),
+                primary=GroupSelector(cluster_id=cid, node_role=NodeRole.MASTER.value),
+                backup=GroupSelector(cluster_id=cid, node_role=NodeRole.LEARNER.value),
                 fault_domain="ag",
             ))
         return rules
 
-    def _cap_for(self, role: str, ip_type: str) -> int | None:
+    def _cap_for(self, role: str, ip_type: str, cluster_id: str = "") -> int | None:
         """Max-per-BM cap for a placement group, from node_groups (keyed on
-        (role, ip_type)) or the legacy per-role dict."""
+        (role, ip_type), scoped by whether the group is cluster-owned or
+        shared) or the legacy per-role dict."""
         if self.req.node_groups:
-            return self._group_caps.get((role, ip_type))
+            caps = self._shared_caps if cluster_id == "shared" else self._cluster_caps
+            return caps.get((role, ip_type))
         return self.req.max_per_bm_by_role.get(role)
 
     def _build_max_per_bm_rules(self) -> list[MaxPerBaremetalRule]:
@@ -605,15 +841,22 @@ class _Generator:
         scoped to the role and (when known) its ip_type."""
         rules: list[MaxPerBaremetalRule] = []
         if self.req.node_groups:
-            for (role, ip), cap in self._group_caps.items():
+            for (role, ip), cap in self._cluster_caps.items():
                 for c in range(1, self.req.clusters + 1):
                     cid = f"cluster-{c}"
                     rules.append(MaxPerBaremetalRule(
                         group_id=f"maxbm/{cid}/{ip or '*'}/{role}",
                         selector=GroupSelector(cluster_id=cid, ip_type=(ip or None),
-                                               node_role=NodeRole(role)),
+                                               node_role=role),
                         max_per_bm=cap,
                     ))
+            for (role, ip), cap in self._shared_caps.items():
+                rules.append(MaxPerBaremetalRule(
+                    group_id=f"maxbm/shared/{ip or '*'}/{role}",
+                    selector=GroupSelector(cluster_id="shared", ip_type=(ip or None),
+                                           node_role=role),
+                    max_per_bm=cap,
+                ))
             return rules
         for role, cap in self.req.max_per_bm_by_role.items():
             if self.req.roles.get(role, 0) < 1:
@@ -624,7 +867,7 @@ class _Generator:
                 cid = f"cluster-{c}"
                 rules.append(MaxPerBaremetalRule(
                     group_id=f"maxbm/{cid}/{ip or '*'}/{role}",
-                    selector=GroupSelector(cluster_id=cid, ip_type=ip, node_role=NodeRole(role)),
+                    selector=GroupSelector(cluster_id=cid, ip_type=ip, node_role=role),
                     max_per_bm=cap,
                 ))
         return rules
@@ -638,6 +881,25 @@ class _Generator:
         cfg.update(req.config_overrides)
         return SolverConfig(**cfg)
 
+    def _escalation_targets(self, result, vms: list[VM]) -> list[str]:
+        """Elastic profile names implicated by the solver's infeasibility
+        diagnostics — via the role in a failing max-per-BM rule's group_id
+        (``maxbm/{cluster}/{ip}/{role}``) or the role of a VM with no eligible
+        BM. Empty when nothing is attributable (caller falls back to all)."""
+        diag = result.diagnostics or {}
+        roles: set[str] = set()
+        for key in ("infeasible_max_per_bm_rules", "infeasible_exclusive_rules"):
+            for r in diag.get(key, []):
+                roles.add(str(r.get("group_id", "")).rsplit("/", 1)[-1])
+        role_by_vm = {vm.id: vm.node_role for vm in vms}
+        for vm_id in diag.get("vms_with_no_eligible_bm", []):
+            if vm_id in role_by_vm:
+                roles.add(role_by_vm[vm_id])
+        if not roles:
+            return []
+        return [p.name for p in self.req.bm_profiles
+                if p.count is None and (not p.roles or roles & set(p.roles))]
+
     # -- orchestration ------------------------------------------------------
 
     def generate(self) -> GenerateResponse:
@@ -645,25 +907,57 @@ class _Generator:
         racks = self._build_racks()
         vms = self._build_vms()
         self._validate_ip_for_anti_affinity(vms)
-        bms = self._build_baremetals(vms, racks)
-        self._assign_candidates(vms, bms)
-        ground_truth = self._place(vms, bms)
 
-        placement = PlacementRequest(
-            vms=vms,
-            baremetals=bms,
-            max_per_bm_rules=self._build_max_per_bm_rules(),
-            failover_rules=self._build_failover_rules(),
-            config=self._build_config(),
-        )
+        elastic_names = [p.name for p in req.bm_profiles if p.count is None]
+        min_copies: dict[str, int] = {}
+        trail: list[dict[str, object]] = []
+        result = None
+
+        # Escalate-until-feasible: the analytic floors in _build_baremetals
+        # are necessary conditions only (packing fragmentation and rule
+        # interplay can still bite), so verify with the real solver and add
+        # one BM to the implicated pool per round. Fixed-count profiles are
+        # the user's explicit ask — never inflated; without them (or without
+        # verify) this collapses to a single build.
+        for round_no in range(_MAX_ESCALATIONS + 1):
+            self.diag.pop("unplaced_ground_truth", None)
+            bms = self._build_baremetals(vms, racks, min_copies)
+            self._assign_candidates(vms, bms)
+            ground_truth = self._place(vms, bms)
+            placement = PlacementRequest(
+                vms=vms,
+                baremetals=bms,
+                max_per_bm_rules=self._build_max_per_bm_rules(),
+                exclusive_bm_rules=self._build_exclusive_rules(),
+                failover_rules=self._build_failover_rules(),
+                config=self._build_config(),
+            )
+            if not req.verify:
+                break
+            result = VMPlacementSolver(placement).solve()
+            if result.success or not elastic_names or round_no == _MAX_ESCALATIONS:
+                break
+            trail.append({"bms": len(bms), "status": result.solver_status})
+            for name in self._escalation_targets(result, vms) or elastic_names:
+                min_copies[name] = self._elastic_copies.get(name, 0) + 1
+
+        known = {r.value for r in NodeRole}
+        unknown = sorted({vm.node_role for vm in vms} - known)
+        if unknown:
+            self.diag["unknown_roles"] = unknown
 
         self.diag["num_vms"] = len(vms)
         self.diag["num_baremetals"] = len(bms)
         self.diag["num_ags"] = len({t.ag for t in racks})
+        if trail:
+            self.diag["auto_escalated"] = {
+                "rounds": len(trail),
+                "trail": trail + [{"bms": len(bms),
+                                   "status": result.solver_status}],
+            }
 
         feasibility = "unverified"
-        if req.verify:
-            result = VMPlacementSolver(placement).solve()
+        if result is not None:
             self.diag["solver_status"] = result.solver_status
             self.diag["solver_unplaced"] = result.unplaced_vms
             feasibility = "verified" if result.success else "infeasible"
