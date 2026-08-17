@@ -2,7 +2,7 @@
 name = "vm-placement-solver"
 version = "0.1.0"
 description = "Python-based VM placement optimizer using OR-Tools CP-SAT solver"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "ortools>=9.9",
     "pydantic>=2.0",
