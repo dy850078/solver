@@ -1,6 +1,6 @@
 # 生產環境同步 Runbook
 
-把「每次手動複製檔案」換成「git pull」的完整流程。
+把「每次手動複製檔案」換成「一條可驗證的 git 流水線」的完整流程。
 
 ## 適用情境
 
@@ -12,7 +12,7 @@
 2. upstream 若改到被「跳過複製」的檔案,該更新會被靜默遺漏
 3. 每次更新都是高風險的手工作業
 
-本 runbook 的目標是把這三件事收斂成 `git pull --ff-only`。
+本 runbook 的目標是把這三件事收斂成一條指令:`./scripts/sync-from-upstream.sh`。
 
 ## 架構
 
@@ -28,10 +28,15 @@ GitHub: dy850078/solver
                                     ↓
                          GitLab 生產 repo (master)   ← deploy 綁定在此,不可換 repo
                                     │
-                                git pull --ff-only
+                          merge 進 master 觸發 deploy pipeline
                                     ↓
                                生產機器
 ```
+
+**部署模型**:生產機器不做 `git pull`。
+**MR merge 進 master 的那一刻就是 deploy**,pipeline 會自己把 code 送上去。
+所以 push 前的驗證是上線前最後一道關卡 —— 這也是 `scripts/sync-from-upstream.sh`
+把所有檢查做完、卻刻意不幫你 push 的原因。
 
 **已確認的前提**
 - 生產 repo 與 mirror **無共同歷史** → 需要 Phase 2 的一次性移植
@@ -133,8 +138,11 @@ done
 3. A 類檔案清單 + 各自用途一句話
 
 > **關鍵區分**
-> - **A 類（你新增的檔案）**:upstream 永遠不碰 → merge 永遠不 conflict
+> - **A 類（你新增的檔案）**:upstream 不碰 → merge 幾乎不 conflict
 >   → **不繳同步稅**,不急著 externalize,Phase 2 疊一個 commit 即可
+>   ⚠️ 「A 類」是以**檔案路徑**為單位,不是以目錄為單位。
+>   `examples/mock/` 這種**兩邊都有的目錄**,只要你新增的檔名有天跟 upstream
+>   新增的撞在一起,就會是 add/add conflict → 見 3.4 的命名紀律
 > - **M 類（你改的共用檔案）**:每次同步會撞 → 這才是 externalize 的對象
 
 ---
@@ -216,8 +224,9 @@ git diff mirror/release-to-gitlab master -- <檔案>
 ### 2.1 舊歷史存檔（保險）
 
 ```bash
-git branch master-legacy master
-git push origin master-legacy
+# 帶日期的名稱比 master-legacy 好:語意明確,且多次移植不會撞名
+git branch retain-master-before-upstream/$(date +%Y-%m-%d) master
+git push origin retain-master-before-upstream/$(date +%Y-%m-%d)
 ```
 
 ### 2.2 建立新血脈分支
@@ -233,7 +242,7 @@ git switch -c adopt-upstream mirror/release-to-gitlab
 
 ```bash
 # 2.0 清單裡「保留生產版」的每一個檔案(含 A 類生產專屬檔案)
-git checkout master-legacy -- <檔案A> <檔案B> ...
+git checkout retain-master-before-upstream/<日期> -- <檔案A> <檔案B> ...
 git add -A
 git commit -m "prod: local-only files and retained customizations"
 ```
@@ -317,12 +326,26 @@ git fetch origin
 git reset --hard origin/master
 ```
 
-> 這是**唯一一次**需要 reset。之後 master 只前進不改寫,永遠是 `git pull --ff-only`。
+> 這是**唯一一次**需要 reset。之後 master 只前進不改寫,每次同步都走
+> `sync/*` 分支 + MR,工作區用 `git fetch && git switch master && git merge --ff-only`
+> 跟上即可。
 > 執行前確認生產機器上沒有未 commit 的重要東西（Phase 0 已經盤點過就安全）。
+> `.env`、`.venv/` 等未追蹤檔案不受 reset 影響。
+
+**過程中會看到的兩個正常訊息**（都不是出錯):
+
+1. 在 `adopt-upstream` 上 `git status` 顯示
+   `ahead of 'mirror/release-to-gitlab' by N commits` ——
+   分支是從 mirror ref 建的,tracking 就設在那裡。**不代表 commit 進了 mirror**;
+   commit 去哪由 `git push` 的目標決定,不是 tracking。可用
+   `git branch -u origin/master adopt-upstream` 消掉,或直接切回 master。
+2. `git switch master` 顯示 `have diverged, and have N and M different commits` ——
+   本機 master 還停在舊血脈,遠端已是新的。這正是 2.6 要解決的事,
+   **不要照 git 的建議跑 `git pull`**（會嘗試合併兩條無關歷史),用上面的 reset。
 
 ### 2.7 觀察期
 
-舊分支 `master-legacy` 保留數週當 rollback 退路,確認穩定後再考慮刪除。
+舊分支 `retain-master-before-upstream/<日期>` 保留數週當 rollback 退路,確認穩定後再考慮刪除。
 
 ---
 
@@ -337,42 +360,191 @@ feature branch 開發完 → PR（自動 target `release-to-gitlab`）→ review
 
 ```bash
 cd solver-prod
-git fetch mirror
-git switch -c sync/$(date +%Y-%m-%d) origin/master
-git merge mirror/release-to-gitlab
-#   Phase 1 完成後:應該永遠自動 merge 成功
-#   若 conflict → upstream 動到了你 A 類以外的東西,值得看一眼
-
-make install && make test
-make cli INPUT=examples/success_basic.json
-
-git push origin sync/2026-08-18
-# → GitLab 開 MR (sync/* → master) → review → merge
+./scripts/sync-from-upstream.sh
 ```
 
-**部署 = MR merge 進 master 的那一刻。**
+這支 script 把 3.2 的手動步驟包起來,並且**永遠不會 push**。
+它做的事,依序:
 
-### 3.3 生產機器
+| 階段 | 檢查 | 失敗代表 |
+|---|---|---|
+| Preflight | `mirror` remote 存在、tracked 檔案沒有未 commit 變更、分支名沒被佔用、目前在哪個 branch | 環境沒準備好,先修 |
+| Fetch | 兩邊 remote 都 fetch;`mirror` 沒有新東西就直接結束 | pipeline 可能還沒跑 |
+| | 列出 incoming commits ——「**這就是 MR 會 deploy 的東西**」 | |
+| Merge | 從 `origin/master` 開 `sync/YYYY-MM-DD`,merge mirror | conflict → upstream 動到你也客製的檔案 |
+| Sync log | 在根路徑的 `SYNC_LOG.md` append 一筆「時間戳 + upstream/base SHA + commit 清單」並 commit | 見下方說明 |
+| Install | `make install`（並在 `PIP_INDEX_URL` 有設但 `UV_INDEX_URL` 沒設時警告） | 內網 index 沒吃到 |
+| Test | `make test` | |
+| CLI | `make cli` 等效,斷言 `solver_status` 是 OPTIMAL/FEASIBLE | 只跑不夠,要看結果 |
+| Smoke | 真的起 server,斷言 `/health` 回 `{"status":"ok"}`、`POST /v1/placement/solve` 會解 | liveness probe 的契約 |
+| Contract | 與 `origin/master` 比對 endpoint / 環境變數 / `pyproject.toml`+`uv.lock` 變動 | 這些設定在 repo 外面,要同步改 |
+
+**任一檢查失敗 → 印出「Do not push」並把分支留在原地讓你查。**
+全過 → 印出 `git push origin sync/YYYY-MM-DD` 讓**你自己決定**要不要送。
+
+常用選項:
 
 ```bash
-git pull --ff-only
-# pyproject.toml / uv.lock 有變動時重裝依賴:
-make install
+./scripts/sync-from-upstream.sh --no-smoke      # 不方便起 server 時
+./scripts/sync-from-upstream.sh --keep-going    # 一次看完所有失敗,不要 fail-fast
+./scripts/sync-from-upstream.sh --verify-only   # 解完 conflict 後,只重跑驗證
+./scripts/sync-from-upstream.sh --no-log        # 不寫 SYNC_LOG.md（見下）
+./scripts/sync-from-upstream.sh --branch sync/hotfix --mirror-ref mirror/other-branch
 ```
+
+驗證通過後,**你自己** push 並在 GitLab 開 MR (`sync/*` → `master`)。
+
+#### `SYNC_LOG.md` — 為什麼要有
+
+deploy pipeline 是靠「根路徑有檔案變動」觸發的,但一次 sync 很可能只動到
+`app/` 或 `tests/`,根路徑一個字都沒改 → **MR merge 了卻不會 deploy**。
+script 因此在 merge 之後、驗證之前,固定往根目錄的 `SYNC_LOG.md` append 一筆:
+
+```markdown
+## 2026-08-18T09:12:03+0800 — sync/2026-08-18
+
+- upstream: mirror/release-to-gitlab @ 0333ba2
+- base:     origin/master @ c3e635d
+- 3 commit(s):
+  - 0333ba2 upstream: touch README
+  - ...
+```
+
+一筆 = 一個 MR = 一次 deploy,所以它同時是**部署歷史**。
+
+幾個行為上的細節:
+
+- **不會 conflict**。upstream 從來沒有這個檔案,只有單側新增的檔案 git 會直接保留。
+- **不會重複寫**。判斷依據是「這個分支的 `SYNC_LOG.md` 是否已異於 `$BASE_REF`」,
+  所以 `--verify-only` 重跑幾次都只有一筆。
+- **conflict 解完後才寫**。merge 失敗時 script 直接結束,那筆是在你
+  `--verify-only` 時才補上的 —— 否則 MR 會缺少根路徑變動而不觸發 deploy。
+- 檔名可用 `--log-file` 換,或 `--no-log` 完全關掉。
+
+### 3.3 Deploy
+
+MR merge 進 `master` → deploy pipeline 自動送上生產機器。
+**生產機器不需要（也不應該）手動 `git pull`。**
+
+`pyproject.toml` / `uv.lock` 有變動時要確認 deploy pipeline 有重裝依賴 ——
+script 的 Contract 階段就是為了在 push 前先讓你看到這件事。
+
+### 3.4 遇到 conflict 怎麼辦
+
+script 在 merge 失敗時**直接結束、不會猜**,分支留在原地。
+因為 merge = deploy,這裡解錯的東西會直接上生產,所以流程是
+**辨型 → 決定誰是權威 → 解 → 重跑驗證**,不是憑印象按「接受目前變更」。
+
+#### 步驟一:辨型
+
+```bash
+git status --short                      # 開頭是 UU / AA / DU / UD 的就是衝突
+git diff --name-only --diff-filter=U    # 只列未解決的檔案
+```
+
+| 標記 | git 說法 | 意義 | 常見來源 |
+|---|---|---|---|
+| `AA` | add/add | 兩側**各自新增同一條路徑** | 你的 prod-only preset 跟 upstream 新檔撞名 |
+| `UU` | both modified | 兩側都改了同一個共用檔案 | M 類,Phase 1 externalize 沒做完 |
+| `DU` / `UD` | deleted by us / by them | 一側刪檔、另一側改了它 | upstream 重構搬檔案 |
+
+#### 步驟二:先搞清楚 `--ours` 是誰
+
+在 sync 分支上 merge mirror 時:
+
+| 寫法 | 指的是 |
+|---|---|
+| `--ours` / `:2:` | **sync 分支 = 你的生產內容** |
+| `--theirs` / `:3:` | **mirror = upstream** |
+
+> 跟 Phase 0.4 的 `+`/`-` 是同一類陷阱:方向搞反會做出完全相反的決定,
+> 而且結果看起來很正常。**不確定就先看內容再動手**:
+>
+> ```bash
+> git show :2:<檔案> | head      # ours   = 生產
+> git show :3:<檔案> | head      # theirs = upstream
+> ```
+
+#### 步驟三:決定權威方
+
+| 情況 | 處理 | 為什麼 |
+|---|---|---|
+| `AA`,你的是 prod-only preset | **兩邊都留**:你的改名,原路徑讓給 upstream | 直接 take ours 會把 upstream 的新檔案**靜默吃掉** |
+| `UU`,共用檔案 | 預設採用 upstream,你的客製回頭補 externalize | 同 Phase 2.0:以 upstream 為基底,漏掉客製會被測試/煙測抓到;反過來則是靜默過時 |
+| `DU`/`UD` | 看 upstream 那支 commit 的 message 判斷是搬家還是廢棄 | `git log --merge -- <檔案>` |
+| 看不懂 | **放棄這輪**,不要硬解 | merge = deploy,猜錯的代價是生產故障 |
+
+#### AA 的標準解法（prod preset 撞名）
+
+這是你最可能遇到的一種 —— `examples/mock/` 底下的業務 preset:
+
+```bash
+# 1. 你的版本存成一個不會再撞的檔名
+git show :2:examples/mock/foo.json > examples/mock/prod-foo.json
+# 2. 原路徑讓給 upstream
+git checkout --theirs -- examples/mock/foo.json
+# 3. 兩個都 add,然後完成 merge
+git add examples/mock/foo.json examples/mock/prod-foo.json
+git commit -m "resolve add/add: keep upstream at foo.json, prod preset renamed"
+```
+
+**改名是重點**,不是可選的收尾。留在原路徑的話,下次 upstream 再動那個檔案
+就會再撞一次,而且每次都要重解。
+
+#### 步驟四:解完一定要重跑驗證
+
+```bash
+./scripts/sync-from-upstream.sh --verify-only
+```
+
+不只是為了跑測試 —— **`SYNC_LOG.md` 是在這一步才補寫的**。
+跳過它,MR 會沒有根路徑變動,merge 進 master 也**不會觸發 deploy**,
+而且失敗得很安靜:MR 顯示成功,生產機器還是舊 code。
+
+#### 放棄這輪
+
+```bash
+git merge --abort
+git switch master && git branch -D sync/YYYY-MM-DD
+```
+
+master 全程沒被碰過,零風險。upstream 的東西下次同步照樣拿得到,不會遺失。
+
+#### 從根本避免撞名
+
+生產專屬、含業務內容而**不會進 GitHub** 的檔案（例如 `examples/mock/` 底下的
+真實情境 preset）,挑一個 upstream 不會用的命名空間:
+
+```
+examples/mock/prod-*.json      # 前綴
+examples/mock/local/*.json     # 或整個子目錄
+```
+
+代價是一次性的命名紀律,換掉的是「某天剛好撞名」這種無法預期的 conflict。
+
+> 順帶一提,放在 `examples/mock/` 而非頂層 `examples/` 是對的:
+> `tests/test_examples.py` 只掃**頂層** `examples/*.json` 並斷言每個都要 solve
+> 成功,放頂層的話一個故意 INFEASIBLE 的 preset 會讓 `make test` 變紅、
+> 被 script 擋下。UI 那側用的是 `rglob`,遞迴,所以子目錄照樣列得出來。
+>
+> 另外 `examples/mock/x.json` 不在根路徑,**單獨 push 不會觸發 deploy**,
+> 要等下一次帶 `SYNC_LOG.md` 的 sync MR 才會一起上生產。
 
 ### 紀律
 
 - **sync 分支要短命**:每次從 master 新開、當天走完 MR 收掉。
   留長期分支 = 在 fork 裡重新養出一個 delta 問題。
 - **master 設 protected**（只准 MR 進入）→ 沒有人能直接推生產 code。
-- `--ff-only` 是免費的漂移偵測器:有人手癢直接改生產 repo 並 commit,
-  它會拒絕合併而不是靜默輾過去。
+  因為 merge 就是 deploy,這條規則等於「沒有人能繞過 review 上線」。
+- **script 的 preflight 是免費的漂移偵測器**:有人手癢直接改工作區並 commit,
+  它會擋在 sync 開始之前,而不是把那些改動靜默夾帶進 MR 一起 deploy。
 
 ---
 
 ## Phase 4 — 終態
 
-Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。此時可二選一:
+Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。原本可二選一,
+但採用 `SYNC_LOG.md` 之後**已經確定走 B**;A 留在這裡是為了記錄為什麼不選它。
 
 **選項 A — 全自動**
 生產 repo 開 GitLab 內建 **pull mirroring**
@@ -381,26 +553,43 @@ Phase 1 完成後 delta 已歸零,sync MR 退化成純轉發。此時可二選�
 > 只適合 delta=0:它會強制對齊分支,有本地 commit 會被輾掉或同步失敗。
 > 若 A 類檔案仍留在生產 repo,**不能用這個選項**,走 B。
 
-**選項 B — 保留 MR 關卡**
+> **`SYNC_LOG.md` 已經讓選項 A 出局。**
+> 它是永久的 A 類檔案(只存在生產 repo),pull mirroring 會把它輾掉;
+> 而且 A 沒有 MR,也就沒有「根路徑變動」這個觸發點可言。
+> 這不是遺憾 —— A 本來就等於拿掉 script 那道上線前的驗證關卡。
+> 真的想全自動,正確做法是把等價的驗證搬進 pipeline,而不是改用 A。
+
+**選項 B — 保留 MR 關卡（現況即此）**
 維持 Phase 3 流程,但每次 merge 都是自動成功的純轉發。
-好處:保留 MR 作為審計記錄與人工放行點,A 類檔案也能繼續存在。
+好處:保留 MR 作為審計記錄與人工放行點,A 類檔案也能繼續存在,
+`SYNC_LOG.md` 也在這裡才有意義。
 
 **最終狀態**
 ```
-GitHub merge PR → pipeline 掃描 → mirror → (自動/純轉發) → 生產 repo
-                                                    → 生產機器 git pull --ff-only
+GitHub merge PR → pipeline 掃描 → mirror
+   → sync-from-upstream.sh (merge + 驗證 + SYNC_LOG.md) → 你 push → MR
+   → merge 進生產 repo master → deploy pipeline → 生產機器
 ```
 
 ---
 
 ## 進度追蹤
 
-- [ ] 前置檢查:pipeline 抓 `release-to-gitlab`
-- [ ] Phase 0:盤點完成,產出交給 Claude
-- [ ] Phase 1:externalize 完成並流進 mirror
-- [ ] Phase 2:移植手術 + 生產機器對齊
-- [ ] Phase 3:跑過至少一輪例行同步
-- [ ] Phase 4:選定 A 或 B 並設定完成
+- [x] 前置檢查:pipeline 抓 `release-to-gitlab`
+- [x] Phase 0:盤點完成（delta = server.py / pyproject / Makefile / .gitignore）
+- [x] Phase 1:externalize 完成並流進 mirror（PR #31、#32）
+- [x] Phase 2:移植手術 + 對齊完成，delta 歸零
+- [x] Phase 3:例行同步自動化（`scripts/sync-from-upstream.sh`）
+- [ ] Phase 3:用該 script 跑過至少一輪真實同步
+- [x] Phase 4:選定 B（保留 MR 關卡；`SYNC_LOG.md` 使 A 不可行）
+- [ ] Phase 4:確認 deploy pipeline 在 `pyproject.toml`/`uv.lock` 變動時會重裝依賴
+
+## 相關 script
+
+| Script | 用途 |
+|---|---|
+| `scripts/sync-from-upstream.sh` | Phase 3 例行同步:fetch → merge → 驗證 → 交由你決定是否 push |
+| `scripts/compare-with-upstream.sh` | Phase 0 盤點:三區塊 diff 報告 + endpoint/環境變數契約交叉檢查 |
 
 ---
 
