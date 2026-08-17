@@ -61,7 +61,7 @@
 在此 PR 之前,solver 只有 JSON API 介面。驗證 placement 結果的唯一方法是:
 
 ```bash
-curl -X POST :50051/v1/placement/solve -d @request.json | jq
+curl -X POST localhost:50051/v1/placement/solve -d @request.json | jq
 ```
 
 然後肉眼比對 JSON,例如:
@@ -101,7 +101,7 @@ curl -X POST :50051/v1/placement/solve -d @request.json | jq
 └─────────────────────┘         └──────────────────────────────┘
 ```
 
-* **Same-origin**: 前端與 API 都在 `:50051`,無 CORS 設定需求
+* **Same-origin**: 前端與 API 都在 `localhost:50051`,無 CORS 設定需求
 * **無中介 BFF**: 瀏覽器直接打 solver 的端點;solver 是 sidecar 設計,Go scheduler 本來就是直接呼叫,UI 只是再一個 client
 * **無 build artifact 入 repo**: 前端就是 source = served files,改 `.js`/`.css`/`.html` 直接生效
 

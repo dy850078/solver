@@ -279,9 +279,9 @@ make cli INPUT=examples/success_basic.json
 
 export SWAGGER_STATIC_DIR=/path/to/vendored/swagger
 make run &
-curl -s :50051/health      # 必須是 {"status":"ok"} —— probe 契約
-curl -s :50051/openapi.json | head -c 100
-curl -s -X POST :50051/v1/placement/solve \
+curl -s localhost:50051/health      # 必須是 {"status":"ok"} —— probe 契約
+curl -s localhost:50051/openapi.json | head -c 100
+curl -s -X POST localhost:50051/v1/placement/solve \
      -H 'Content-Type: application/json' \
      -d @examples/success_basic.json | head -c 200
 ```

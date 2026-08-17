@@ -93,7 +93,7 @@
   actual:四指標各自反應、隕石、超額 cap、unjoinable、碎片假象
   (`test_fragmentation_hits_slots_not_nominal` 是方案 B 被否決的可執行證據)、
   supply 吃掉 fleet、fab 差抑制 placement、endpoint round-trip。
-- 親手跑:`curl -X POST :50051/v1/capacity/reconcile -d
+- 親手跑:`curl -X POST localhost:50051/v1/capacity/reconcile -d
   @examples/capacity/reconcile_basic.json` —— 預期:fulfillment 1.0(4/4)、
   forecast_error 0.5、unplanned_ratio 1/3、drifts = 一筆 demand(隕石)+
   一筆 fleet(-32c 換修縮水)。
