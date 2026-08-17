@@ -47,6 +47,10 @@ venv: $(BIN)/python ## Create the virtualenv (.venv)
 .PHONY: install
 install: $(BIN)/python ## Create venv and install the project with dev extras
 	@if [ -n "$(UV)" ]; then \
+	  if [ -n "$$PIP_INDEX_URL" ] && [ -z "$$UV_INDEX_URL" ] && [ -z "$$UV_DEFAULT_INDEX" ]; then \
+	    echo "warning: PIP_INDEX_URL is set but uv does not read it — set UV_INDEX_URL"; \
+	    echo "         (or UV_DEFAULT_INDEX) as well, or uv resolves against public PyPI."; \
+	  fi; \
 	  echo "uv pip install -e \".[dev]\""; \
 	  uv pip install --python $(BIN)/python -e ".[dev]"; \
 	elif $(BIN)/python -m pip --version >/dev/null 2>&1; then \

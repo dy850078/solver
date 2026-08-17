@@ -251,7 +251,9 @@ git push origin adopt-upstream        # 先推分支,master 完全沒被碰
 
 ```bash
 export PYTHON=python3.12              # Makefile 的 ?= 會讓環境變數勝出
-export PIP_INDEX_URL=https://<內部索引>/simple    # 封閉網路(uv 也吃這個變數)
+# 封閉網路的內部索引 —— pip 與 uv 讀的是「不同」的變數,兩個都設:
+export PIP_INDEX_URL=https://<內部索引>/simple    # pip 用
+export UV_INDEX_URL=https://<內部索引>/simple     # uv 用(新版亦可用 UV_DEFAULT_INDEX)
 make install
 ```
 
@@ -259,6 +261,11 @@ make install
 > 所以舊版 Makefile 的 `python -m pip` 會噴 `No module named pip`。
 > 現在 Makefile 會自動偵測:uv 在 PATH 就用 uv,否則用 venv+pip;
 > 兩者皆無時給出明確指示而不是難懂的 traceback。
+>
+> **⚠️ uv 不讀 `PIP_INDEX_URL`。** 實測:只設 `PIP_INDEX_URL` 時 uv 會**靜默
+> 改用公開 PyPI** —— 在封閉網路等於繞過安全邊界拉套件(或連不出去而失敗,
+> 錯誤訊息還指不到真正原因)。`make install` 偵測到「有設 PIP_INDEX_URL 卻沒設
+> UV_INDEX_URL」時會出警告,但**設對兩個變數才是解法**。
 
 **驗證分兩層**,能跑多少跑多少:
 
