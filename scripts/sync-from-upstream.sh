@@ -182,10 +182,16 @@ fetch_and_merge() {
   sed 's/^/     /' "$WORK/merge.log"
   printf '\n%smerge conflict%s. Resolve it, `git add` the files and `git commit`,\n' "$RED" "$RESET"
   printf 'then run the checks with:  ./scripts/sync-from-upstream.sh --verify-only\n'
-  printf 'Or abandon:  git merge --abort && git switch %s && git branch -D %s\n' \
+  printf '%sThat re-run is not optional%s: the %s entry is written there, and\n' \
+    "$BOLD" "$RESET" "$SYNC_LOG"
+  printf 'without it the MR has no root-level change and will not deploy.\n'
+  printf '\nOr abandon:  git merge --abort && git switch %s && git branch -D %s\n' \
     "$CURRENT_BRANCH" "$SYNC_BRANCH"
-  printf '\nA conflict means upstream touched a file this repo also customises —\n'
-  printf 'worth understanding rather than resolving on autopilot.\n'
+  printf '\nA conflict means upstream touched a path this repo also owns —\n'
+  printf 'worth understanding rather than resolving on autopilot. During this\n'
+  printf 'merge %s--ours is your production content%s and --theirs is upstream.\n' \
+    "$BOLD" "$RESET"
+  printf 'Full decision table: docs/prod-sync-runbook.md §3.4\n'
   exit 1
 }
 

@@ -138,8 +138,11 @@ done
 3. A 類檔案清單 + 各自用途一句話
 
 > **關鍵區分**
-> - **A 類（你新增的檔案）**:upstream 永遠不碰 → merge 永遠不 conflict
+> - **A 類（你新增的檔案）**:upstream 不碰 → merge 幾乎不 conflict
 >   → **不繳同步稅**,不急著 externalize,Phase 2 疊一個 commit 即可
+>   ⚠️ 「A 類」是以**檔案路徑**為單位,不是以目錄為單位。
+>   `examples/mock/` 這種**兩邊都有的目錄**,只要你新增的檔名有天跟 upstream
+>   新增的撞在一起,就會是 add/add conflict → 見 3.4 的命名紀律
 > - **M 類（你改的共用檔案）**:每次同步會撞 → 這才是 externalize 的對象
 
 ---
@@ -425,6 +428,107 @@ MR merge 進 `master` → deploy pipeline 自動送上生產機器。
 
 `pyproject.toml` / `uv.lock` 有變動時要確認 deploy pipeline 有重裝依賴 ——
 script 的 Contract 階段就是為了在 push 前先讓你看到這件事。
+
+### 3.4 遇到 conflict 怎麼辦
+
+script 在 merge 失敗時**直接結束、不會猜**,分支留在原地。
+因為 merge = deploy,這裡解錯的東西會直接上生產,所以流程是
+**辨型 → 決定誰是權威 → 解 → 重跑驗證**,不是憑印象按「接受目前變更」。
+
+#### 步驟一:辨型
+
+```bash
+git status --short                      # 開頭是 UU / AA / DU / UD 的就是衝突
+git diff --name-only --diff-filter=U    # 只列未解決的檔案
+```
+
+| 標記 | git 說法 | 意義 | 常見來源 |
+|---|---|---|---|
+| `AA` | add/add | 兩側**各自新增同一條路徑** | 你的 prod-only preset 跟 upstream 新檔撞名 |
+| `UU` | both modified | 兩側都改了同一個共用檔案 | M 類,Phase 1 externalize 沒做完 |
+| `DU` / `UD` | deleted by us / by them | 一側刪檔、另一側改了它 | upstream 重構搬檔案 |
+
+#### 步驟二:先搞清楚 `--ours` 是誰
+
+在 sync 分支上 merge mirror 時:
+
+| 寫法 | 指的是 |
+|---|---|
+| `--ours` / `:2:` | **sync 分支 = 你的生產內容** |
+| `--theirs` / `:3:` | **mirror = upstream** |
+
+> 跟 Phase 0.4 的 `+`/`-` 是同一類陷阱:方向搞反會做出完全相反的決定,
+> 而且結果看起來很正常。**不確定就先看內容再動手**:
+>
+> ```bash
+> git show :2:<檔案> | head      # ours   = 生產
+> git show :3:<檔案> | head      # theirs = upstream
+> ```
+
+#### 步驟三:決定權威方
+
+| 情況 | 處理 | 為什麼 |
+|---|---|---|
+| `AA`,你的是 prod-only preset | **兩邊都留**:你的改名,原路徑讓給 upstream | 直接 take ours 會把 upstream 的新檔案**靜默吃掉** |
+| `UU`,共用檔案 | 預設採用 upstream,你的客製回頭補 externalize | 同 Phase 2.0:以 upstream 為基底,漏掉客製會被測試/煙測抓到;反過來則是靜默過時 |
+| `DU`/`UD` | 看 upstream 那支 commit 的 message 判斷是搬家還是廢棄 | `git log --merge -- <檔案>` |
+| 看不懂 | **放棄這輪**,不要硬解 | merge = deploy,猜錯的代價是生產故障 |
+
+#### AA 的標準解法（prod preset 撞名）
+
+這是你最可能遇到的一種 —— `examples/mock/` 底下的業務 preset:
+
+```bash
+# 1. 你的版本存成一個不會再撞的檔名
+git show :2:examples/mock/foo.json > examples/mock/prod-foo.json
+# 2. 原路徑讓給 upstream
+git checkout --theirs -- examples/mock/foo.json
+# 3. 兩個都 add,然後完成 merge
+git add examples/mock/foo.json examples/mock/prod-foo.json
+git commit -m "resolve add/add: keep upstream at foo.json, prod preset renamed"
+```
+
+**改名是重點**,不是可選的收尾。留在原路徑的話,下次 upstream 再動那個檔案
+就會再撞一次,而且每次都要重解。
+
+#### 步驟四:解完一定要重跑驗證
+
+```bash
+./scripts/sync-from-upstream.sh --verify-only
+```
+
+不只是為了跑測試 —— **`SYNC_LOG.md` 是在這一步才補寫的**。
+跳過它,MR 會沒有根路徑變動,merge 進 master 也**不會觸發 deploy**,
+而且失敗得很安靜:MR 顯示成功,生產機器還是舊 code。
+
+#### 放棄這輪
+
+```bash
+git merge --abort
+git switch master && git branch -D sync/YYYY-MM-DD
+```
+
+master 全程沒被碰過,零風險。upstream 的東西下次同步照樣拿得到,不會遺失。
+
+#### 從根本避免撞名
+
+生產專屬、含業務內容而**不會進 GitHub** 的檔案（例如 `examples/mock/` 底下的
+真實情境 preset）,挑一個 upstream 不會用的命名空間:
+
+```
+examples/mock/prod-*.json      # 前綴
+examples/mock/local/*.json     # 或整個子目錄
+```
+
+代價是一次性的命名紀律,換掉的是「某天剛好撞名」這種無法預期的 conflict。
+
+> 順帶一提,放在 `examples/mock/` 而非頂層 `examples/` 是對的:
+> `tests/test_examples.py` 只掃**頂層** `examples/*.json` 並斷言每個都要 solve
+> 成功,放頂層的話一個故意 INFEASIBLE 的 preset 會讓 `make test` 變紅、
+> 被 script 擋下。UI 那側用的是 `rglob`,遞迴,所以子目錄照樣列得出來。
+>
+> 另外 `examples/mock/x.json` 不在根路徑,**單獨 push 不會觸發 deploy**,
+> 要等下一次帶 `SYNC_LOG.md` 的 sync MR 才會一起上生產。
 
 ### 紀律
 
