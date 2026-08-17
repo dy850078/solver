@@ -8,6 +8,12 @@ dependencies = [
     "pydantic>=2.0",
     "fastapi>=0.100",
     "uvicorn>=0.20",
+    # Not imported anywhere: ortools pulls pandas in (pandas>=2.0.0) and this
+    # pins that transitive dependency to the version the solver was validated
+    # against. Without it the resolver takes pandas 3.x, a major bump on a
+    # library ortools uses internally — our tests would not notice a behaviour
+    # change there. Remove only alongside a deliberate ortools/pandas upgrade.
+    "pandas==2.3.3",
 ]
 
 [project.optional-dependencies]

@@ -155,7 +155,13 @@ done
 **環境值的去處**（git 不追蹤,pull 永遠不會碰）:
 - systemd unit / container env / shell profile 的環境變數
 - 或一個 `.gitignore` 掉的 `.env`
-- pip index / proxy → `PIP_INDEX_URL` 環境變數或 `pip.conf`（本來就不該在 pyproject.toml）
+- pip index / proxy → `PIP_INDEX_URL` / `UV_INDEX_URL` 環境變數或 `pip.conf`
+  （本來就不該在 pyproject.toml）
+
+> **注意 pyproject 裡「沒被 import 卻存在」的依賴**:`pandas==2.3.3` 沒有任何
+> 程式碼 import,但它釘的是 `ortools` 拉進來的**傳遞依賴**。這類項目 grep
+> 不到使用點,卻不是死重量 —— 刪掉會讓解析器改抓 pandas 3.x。判斷一個依賴
+> 該不該留,要看它有沒有在**約束別人**,不能只看有沒有被 import。
 - 本機專屬的 git ignore 規則 → `.git/info/exclude`（git 不追蹤,永不衝突）
 
 ### 已完成的 externalize（本專案現況）
