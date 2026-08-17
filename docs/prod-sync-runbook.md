@@ -179,6 +179,34 @@ done
 
 在**舊生產 repo 內部**把 mirror 的血脈引進來。repo URL、名稱、deploy 綁定全程不變。
 
+### 2.0 審查:決定每個差異要採用哪一邊
+
+```bash
+./scripts/compare-with-upstream.sh          # 預設 mirror/release-to-gitlab vs master
+```
+
+報告分三區:**只在生產端**（必須手動帶過去）、**只在 upstream**（採用即可）、
+**兩邊都有但不同**（逐項決定),外加 endpoint 與環境變數的對外契約交叉檢查。
+
+逐項看差異:
+
+```bash
+git diff mirror/release-to-gitlab master -- <檔案>
+```
+
+把決定記成一張清單,只需要列「**要保留生產版**」的那些:
+
+```
+保留生產版: <檔案A>  # 原因
+保留生產版: <檔案B>  # 原因
+其餘一律採用 upstream
+```
+
+> **為什麼預設是採用 upstream**:兩種基底的失敗方向相反。以 upstream 為基底時,
+> 漏掉一項客製 → 測試/煙測會抓到;以生產為基底時,漏掉一項 upstream 更新 →
+> **靜默過時**,而且往後每次同步都會再發生一次 —— 那正是本 runbook 要根治的病。
+> 你仍然對每個檔案有完全的決定權,只是「保留生產版」必須明講並留下原因。
+
 ### 2.1 舊歷史存檔（保險）
 
 ```bash
@@ -195,13 +223,17 @@ git switch -c adopt-upstream mirror/release-to-gitlab
 
 此時工作目錄 = 純淨的最新 upstream code。
 
-### 2.3 疊上 A 類檔案（如果有）
+### 2.3 疊上決定保留生產版的檔案
 
 ```bash
-git checkout master-legacy -- <A類檔案1> <A類檔案2> ...
+# 2.0 清單裡「保留生產版」的每一個檔案(含 A 類生產專屬檔案)
+git checkout master-legacy -- <檔案A> <檔案B> ...
 git add -A
-git commit -m "prod: local-only files (deploy scripts, CI config, ...)"
+git commit -m "prod: local-only files and retained customizations"
 ```
+
+commit message 裡寫下每個檔案保留的原因 —— 下一次同步時,
+那就是「這個檔案為什麼不跟 upstream 走」的唯一權威記錄。
 
 > M 類不用疊 —— Phase 1 已經讓它們變成環境變數了。
 > 若 Phase 1 尚未完成而你想先跑通流程,可暫時 `git apply` M 類 patch,
