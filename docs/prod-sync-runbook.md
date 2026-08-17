@@ -155,7 +155,13 @@ done
 **環境值的去處**（git 不追蹤,pull 永遠不會碰）:
 - systemd unit / container env / shell profile 的環境變數
 - 或一個 `.gitignore` 掉的 `.env`
-- pip index / proxy → `PIP_INDEX_URL` 環境變數或 `pip.conf`（本來就不該在 pyproject.toml）
+- pip index / proxy → `PIP_INDEX_URL` / `UV_INDEX_URL` 環境變數或 `pip.conf`
+  （本來就不該在 pyproject.toml）
+
+> **注意 pyproject 裡「沒被 import 卻存在」的依賴**:`pandas==2.3.3` 沒有任何
+> 程式碼 import,但它釘的是 `ortools` 拉進來的**傳遞依賴**。這類項目 grep
+> 不到使用點,卻不是死重量 —— 刪掉會讓解析器改抓 pandas 3.x。判斷一個依賴
+> 該不該留,要看它有沒有在**約束別人**,不能只看有沒有被 import。
 - 本機專屬的 git ignore 規則 → `.git/info/exclude`（git 不追蹤,永不衝突）
 
 ### 已完成的 externalize（本專案現況）
@@ -179,6 +185,34 @@ done
 
 在**舊生產 repo 內部**把 mirror 的血脈引進來。repo URL、名稱、deploy 綁定全程不變。
 
+### 2.0 審查:決定每個差異要採用哪一邊
+
+```bash
+./scripts/compare-with-upstream.sh          # 預設 mirror/release-to-gitlab vs master
+```
+
+報告分三區:**只在生產端**（必須手動帶過去）、**只在 upstream**（採用即可）、
+**兩邊都有但不同**（逐項決定),外加 endpoint 與環境變數的對外契約交叉檢查。
+
+逐項看差異:
+
+```bash
+git diff mirror/release-to-gitlab master -- <檔案>
+```
+
+把決定記成一張清單,只需要列「**要保留生產版**」的那些:
+
+```
+保留生產版: <檔案A>  # 原因
+保留生產版: <檔案B>  # 原因
+其餘一律採用 upstream
+```
+
+> **為什麼預設是採用 upstream**:兩種基底的失敗方向相反。以 upstream 為基底時,
+> 漏掉一項客製 → 測試/煙測會抓到;以生產為基底時,漏掉一項 upstream 更新 →
+> **靜默過時**,而且往後每次同步都會再發生一次 —— 那正是本 runbook 要根治的病。
+> 你仍然對每個檔案有完全的決定權,只是「保留生產版」必須明講並留下原因。
+
 ### 2.1 舊歷史存檔（保險）
 
 ```bash
@@ -195,13 +229,17 @@ git switch -c adopt-upstream mirror/release-to-gitlab
 
 此時工作目錄 = 純淨的最新 upstream code。
 
-### 2.3 疊上 A 類檔案（如果有）
+### 2.3 疊上決定保留生產版的檔案
 
 ```bash
-git checkout master-legacy -- <A類檔案1> <A類檔案2> ...
+# 2.0 清單裡「保留生產版」的每一個檔案(含 A 類生產專屬檔案)
+git checkout master-legacy -- <檔案A> <檔案B> ...
 git add -A
-git commit -m "prod: local-only files (deploy scripts, CI config, ...)"
+git commit -m "prod: local-only files and retained customizations"
 ```
+
+commit message 裡寫下每個檔案保留的原因 —— 下一次同步時,
+那就是「這個檔案為什麼不跟 upstream 走」的唯一權威記錄。
 
 > M 類不用疊 —— Phase 1 已經讓它們變成環境變數了。
 > 若 Phase 1 尚未完成而你想先跑通流程,可暫時 `git apply` M 類 patch,
@@ -211,12 +249,51 @@ git commit -m "prod: local-only files (deploy scripts, CI config, ...)"
 
 ```bash
 git push origin adopt-upstream        # 先推分支,master 完全沒被碰
-
-make install
-make test                             # 應為全綠
-make cli INPUT=examples/success_basic.json
-# 起服務煙測:打 /health、跑一次真實 request、確認環境變數有生效
 ```
+
+**先更新 venv。** `.venv/` 被 gitignore,切換分支不會動它 —— 移植後裡面裝的
+還是舊 code 的依賴。`make install` 不會重建 venv（`.venv/bin/python` 已存在,
+該 target 直接跳過）,只會把套件裝進去:
+
+```bash
+export PYTHON=python3.12              # Makefile 的 ?= 會讓環境變數勝出
+# 封閉網路的內部索引 —— pip 與 uv 讀的是「不同」的變數,兩個都設:
+export PIP_INDEX_URL=https://<內部索引>/simple    # pip 用
+export UV_INDEX_URL=https://<內部索引>/simple     # uv 用(新版亦可用 UV_DEFAULT_INDEX)
+make install
+```
+
+> **venv 是 uv 建的?** `uv venv` 預設不把 pip 裝進 venv（uv 自己管套件),
+> 所以舊版 Makefile 的 `python -m pip` 會噴 `No module named pip`。
+> 現在 Makefile 會自動偵測:uv 在 PATH 就用 uv,否則用 venv+pip;
+> 兩者皆無時給出明確指示而不是難懂的 traceback。
+>
+> **⚠️ uv 不讀 `PIP_INDEX_URL`。** 實測:只設 `PIP_INDEX_URL` 時 uv 會**靜默
+> 改用公開 PyPI** —— 在封閉網路等於繞過安全邊界拉套件(或連不出去而失敗,
+> 錯誤訊息還指不到真正原因)。`make install` 偵測到「有設 PIP_INDEX_URL 卻沒設
+> UV_INDEX_URL」時會出警告,但**設對兩個變數才是解法**。
+
+**驗證分兩層**,能跑多少跑多少:
+
+| 層級 | 指令 | 需要 | 驗什麼 |
+|---|---|---|---|
+| 邏輯正確性 | `make test` | dev extras（pytest、httpx） | code 本身 —— GitHub CI 已驗過,這裡是複驗 |
+| **環境相容性** | CLI + 煙測 | 只要 runtime deps | **這份 code 在這個環境能不能跑** ← 生產端真正該驗的 |
+
+```bash
+make cli INPUT=examples/success_basic.json
+
+export SWAGGER_STATIC_DIR=/path/to/vendored/swagger
+make run &
+curl -s localhost:50051/health      # 必須是 {"status":"ok"} —— probe 契約
+curl -s localhost:50051/openapi.json | head -c 100
+curl -s -X POST localhost:50051/v1/placement/solve \
+     -H 'Content-Type: application/json' \
+     -d @examples/success_basic.json | head -c 200
+```
+
+> 內部索引若沒有 `pytest` / `httpx`,生產端就跳過 `make test`,改在工作機上跑
+> 全套;生產端只做環境相容性那一層。**別為了跑測試把 dev 套件塞進生產環境。**
 
 驗證不過 → 修分支或直接棄用,**master 從頭到尾沒動過,生產零風險**。
 

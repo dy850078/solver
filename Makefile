@@ -15,6 +15,11 @@ VENV   := .venv
 BIN    := $(VENV)/bin
 PORT   ?= 50051
 
+# uv builds virtualenvs without pip inside them — it installs packages itself —
+# so the installer has to match whatever created .venv. Detected rather than
+# assumed: this repo ships a uv.lock, but plain venv+pip has to keep working.
+UV := $(shell command -v uv 2>/dev/null)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -27,15 +32,36 @@ help: ## Show this help
 	@echo "Vars: PYTHON=$(PYTHON)  PORT=$(PORT)"
 
 $(BIN)/python: ## (internal) create the virtualenv
-	$(PYTHON) -m venv $(VENV)
-	$(BIN)/python -m pip install --upgrade pip
+	@if [ -n "$(UV)" ]; then \
+	  echo "uv venv --python $(PYTHON) $(VENV)"; \
+	  uv venv --python $(PYTHON) $(VENV); \
+	else \
+	  echo "$(PYTHON) -m venv $(VENV)"; \
+	  $(PYTHON) -m venv $(VENV); \
+	  $(BIN)/python -m pip install --upgrade pip; \
+	fi
 
 .PHONY: venv
 venv: $(BIN)/python ## Create the virtualenv (.venv)
 
 .PHONY: install
 install: $(BIN)/python ## Create venv and install the project with dev extras
-	$(BIN)/python -m pip install -e ".[dev]"
+	@if [ -n "$(UV)" ]; then \
+	  if [ -n "$$PIP_INDEX_URL" ] && [ -z "$$UV_INDEX_URL" ] && [ -z "$$UV_DEFAULT_INDEX" ]; then \
+	    echo "warning: PIP_INDEX_URL is set but uv does not read it — set UV_INDEX_URL"; \
+	    echo "         (or UV_DEFAULT_INDEX) as well, or uv resolves against public PyPI."; \
+	  fi; \
+	  echo "uv pip install -e \".[dev]\""; \
+	  uv pip install --python $(BIN)/python -e ".[dev]"; \
+	elif $(BIN)/python -m pip --version >/dev/null 2>&1; then \
+	  echo "pip install -e \".[dev]\""; \
+	  $(BIN)/python -m pip install -e ".[dev]"; \
+	else \
+	  echo "error: $(VENV) has no pip and uv is not on PATH."; \
+	  echo "  A uv-created venv has no pip by design. Either put uv on PATH,"; \
+	  echo "  or rebuild the venv with pip: rm -rf $(VENV) && make install"; \
+	  exit 1; \
+	fi
 
 .PHONY: run
 run: ## Start the HTTP server (PORT=$(PORT)); web UI at /ui, API docs at /docs

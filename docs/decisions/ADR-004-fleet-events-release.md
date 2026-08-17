@@ -90,6 +90,6 @@ bm_ids, fab}`)。規劃器每月迴圈開頭:release 月已到且未套用 → �
   事前凍結、儀表排除、跨規劃月順延、單發端點 `frozen_bm_ids`、全凍結錯誤
   訊息、五類驗證拒絕。
 - 親手跑:`make cli` 不適用(plan 端點),用
-  `curl -X POST :50051/v1/capacity/plan -d @examples/capacity/plan_fleet_release.json`
+  `curl -X POST localhost:50051/v1/capacity/plan -d @examples/capacity/plan_fleet_release.json`
   —— 預期:2026-01 `frozen_bms=[bm-legacy-1]`、buy 0;2026-02
   `released_bms=[bm-legacy-1]`、buy 0(不釋放的話該月得買 1 台)。
