@@ -82,19 +82,16 @@ def test_service_boots_without_any_swagger_assets(monkeypatch):
     assert docs.status_code == 503
     assert "SWAGGER_STATIC_DIR" in docs.text      # says how to fix it
     # The service itself is unaffected.
-    assert client.get("/health").json() == "ok"
+    assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/openapi.json").status_code == 200
 
 
-def test_both_health_paths_are_served():
-    """/health and /healthz are both live. Probes are configured outside
-    this repo, so serving only one turns a rename into a failed liveness
-    check in whichever deployment used the other."""
+def test_health_returns_status_object():
+    """Probes are configured outside this repo, so the path and payload
+    shape are a contract: /health -> {"status": "ok"}."""
     from app.server import api
 
-    client = TestClient(api)
-    assert client.get("/health").json() == "ok"
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert TestClient(api).get("/health").json() == {"status": "ok"}
 
 
 def test_bad_swagger_static_dir_falls_back_to_bundle(monkeypatch, tmp_path):

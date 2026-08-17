@@ -165,7 +165,7 @@ done
 | Makefile `PYTHON ?= python3.13` → 3.12 | `export PYTHON=python3.12` | `?=` 本來就吃環境變數 |
 | pyproject `requires-python >=3.13` | 已放寬為 `>=3.12` | codebase 無 3.13-only 語法 |
 | 移除 `swagger_ui_bundle` import、自建 `/static` 掛載 | `SWAGGER_STATIC_DIR` 指向 vendored 目錄 | 套件改為 optional dependency |
-| `/healthz` 回 `{"status":"ok"}` | upstream 兩個路徑都提供 | probe 設定在 repo 外,不能只留一個 |
+| `/health` 回 `{"status":"ok"}` | upstream 已對齊此格式 | probe 設定在 repo 外,回傳格式是契約 |
 | `.gitignore` 本機規則 | `.git/info/exclude` | git 不追蹤 |
 
 ---

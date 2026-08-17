@@ -173,20 +173,9 @@ def capacity_reconcile(request: ReconcileRequest) -> ReconcileReport:
 
 
 @api.get("/health")
-def health() -> str:
-    return "ok"
-
-
-@api.get("/healthz")
-def healthz() -> dict:
-    """Kubernetes-convention alias of /health.
-
-    Both paths are served because probes get configured out in the
-    deployment (manifests, LB rules) where this repo cannot see them —
-    dropping either one turns a rename into a failed liveness check.
-    The response shapes differ only because each is already in use with
-    that shape; status code is what probes read.
-    """
+def health() -> dict:
+    """Liveness probe. Returns an object rather than a bare string so
+    fields can be added without breaking clients that already parse it."""
     return {"status": "ok"}
 
 

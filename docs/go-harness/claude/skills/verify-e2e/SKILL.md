@@ -11,7 +11,7 @@ description: End-to-end verification against a real solver sidecar — assemble 
 ## Steps
 
 1. **起 solver**:`make solver-up`(或直接在 solver repo 跑 `make run`,
-   :50051)。確認 `curl -s :50051/health` 回 `ok`。
+   :50051)。確認 `curl -s :50051/health` 回 `{"status":"ok"}`。
 
 2. **用真程式碼組 request**,不要手刻 JSON:
    走 `internal/planning` 的快照組裝路徑產出 `CapacityPlanRequest`,
