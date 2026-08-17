@@ -96,6 +96,36 @@ git diff mirror/release-to-gitlab master -- <嫌疑檔案>
 你的修改（內部 hostname、port、憑證路徑、proxy、index-url…）
 與 upstream 演進在 diff 裡通常一眼可辨。
 
+> **`+` 是你的、`-` 是 upstream 的**。`git diff A B` 裡 `+` 標記的是
+> B（你的生產分支）獨有的內容。看反方向會得出「已經對齊」的錯誤結論。
+
+### 0.4a 結構化交叉檢查（diff 太長無法逐行讀時）
+
+長 diff 靠人眼描述必漏。用這幾條指令產生**短清單**兩邊對照,
+特別是對外契約（endpoint、環境變數),漏掉會直接造成生產故障:
+
+```bash
+# 對外 endpoint —— 漏一個就是 404,probe/呼叫端會炸
+for ref in mirror/release-to-gitlab master; do
+  echo "--- $ref"
+  git show $ref:app/server.py | grep -oE '@api\.(get|post|put|delete)\("[^"]+"' | sort
+done
+
+# 讀取的環境變數 —— 決定部署時要設什麼
+for ref in mirror/release-to-gitlab master; do
+  echo "--- $ref"
+  git show $ref:app/server.py | grep -oE 'environ(\.get)?\[?"[A-Z_]+"' | sort -u
+done
+
+# 掛載點與 import
+for ref in mirror/release-to-gitlab master; do
+  echo "--- $ref"
+  git show $ref:app/server.py | grep -nE '^(import|from) |\.mount\('
+done
+```
+
+兩份輸出各十來行,肉眼 diff 即可,不需要複製貼上整份 patch。
+
 ### 0.5 產出（交給 Claude）
 
 1. `delta-files.txt` 內容（檔名通常不敏感）
@@ -135,7 +165,7 @@ git diff mirror/release-to-gitlab master -- <嫌疑檔案>
 | Makefile `PYTHON ?= python3.13` → 3.12 | `export PYTHON=python3.12` | `?=` 本來就吃環境變數 |
 | pyproject `requires-python >=3.13` | 已放寬為 `>=3.12` | codebase 無 3.13-only 語法 |
 | 移除 `swagger_ui_bundle` import、自建 `/static` 掛載 | `SWAGGER_STATIC_DIR` 指向 vendored 目錄 | 套件改為 optional dependency |
-| `/healthz` → `/health` | upstream 已是 `/health` | 無 delta |
+| `/healthz` 回 `{"status":"ok"}` | upstream 兩個路徑都提供 | probe 設定在 repo 外,不能只留一個 |
 | `.gitignore` 本機規則 | `.git/info/exclude` | git 不追蹤 |
 
 ---

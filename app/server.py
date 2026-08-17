@@ -177,6 +177,19 @@ def health() -> str:
     return "ok"
 
 
+@api.get("/healthz")
+def healthz() -> dict:
+    """Kubernetes-convention alias of /health.
+
+    Both paths are served because probes get configured out in the
+    deployment (manifests, LB rules) where this repo cannot see them —
+    dropping either one turns a rename into a failed liveness check.
+    The response shapes differ only because each is already in use with
+    that shape; status code is what probes read.
+    """
+    return {"status": "ok"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="VM Placement Solver")
     parser.add_argument("--port", type=int, default=50051)
