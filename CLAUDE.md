@@ -50,6 +50,14 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
     siblings; reified via `add_max_equality`, see ADR-011).
   - New constraints get the next label (C7, C8, …), a `CONSTRAINT Cn:` comment
     with the math in the builder method, and dedicated tests.
+- **Pinned VMs** (`VM.pinned_to`, ADR-012): existing VMs carried into a request
+  as facts — forced assignments that give C2–C6 global vision for add-node /
+  rollout. `used_capacity` stays inventory truth (includes pinned demand); the
+  solver normalizes internally. C3/C4/C5 caps are **grandfathered** per bucket
+  (`max(cap, pinned count)` — existing violations frozen, never worsened,
+  never INFEASIBLE); C6 violations by pinned layout → INPUT_ERROR. Results
+  echo pins with `PlacementAssignment.pinned=True`; the scheduler marks on
+  input and filters on output. Capacity-planner path rejects pins.
 - **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
   — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
   C6 has NO auto-generation — exclusivity is always an explicit rule.
