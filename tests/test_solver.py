@@ -1416,3 +1416,274 @@ class TestExclusiveOccupancy:
         exclusive = build(excl_rules=[ExclusiveBaremetalRule(group_id="ex", selector=sel)])
         assert not exclusive.success                        # 4 VMs cannot fit 2 solo BMs
         assert exclusive.diagnostics["constraint_check"]["failed_at"] == "exclusive"
+
+
+# ===========================================================================
+# 12. Pinned VMs (add-node carry-in): normalization + C1–C6 grandfathering
+# ===========================================================================
+
+def _pinned_host(bm_id, n_pinned, ag="ag-1", room="room-1", cpu=64,
+                 extra_used_cpu=0):
+    """A BM whose used_capacity (inventory truth) already includes n_pinned
+    default-sized VMs (4 cpu / 16000 mem / 100 disk each)."""
+    return make_bm(
+        bm_id, cpu=cpu, ag=ag, room=room,
+        used_cpu=4 * n_pinned + extra_used_cpu,
+        used_mem=16_000 * n_pinned,
+        used_disk=100 * n_pinned,
+    )
+
+
+class TestPinnedNormalization:
+
+    def test_used_normalization_avoids_double_count(self):
+        """used_capacity is inventory truth INCLUDING the pinned VM; the
+        solver must subtract it once, or the pin + new VM cannot both fit."""
+        bm = make_bm("bm-1", cpu=8, used_cpu=6, used_mem=16_000, used_disk=100)
+        pinned = make_vm("vm-old", pinned_to="bm-1")  # 4 cpu, inside used_cpu=6
+        new = make_vm("vm-new", cpu=2)
+        r = solve([pinned, new], [bm])
+        assert r.success, r.solver_status
+        assert amap(r) == {"vm-old": "bm-1", "vm-new": "bm-1"}
+
+    def test_pinned_demand_exceeding_used_is_input_error(self):
+        """used_cpu=2 cannot contain the pinned VM's 4 cpu — the inventory
+        never accounted it, so subtracting would mint phantom capacity."""
+        bm = make_bm("bm-1", used_cpu=2, used_mem=16_000, used_disk=100)
+        r = solve([make_vm("vm-old", pinned_to="bm-1")], [bm])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "used_capacity" in r.solver_status
+
+    def test_overcommitted_pinned_host_is_input_error(self):
+        bm = make_bm("bm-1", cpu=8, used_cpu=10, used_mem=16_000, used_disk=100)
+        r = solve([make_vm("vm-old", pinned_to="bm-1")], [bm])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "over-committed" in r.solver_status
+
+
+class TestPinnedInputValidation:
+
+    def test_pin_to_unknown_bm_is_input_error(self):
+        r = solve([make_vm("vm-old", pinned_to="bm-x")], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "unknown BM" in r.solver_status
+
+    def test_pin_conflicting_with_candidates_is_input_error(self):
+        bms = [_pinned_host("bm-1", 1), make_bm("bm-2")]
+        vm = make_vm("vm-old", candidates=["bm-2"], pinned_to="bm-1")
+        r = solve([vm], bms)
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "candidate_baremetals does not contain" in r.solver_status
+
+    def test_two_pinned_exclusive_members_on_one_bm_is_input_error(self):
+        bms = [_pinned_host("bm-1", 2), make_bm("bm-2")]
+        vms = [make_vm("f5-a", pinned_to="bm-1"), make_vm("f5-b", pinned_to="bm-1")]
+        rule = ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-a", "f5-b"])
+        r = solve(vms, bms, exclusive_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "exclusive" in r.solver_status
+
+    def test_pinned_member_with_pinned_outsider_is_input_error(self):
+        bms = [_pinned_host("bm-1", 2), make_bm("bm-2")]
+        vms = [make_vm("f5-a", pinned_to="bm-1"), make_vm("w-1", pinned_to="bm-1")]
+        rule = ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-a"])
+        r = solve(vms, bms, exclusive_rules=[rule])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "exclusive" in r.solver_status
+
+
+class TestPinnedAssignment:
+
+    def test_pinned_vm_lands_on_host_with_flag(self):
+        bms = [_pinned_host("bm-1", 1), make_bm("bm-2")]
+        r = solve([make_vm("vm-old", pinned_to="bm-1"), make_vm("vm-new")], bms)
+        assert r.success, r.solver_status
+        by_id = {a.vm_id: a for a in r.assignments}
+        assert by_id["vm-old"].baremetal_id == "bm-1"
+        assert by_id["vm-old"].pinned is True
+        assert by_id["vm-new"].pinned is False
+
+    def test_pin_survives_allow_partial_placement(self):
+        """Partial placement may drop free VMs, never pins: the pin is a
+        fact, forced with == 1 even under the <= 1 regime."""
+        bms = [_pinned_host("bm-1", 1)]
+        vms = [
+            make_vm("vm-old", pinned_to="bm-1"),
+            make_vm("vm-big", cpu=100),  # fits nowhere
+        ]
+        r = solve(vms, bms, allow_partial_placement=True)
+        assert "vm-big" in r.unplaced_vms
+        assert "vm-old" not in r.unplaced_vms
+        assert amap(r)["vm-old"] == "bm-1"
+
+    def test_bm_used_count_includes_pinned_hosts(self):
+        bms = [_pinned_host("bm-1", 1), make_bm("bm-2"), make_bm("bm-3")]
+        r = solve([make_vm("vm-old", pinned_to="bm-1")], bms)
+        assert r.success
+        assert r.bm_used_count == 1
+        assert r.bm_total_count == 3
+
+
+class TestPinnedAntiAffinityGrandfather:
+
+    def _masters(self, n, prefix="p", pinned_hosts=None):
+        vms = []
+        for i in range(n):
+            pin = pinned_hosts[i] if pinned_hosts else None
+            vms.append(make_vm(f"{prefix}-{i}", role=NodeRole.MASTER,
+                               ip_type="routable", pinned_to=pin))
+        return vms
+
+    def test_new_vm_steered_to_underfilled_bucket(self):
+        """Existing 2/2/1 across AGs + 1 new master → cap ceil(6/3)=2 forces
+        the new VM into the AG holding only 1 (the skew self-corrects)."""
+        bms = [
+            _pinned_host("bm-a0-0", 1, ag="ag-0"), _pinned_host("bm-a0-1", 1, ag="ag-0"),
+            _pinned_host("bm-a1-0", 1, ag="ag-1"), _pinned_host("bm-a1-1", 1, ag="ag-1"),
+            _pinned_host("bm-a2-0", 1, ag="ag-2"), make_bm("bm-a2-1", ag="ag-2"),
+        ]
+        pinned = self._masters(5, pinned_hosts=[
+            "bm-a0-0", "bm-a0-1", "bm-a1-0", "bm-a1-1", "bm-a2-0",
+        ])
+        new = make_vm("m-new", role=NodeRole.MASTER, ip_type="routable")
+        r = solve(pinned + [new], bms, auto_generate_anti_affinity=True)
+        assert r.success, r.solver_status
+        by_id = {a.vm_id: a for a in r.assignments}
+        assert by_id["m-new"].ag == "ag-2", (
+            f"skew must self-correct, got {by_id['m-new'].ag}"
+        )
+
+    def test_existing_violation_is_tolerated_not_infeasible(self):
+        """3/1/1 already breaks cap 2 — grandfathered: the over-full AG is
+        frozen and the new VM goes elsewhere; the solve must NOT fail."""
+        bms = [
+            _pinned_host("bm-a0-0", 2, ag="ag-0"), _pinned_host("bm-a0-1", 1, ag="ag-0"),
+            _pinned_host("bm-a1-0", 1, ag="ag-1"), make_bm("bm-a1-1", ag="ag-1"),
+            _pinned_host("bm-a2-0", 1, ag="ag-2"), make_bm("bm-a2-1", ag="ag-2"),
+        ]
+        pinned = self._masters(5, pinned_hosts=[
+            "bm-a0-0", "bm-a0-0", "bm-a0-1", "bm-a1-0", "bm-a2-0",
+        ])
+        new = make_vm("m-new", role=NodeRole.MASTER, ip_type="routable")
+        r = solve(pinned + [new], bms, auto_generate_anti_affinity=True)
+        assert r.success, r.solver_status
+        by_id = {a.vm_id: a for a in r.assignments}
+        assert by_id["m-new"].ag != "ag-0", "frozen bucket must not worsen"
+
+    def test_explicit_rule_cap_override_grandfathered(self):
+        bms = [
+            _pinned_host("bm-a0-0", 2, ag="ag-0"),
+            make_bm("bm-a1-0", ag="ag-1"),
+        ]
+        vms = [
+            make_vm("p-0", pinned_to="bm-a0-0"),
+            make_vm("p-1", pinned_to="bm-a0-0"),
+            make_vm("w-new"),
+        ]
+        rules = [AntiAffinityRule(group_id="g", vm_ids=["p-0", "p-1", "w-new"],
+                                  spread_on=["ag"], cap_per_bucket={"ag": 1})]
+        r = solve(vms, bms, rules)
+        assert r.success, r.solver_status
+        by_id = {a.vm_id: a for a in r.assignments}
+        assert by_id["w-new"].ag == "ag-1"
+
+    def test_behavior_unchanged_when_pins_under_cap(self):
+        """Pins below the cap must not relax anything: 1 pinned + 1 new with
+        cap 1 still forbids sharing the bucket."""
+        bms = [_pinned_host("bm-a0-0", 1, ag="ag-0"), make_bm("bm-a0-1", ag="ag-0"),
+               make_bm("bm-a1-0", ag="ag-1")]
+        vms = [make_vm("p-0", pinned_to="bm-a0-0"), make_vm("w-new")]
+        rules = [AntiAffinityRule(group_id="g", vm_ids=["p-0", "w-new"],
+                                  spread_on=["ag"], cap_per_bucket={"ag": 1})]
+        r = solve(vms, bms, rules)
+        assert r.success, r.solver_status
+        by_id = {a.vm_id: a for a in r.assignments}
+        assert by_id["w-new"].ag == "ag-1"
+
+
+class TestPinnedMaxPerBaremetal:
+
+    def test_existing_excess_frozen_new_member_elsewhere(self):
+        bms = [_pinned_host("bm-1", 2), make_bm("bm-2")]
+        vms = [
+            make_vm("p-0", pinned_to="bm-1"),
+            make_vm("p-1", pinned_to="bm-1"),
+            make_vm("w-new"),
+        ]
+        rule = MaxPerBaremetalRule(group_id="g", vm_ids=["p-0", "p-1", "w-new"],
+                                   max_per_bm=1)
+        r = solve(vms, bms, max_per_bm_rules=[rule])
+        assert r.success, r.solver_status
+        assert amap(r)["w-new"] == "bm-2"
+
+
+class TestPinnedFailover:
+
+    def test_pinned_overflow_skips_counting_preflight(self):
+        """|P|=2 > |L|=1 would be INPUT_ERROR, but both primaries are pinned:
+        grandfathered buckets freeze instead, and the model decides."""
+        bms = [
+            _pinned_host("bm-r0-0", 1, room="room-0"),
+            _pinned_host("bm-r0-1", 1, room="room-0"),
+            make_bm("bm-r1-0", room="room-1"),
+        ]
+        vms = [
+            make_vm("m-0", role=NodeRole.MASTER, cluster="A", pinned_to="bm-r0-0"),
+            make_vm("m-1", role=NodeRole.MASTER, cluster="A", pinned_to="bm-r0-1"),
+            make_vm("l-0", role=NodeRole.LEARNER, cluster="A"),
+        ]
+        f = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert r.success, r.solver_status
+        bm_room = {bm.id: bm.topology.room for bm in bms}
+        assert bm_room[amap(r)["l-0"]] == "room-1", (
+            "the frozen room-0 bucket must not take the new learner"
+        )
+
+    def test_frozen_bucket_steers_new_primary_away(self):
+        bms = [
+            _pinned_host("bm-r0-0", 2, room="room-0"),
+            make_bm("bm-r1-0", room="room-1"),
+            make_bm("bm-r2-0", room="room-2"),
+        ]
+        vms = [
+            make_vm("m-0", role=NodeRole.MASTER, cluster="A", pinned_to="bm-r0-0"),
+            make_vm("m-1", role=NodeRole.MASTER, cluster="A", pinned_to="bm-r0-0"),
+            make_vm("m-2", role=NodeRole.MASTER, cluster="A"),
+            make_vm("l-0", role=NodeRole.LEARNER, cluster="A"),
+            make_vm("l-1", role=NodeRole.LEARNER, cluster="A"),
+        ]
+        f = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert r.success, r.solver_status
+        bm_room = {bm.id: bm.topology.room for bm in bms}
+        assert bm_room[amap(r)["m-2"]] != "room-0"
+
+
+class TestPinnedExclusive:
+
+    def test_pinned_outsider_bars_exclusive_member(self):
+        """A pinned non-member occupies bm-1 → the exclusive member must go
+        to bm-2 (C6 sees the occupant because it is a fixed assign var)."""
+        bms = [_pinned_host("bm-1", 1), make_bm("bm-2")]
+        vms = [make_vm("w-old", pinned_to="bm-1"), make_vm("f5-a")]
+        rule = ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-a"])
+        r = solve(vms, bms, exclusive_rules=[rule])
+        assert r.success, r.solver_status
+        assert amap(r)["f5-a"] == "bm-2"

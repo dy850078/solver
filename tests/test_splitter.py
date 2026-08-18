@@ -728,3 +728,41 @@ class TestVmReqOfMap:
         assert set(splitter.vm_req_of) == {vm.id for vm in vms}
         for vm in vms:
             assert reqs[splitter.vm_req_of[vm.id]].cluster_id == vm.cluster_id
+
+
+# ===========================================================================
+# Pinned explicit VMs coexisting with synthetic slots (dynamic C3 branch)
+# ===========================================================================
+
+class TestPinnedWithSplitter:
+
+    def test_pinned_explicit_vm_in_synthetic_auto_group(self):
+        """A pinned explicit VM shares the (cluster, ip_type, role) auto
+        group with splitter synthetics → the dynamic ceil branch must apply
+        its grandfathered (reified) form and still solve."""
+        from app.models import VM
+
+        bms = [
+            make_bm("bm-a0", ag="ag-0", cpu=64, mem=256_000, disk=2000,
+                    used_cpu=8, used_mem=32_000, used_disk=200),
+            make_bm("bm-a1", ag="ag-1", cpu=64, mem=256_000, disk=2000),
+            make_bm("bm-a2", ag="ag-2", cpu=64, mem=256_000, disk=2000),
+        ]
+        pinned = VM(
+            id="w-old",
+            demand=Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200),
+            node_role=NodeRole.WORKER, ip_type="routable",
+            cluster_id="cluster-1",
+            candidate_baremetals=["bm-a0"], pinned_to="bm-a0",
+        )
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = make_req(cpu=16, mem=64_000, disk=400, vm_specs=[spec])
+
+        r = split_solve(req, bms, vms=[pinned],
+                        auto_generate_anti_affinity=True)
+
+        assert r.success, r.solver_status
+        pinned_a = [a for a in r.assignments if a.pinned]
+        assert [a.vm_id for a in pinned_a] == ["w-old"]
+        assert pinned_a[0].baremetal_id == "bm-a0"
+        assert "w-old" not in r.unplaced_vms
