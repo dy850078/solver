@@ -156,6 +156,21 @@ class VM(BaseModel):
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
       anti-affinity rules.
+
+    pinned_to: the BM this VM ALREADY lives on (add-node / rollout carry-in).
+      A statement of fact about the past, not a placement request — for
+      "user wants this NEW VM on exactly one BM" use a single-element
+      candidate_baremetals instead. Contract:
+      - the hosting BM must be present in request.baremetals (the scheduler
+        sends the schedulable group ∪ hosts of all pinned VMs; presence in
+        the request does NOT make a BM schedulable — per-VM candidates do);
+      - baremetal used_capacity stays inventory truth and INCLUDES pinned
+        consumption; the solver normalizes internally (subtracts pinned
+        demand once, re-adds it via the fixed assignment), so `demand` must
+        be the inventory-recorded value, not user re-input;
+      - pinned VMs are counted by C2–C6 (global vision) with grandfathered
+        caps on C3/C4/C5: existing violations are tolerated but frozen —
+        new VMs cannot make a bucket worse. C6 violations are INPUT_ERROR.
     """
     id: str
     hostname: str = ""
@@ -164,6 +179,7 @@ class VM(BaseModel):
     ip_type: str = ""
     cluster_id: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
+    pinned_to: str | None = None
 
     @field_validator("node_role")
     @classmethod
@@ -480,12 +496,21 @@ class PlacementRequest(BaseModel):
 
 
 class PlacementAssignment(BaseModel):
-    """One VM → one BM assignment, with the AG for easy verification."""
+    """
+    One VM → one BM assignment, with the AG for easy verification.
+
+    pinned=True marks a carried-in existing VM (VM.pinned_to) echoed back so
+    the result describes the full final state — verification, UI and
+    bm_used_count all need the complete population. The Go scheduler acts
+    only on pinned=False entries (marking is the scheduler's job on input,
+    filtering is the scheduler's job on output).
+    """
     vm_id: str
     vm_hostname: str = ""
     baremetal_id: str
     bm_hostname: str = ""
     ag: str = ""
+    pinned: bool = False
 
 
 class PlacementResult(BaseModel):
