@@ -714,6 +714,96 @@ class RolloutResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rollout sizing I/O: "how many machines does this build order need?"
+# (greenfield fab planning — ADR-014)
+# ---------------------------------------------------------------------------
+
+class FleetTemplate(BaseModel):
+    """
+    A homogeneous fleet described by topology counts instead of a machine list.
+
+    Racks are the leaf: one Topology per rack, every dimension above it
+    derived by modulo over the rack ordinal, so racks fan out across sites,
+    rooms and AGs simultaneously (the rule mockgen._build_racks uses, and
+    each rack belongs to exactly one AG). Machines then round-robin over
+    the racks, which keeps per-AG counts balanced to within one.
+
+    Counts left at 1 collapse that dimension to a single bucket — harmless
+    unless a rule spreads on it, in which case the whole fleet is one
+    bucket and the spread cannot be satisfied at any size.
+    """
+    total_capacity: Resources
+    sites: int = Field(default=1, ge=1)
+    phases: int = Field(default=1, ge=1)
+    datacenters: int = Field(default=1, ge=1)
+    rooms: int = Field(default=1, ge=1)
+    racks: int = Field(default=3, ge=1)
+    ags: int = Field(default=3, ge=1)
+    network: str = ""
+    pool: str = ""
+
+
+class RolloutSizingRequest(BaseModel):
+    """
+    Input for the sizing endpoint: the build order WITHOUT a fleet.
+
+    The answer is "the fewest machines of this model, in this topology,
+    that let every step place" — a sequential-build number, which is
+    necessarily ≥ what a single joint solve (mockgen's elastic sizing) or
+    the procurement planner would report, because earlier steps fragment
+    the fleet for later ones.
+
+    Steps must not pre-set candidate_baremetals (the fleet is generated
+    fresh for every probe, so any id would dangle), carry pinned_to, or
+    come with existing_vms — v1 is greenfield only. All three are
+    INPUT_ERROR rather than silent corrections.
+    """
+    fleet: FleetTemplate
+    steps: list[RolloutStep]
+    config: SolverConfig = Field(default_factory=SolverConfig)
+    max_baremetals: int = Field(default=200, ge=1)
+    max_probes: int = Field(default=12, ge=1)
+    deadline_seconds: float = Field(default=120.0, gt=0)
+
+
+class SizingProbe(BaseModel):
+    """One simulated fleet size and how it went."""
+    baremetals: int
+    success: bool
+    solver_status: str = ""
+    failed_step: str | None = None
+    elapsed_seconds: float = 0.0
+
+
+class RolloutSizingResult(BaseModel):
+    """
+    Output for the sizing endpoint.
+
+    required_baremetals is exact when success=True: the search scans
+    upward from a provable lower bound, so every smaller size was either
+    ruled out by the bound or actually tried and failed. (Feasibility is
+    NOT monotone in fleet size — see ADR-014 — which is precisely why the
+    scan is linear and every probe is recorded here.)
+
+    On budget exhaustion success=False with solver_status
+    "BUDGET_EXHAUSTED", and lower_bound/upper_bound bracket the answer.
+    """
+    success: bool
+    solver_status: str = ""
+    required_baremetals: int = 0
+    per_ag: dict[str, int] = Field(default_factory=dict)
+    analytic_floor: int = 0
+    floor_breakdown: dict[str, int] = Field(default_factory=dict)
+    lower_bound: int = 0
+    upper_bound: int | None = None
+    probes: list[SizingProbe] = Field(default_factory=list)
+    rollout: RolloutResult | None = None
+    baremetals: list[Baremetal] = Field(default_factory=list)
+    config_fingerprint: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # Procurement I/O (capacity planning Phase 2): single fab/period —
 # "given demand + in-stock, how many BMs of each type must we buy?"
 # ---------------------------------------------------------------------------
