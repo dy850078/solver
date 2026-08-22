@@ -4,7 +4,10 @@
  *   1. a named VM-spec catalog (define a size once, reuse it everywhere),
  *   2. an ordered list of build steps (one per cluster), each holding
  *      VM groups = role × ip_type × spec × count,
- *   3. a baremetal stock table (count × model × placement).
+ *   3. a fleet template: one machine model plus topology counts
+ *      (sites/phases/DCs/rooms/racks/AGs), generated the same way the mock
+ *      generator does. Leaving the machine count blank switches to sizing
+ *      mode — the caller asks the solver for the minimum fleet instead.
  *
  * The catalog is the answer to "the same spec keeps coming up": a group
  * row picks a spec by name, "⧉" clones a row, and cloning a whole step
@@ -25,15 +28,28 @@ const IP_TYPES = ["routable", "non-routable"];
 export const state = {
   specs: [],   // {name, cpu, memGiB, disk, gpu}
   steps: [],   // {name, groups:[{role, ipType, specIdx, count}]}
-  stock: [],   // {count, cpu, memGiB, disk, ag}
+  // One homogeneous fleet described by topology counts, mirroring the mock
+  // generator's knobs. `count` empty/null = "size it for me" (the sizing
+  // endpoint decides); a number = fixed stock.
+  fleet: {
+    count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0,
+    sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3,
+  },
   cfg: { autoAA: true, maxSolve: 10 },
 };
 
 const blank = {
   spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: 0 }),
   group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3 }),
-  stock: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, ag: "ag-1" }),
 };
+
+/* Topology knobs, in hierarchy order. The four that default to 1 collapse
+ * to a single bucket when left alone — harmless unless you spread on that
+ * dimension (same convention as the mock generator). */
+const TOPO_DIMS = [
+  ["sites", "Sites"], ["phases", "Phases"], ["datacenters", "DCs"],
+  ["rooms", "Rooms"], ["racks", "Racks"], ["ags", "AGs"],
+];
 
 export const specLabel = (s) =>
   `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb${s.gpu ? `/${s.gpu}gpu` : ""}`;
@@ -121,15 +137,30 @@ function stepCard(st, i) {
   </div>`;
 }
 
-function stockRow(s, i) {
-  return `<div class="frow-card"><div class="frow frow--stock">
-    ${num("stock", i, "count", s.count, "How many", 1)}
-    ${num("stock", i, "cpu", s.cpu, "vCore")}
-    ${num("stock", i, "memGiB", s.memGiB, "Mem GiB")}
-    ${num("stock", i, "disk", s.disk, "Disk GB")}
-    ${txt("stock", i, "ag", s.ag, "AG", "ag-1")}
-    ${act("stock-del", i, "✕", "Delete row", "row-act--del")}
-  </div></div>`;
+const fleetNum = (f, v, label, ph = "") =>
+  `<label class="mini"><span class="mini__label">${esc(label)}</span>
+    <input class="input" type="number" min="1" value="${v ?? ""}"
+      placeholder="${esc(ph)}" data-fleet="${f}"></label>`;
+
+function fleetCard() {
+  const f = state.fleet;
+  return `<div class="frow-card">
+    <div class="frow frow--spec">
+      ${fleetNum("count", f.count, "How many", "auto")}
+      ${fleetNum("cpu", f.cpu, "vCore")}
+      ${fleetNum("memGiB", f.memGiB, "Mem GiB")}
+      ${fleetNum("disk", f.disk, "Disk GB")}
+      <span></span>
+    </div>
+    <div class="frow frow--topo">
+      ${TOPO_DIMS.map(([k, label]) => fleetNum(k, f[k], label, "1")).join("")}
+    </div>
+    <p class="form-empty">
+      Leave <b>How many</b> blank to estimate the minimum fleet this rollout
+      needs. Machines are spread round-robin over the racks, and racks over
+      the AGs.
+    </p>
+  </div>`;
 }
 
 /* ── render ────────────────────────────────────────────────────────── */
@@ -143,20 +174,26 @@ export function renderForm() {
   $("#step-rows").innerHTML = state.steps.length
     ? state.steps.map(stepCard).join("")
     : `<p class="form-empty">No steps yet — add one cluster per build batch.</p>`;
-  $("#stock-rows").innerHTML = state.stock.length
-    ? state.stock.map(stockRow).join("")
-    : `<p class="form-empty">No baremetals yet — add stock for the simulation.</p>`;
+  $("#fleet-card").innerHTML = fleetCard();
   $("#cfg-auto-aa").checked = state.cfg.autoAA;
   $("#cfg-max-solve").value = state.cfg.maxSolve;
   renderSummary();
 }
 
 function renderSummary() {
-  const bms = state.stock.reduce((n, s) => n + Math.max(0, s.count), 0);
   const vms = state.steps.reduce(
     (n, st) => n + st.groups.reduce((m, g) => m + Math.max(0, g.count), 0), 0);
+  const fleet = isSizingMode()
+    ? "fleet size: estimate"
+    : `${state.fleet.count} baremetal(s)`;
   $("#builder-summary").textContent =
-    `${state.steps.length} step(s) · ${vms} VM(s) · ${bms} baremetal(s)`;
+    `${state.steps.length} step(s) · ${vms} VM(s) · ${fleet}`;
+}
+
+/** Blank/zero machine count means "work out the minimum for me". */
+export function isSizingMode() {
+  const c = state.fleet.count;
+  return c === null || c === undefined || c === "" || Number(c) < 1;
 }
 
 /* ── mutation ──────────────────────────────────────────────────────── */
@@ -232,8 +269,6 @@ function handleAction(action, i, stepIdx) {
       if (st) st.groups.splice(i + 1, 0, { ...st.groups[i] });
       break;
     }
-    case "stock-add": state.stock.push(blank.stock()); break;
-    case "stock-del": state.stock.splice(i, 1); break;
     default: return false;
   }
   renderForm();
@@ -249,34 +284,68 @@ const resources = (cpu, memGiB, disk, gpu = 0) => ({
   gpu_count: Math.max(0, Math.round(gpu)),
 });
 
+const dim = (v) => Math.max(1, Math.round(Number(v) || 1));
+
+export function fleetCount() {
+  return Math.max(0, Math.round(Number(state.fleet.count) || 0));
+}
+
+/**
+ * Topology skeleton, one entry per rack. Every dimension above rack is
+ * derived by modulo over the rack ordinal, so racks fan out across sites,
+ * rooms and AGs simultaneously — the same rule the mock generator uses
+ * (app/mockgen.py `_build_racks`). Each rack belongs to exactly one AG.
+ */
+export function buildRackTopologies() {
+  const f = state.fleet;
+  const racks = dim(f.racks);
+  const out = [];
+  for (let r = 0; r < racks; r++) {
+    out.push({
+      site: `site-${(r % dim(f.sites)) + 1}`,
+      phase: `p${(r % dim(f.phases)) + 1}`,
+      datacenter: `dc-${(r % dim(f.datacenters)) + 1}`,
+      room: `room-${(r % dim(f.rooms)) + 1}`,
+      rack: `rack-${r + 1}`,
+      ag: `ag-${(r % dim(f.ags)) + 1}`,
+    });
+  }
+  return out;
+}
+
+/** `n` identical machines round-robined over the rack skeleton. */
+export function buildFleet(n) {
+  const f = state.fleet;
+  const racks = buildRackTopologies();
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const seq = String(i + 1).padStart(3, "0");
+    out.push({
+      id: `bm-${seq}`,
+      hostname: `bare-${seq}`,
+      total_capacity: resources(f.cpu, f.memGiB, f.disk, f.gpu),
+      used_capacity: resources(0, 0, 0),
+      topology: { ...racks[i % racks.length] },
+    });
+  }
+  return out;
+}
+
 /**
  * Assemble a RolloutRequest. Throws Error with a human message when the
  * form cannot produce a runnable request.
+ *
+ * In sizing mode there is no fleet yet, so callers use buildSizingRequest
+ * instead; this function requires a concrete machine count.
  */
 export function buildRequest() {
   if (!state.specs.length) throw new Error("Add at least one VM spec.");
   if (!state.steps.length) throw new Error("Add at least one build step.");
-  if (!state.stock.length) throw new Error("Add at least one baremetal stock row.");
-
-  const baremetals = [];
-  let n = 0;
-  state.stock.forEach((row) => {
-    for (let k = 0; k < Math.max(0, row.count); k++) {
-      n += 1;
-      const id = `bm-${String(n).padStart(2, "0")}`;
-      baremetals.push({
-        id,
-        hostname: `bare-${String(n).padStart(3, "0")}`,
-        total_capacity: resources(row.cpu, row.memGiB, row.disk),
-        used_capacity: resources(0, 0, 0),
-        topology: {
-          site: "site-a", phase: "p1", datacenter: "dc-1",
-          room: "room-1", rack: `rack-${n}`, ag: row.ag || "ag-1",
-        },
-      });
-    }
-  });
-  if (!baremetals.length) throw new Error("Stock rows produce zero baremetals.");
+  if (isSizingMode()) {
+    throw new Error("Machine count is blank — use sizing mode.");
+  }
+  const baremetals = buildFleet(fleetCount());
+  if (!baremetals.length) throw new Error("The fleet has zero baremetals.");
   const allBmIds = baremetals.map((b) => b.id);
 
   const names = new Set();
@@ -373,31 +442,68 @@ export function loadIntoForm(req) {
     return { name: s.name || "", groups: [...groups.values()] };
   });
 
-  // Collapse baremetals into stock rows keyed by (capacity, ag).
-  const stock = new Map();
-  for (const bm of req.baremetals) {
-    const cap = bm.total_capacity ?? {};
-    const ag = bm.topology?.ag ?? "ag-1";
-    const key = `${specKey(cap)}|${ag}`;
-    const row = stock.get(key);
-    if (row) row.count += 1;
-    else stock.set(key, {
-      count: 1,
-      cpu: cap.cpu_cores ?? 0,
-      memGiB: Math.round((cap.memory_mib ?? 0) / GiB),
-      disk: cap.storage_gb ?? 0,
-      ag,
-    });
-  }
+  const fleet = deriveFleet(req.baremetals);
+  if (!fleet) return false;   // topology the generator cannot reproduce
 
+  const saved = { specs: state.specs, steps: state.steps, cfg: state.cfg };
   state.specs = specs;
   state.steps = steps;
-  state.stock = [...stock.values()];
+  state.fleet = fleet;
   state.cfg = {
     autoAA: req.config?.auto_generate_anti_affinity ?? true,
     maxSolve: req.config?.max_solve_time_seconds ?? 10,
   };
+  // The generator must round-trip the fleet exactly, or the form would
+  // silently redefine the user's topology on the next Simulate.
+  if (!sameFleet(buildFleet(fleet.count), req.baremetals)) {
+    state.specs = saved.specs;
+    state.steps = saved.steps;
+    state.cfg = saved.cfg;
+    return false;
+  }
   renderForm();
+  return true;
+}
+
+const topoKey = (t = {}) =>
+  [t.site, t.phase, t.datacenter, t.room, t.rack, t.ag].join("|");
+
+/** Machine model + topology counts implied by an existing fleet. */
+function deriveFleet(bms) {
+  if (!bms.length) return null;
+  const cap = bms[0].total_capacity ?? {};
+  const key = specKey(cap);
+  // One homogeneous model only — mixed fleets stay in JSON mode.
+  if (bms.some((b) => specKey(b.total_capacity ?? {}) !== key)) return null;
+  if (bms.some((b) => (b.used_capacity?.cpu_cores ?? 0) !== 0)) return null;
+  const distinct = (f) => new Set(bms.map((b) => b.topology?.[f])).size;
+  return {
+    count: bms.length,
+    cpu: cap.cpu_cores ?? 0,
+    memGiB: Math.round((cap.memory_mib ?? 0) / GiB),
+    disk: cap.storage_gb ?? 0,
+    gpu: cap.gpu_count ?? 0,
+    sites: distinct("site"), phases: distinct("phase"),
+    datacenters: distinct("datacenter"), rooms: distinct("room"),
+    racks: distinct("rack"), ags: distinct("ag"),
+  };
+}
+
+/** Same machines in the same places (ids and hostnames may differ). */
+function sameFleet(a, b) {
+  if (a.length !== b.length) return false;
+  const tally = (list) => {
+    const m = new Map();
+    for (const bm of list) {
+      const k = `${specKey(bm.total_capacity ?? {})}@${topoKey(bm.topology)}`;
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    return m;
+  };
+  const ma = tally(a);
+  const mb = tally(b);
+  if (ma.size !== mb.size) return false;
+  for (const [k, v] of ma) if (mb.get(k) !== v) return false;
   return true;
 }
 
@@ -420,11 +526,10 @@ function seed() {
   ];
   // Three AGs by default: with a single AG, spread constraints have no
   // buckets to work with and the demo would look artificially packed.
-  state.stock = [
-    { count: 2, cpu: 64, memGiB: 256, disk: 2000, ag: "ag-1" },
-    { count: 2, cpu: 64, memGiB: 256, disk: 2000, ag: "ag-2" },
-    { count: 2, cpu: 64, memGiB: 256, disk: 2000, ag: "ag-3" },
-  ];
+  state.fleet = {
+    count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0,
+    sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3,
+  };
 }
 
 export function initForm(onChange) {
@@ -436,6 +541,15 @@ export function initForm(onChange) {
     const el = e.target;
     if (el.id === "cfg-auto-aa") { state.cfg.autoAA = el.checked; onChange?.(); return; }
     if (el.id === "cfg-max-solve") { state.cfg.maxSolve = Number(el.value) || 10; onChange?.(); return; }
+    if (el.dataset?.fleet) {
+      // "How many" is deliberately allowed to be empty — that is the
+      // request to size the fleet instead of fixing it.
+      const raw = el.value.trim();
+      state.fleet[el.dataset.fleet] = raw === "" ? null : Number(raw);
+      renderSummary();
+      onChange?.();
+      return;
+    }
     if (!el.dataset?.s) return;
     applyFieldEdit(el);
     onChange?.();

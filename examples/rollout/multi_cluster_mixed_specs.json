@@ -2,7 +2,7 @@
   "_description": "Three clusters built in order, each with its OWN spec mix: cluster-a runs 8c masters + 16c workers, cluster-b runs lean 4c masters + fat 32c workers, cluster-c repeats cluster-a's shape. The simulator carries every step's placements forward as pinned VMs, so anti-affinity and capacity see the full population.",
   "baremetals": [
     {
-      "id": "bm-01",
+      "id": "bm-001",
       "hostname": "bare-001",
       "total_capacity": {
         "cpu_cores": 64,
@@ -17,7 +17,7 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
@@ -26,7 +26,7 @@
       }
     },
     {
-      "id": "bm-02",
+      "id": "bm-002",
       "hostname": "bare-002",
       "total_capacity": {
         "cpu_cores": 64,
@@ -41,16 +41,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-2",
-        "ag": "ag-1"
+        "ag": "ag-2"
       }
     },
     {
-      "id": "bm-03",
+      "id": "bm-003",
       "hostname": "bare-003",
       "total_capacity": {
         "cpu_cores": 64,
@@ -65,16 +65,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-3",
-        "ag": "ag-1"
+        "ag": "ag-3"
       }
     },
     {
-      "id": "bm-04",
+      "id": "bm-004",
       "hostname": "bare-004",
       "total_capacity": {
         "cpu_cores": 64,
@@ -89,16 +89,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-4",
-        "ag": "ag-2"
+        "ag": "ag-1"
       }
     },
     {
-      "id": "bm-05",
+      "id": "bm-005",
       "hostname": "bare-005",
       "total_capacity": {
         "cpu_cores": 64,
@@ -113,7 +113,7 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
@@ -122,7 +122,7 @@
       }
     },
     {
-      "id": "bm-06",
+      "id": "bm-006",
       "hostname": "bare-006",
       "total_capacity": {
         "cpu_cores": 64,
@@ -137,16 +137,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-6",
-        "ag": "ag-2"
+        "ag": "ag-3"
       }
     },
     {
-      "id": "bm-07",
+      "id": "bm-007",
       "hostname": "bare-007",
       "total_capacity": {
         "cpu_cores": 64,
@@ -161,16 +161,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-7",
-        "ag": "ag-3"
+        "ag": "ag-1"
       }
     },
     {
-      "id": "bm-08",
+      "id": "bm-008",
       "hostname": "bare-008",
       "total_capacity": {
         "cpu_cores": 64,
@@ -185,16 +185,16 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
         "rack": "rack-8",
-        "ag": "ag-3"
+        "ag": "ag-2"
       }
     },
     {
-      "id": "bm-09",
+      "id": "bm-009",
       "hostname": "bare-009",
       "total_capacity": {
         "cpu_cores": 64,
@@ -209,7 +209,7 @@
         "gpu_count": 0
       },
       "topology": {
-        "site": "site-a",
+        "site": "site-1",
         "phase": "p1",
         "datacenter": "dc-1",
         "room": "room-1",
@@ -234,15 +234,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-a",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -257,15 +257,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-a",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -280,15 +280,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-a",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -303,15 +303,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-a",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -326,15 +326,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-a",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         }
       ]
@@ -354,15 +354,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -377,15 +377,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -400,15 +400,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -423,15 +423,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -446,15 +446,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -469,15 +469,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-b",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         }
       ]
@@ -497,15 +497,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -520,15 +520,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -543,15 +543,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -566,15 +566,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -589,15 +589,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         },
         {
@@ -612,15 +612,15 @@
           "ip_type": "routable",
           "cluster_id": "cluster-c",
           "candidate_baremetals": [
-            "bm-01",
-            "bm-02",
-            "bm-03",
-            "bm-04",
-            "bm-05",
-            "bm-06",
-            "bm-07",
-            "bm-08",
-            "bm-09"
+            "bm-001",
+            "bm-002",
+            "bm-003",
+            "bm-004",
+            "bm-005",
+            "bm-006",
+            "bm-007",
+            "bm-008",
+            "bm-009"
           ]
         }
       ]
