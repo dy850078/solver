@@ -29,6 +29,7 @@ _DIR_HINTS = {
     "solve": "solve",
     "capacity": "capacity-plan",
     "rollout": "rollout",
+    "rollout_sizing": "rollout-size",
 }
 
 

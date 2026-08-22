@@ -392,3 +392,18 @@ class TestRolloutSizingEndpoint:
         assert len(out["baremetals"]) == out["required_baremetals"]
         import re
         assert re.fullmatch(r"[0-9a-f]{12}", out["config_fingerprint"])
+
+
+class TestSizingExample:
+    """examples/rollout_sizing/*.json are invisible to test_examples.py
+    (top-level glob only) — cover them here explicitly."""
+
+    def test_greenfield_example(self):
+        from pathlib import Path
+        path = (Path(__file__).parent.parent / "examples" / "rollout_sizing"
+                / "greenfield_three_clusters.json")
+        r = size_rollout(RolloutSizingRequest.model_validate_json(path.read_text()))
+        assert r.success, r.solver_status
+        assert r.required_baremetals >= r.analytic_floor
+        assert sum(r.per_ag.values()) == r.required_baremetals
+        assert r.rollout is not None and r.rollout.success

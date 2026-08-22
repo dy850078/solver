@@ -1,0 +1,214 @@
+{
+  "_description": "Greenfield sizing: three clusters built in order, each with its own spec mix, and no fleet yet. The answer is the fewest 64c/256g machines -- spread over 3 racks in 3 AGs -- that let every step place in sequence.",
+  "fleet": {
+    "total_capacity": {
+      "cpu_cores": 64,
+      "memory_mib": 262144,
+      "storage_gb": 2000,
+      "gpu_count": 0
+    },
+    "racks": 3,
+    "ags": 3
+  },
+  "steps": [
+    {
+      "name": "cluster-a",
+      "vms": [
+        {
+          "id": "cluster-a-master-1",
+          "demand": {
+            "cpu_cores": 8,
+            "memory_mib": 32768,
+            "storage_gb": 200,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a"
+        },
+        {
+          "id": "cluster-a-master-2",
+          "demand": {
+            "cpu_cores": 8,
+            "memory_mib": 32768,
+            "storage_gb": 200,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a"
+        },
+        {
+          "id": "cluster-a-master-3",
+          "demand": {
+            "cpu_cores": 8,
+            "memory_mib": 32768,
+            "storage_gb": 200,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a"
+        },
+        {
+          "id": "cluster-a-worker-1",
+          "demand": {
+            "cpu_cores": 16,
+            "memory_mib": 65536,
+            "storage_gb": 400,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a"
+        },
+        {
+          "id": "cluster-a-worker-2",
+          "demand": {
+            "cpu_cores": 16,
+            "memory_mib": 65536,
+            "storage_gb": 400,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a"
+        }
+      ]
+    },
+    {
+      "name": "cluster-b",
+      "vms": [
+        {
+          "id": "cluster-b-master-1",
+          "demand": {
+            "cpu_cores": 4,
+            "memory_mib": 16384,
+            "storage_gb": 100,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        },
+        {
+          "id": "cluster-b-master-2",
+          "demand": {
+            "cpu_cores": 4,
+            "memory_mib": 16384,
+            "storage_gb": 100,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        },
+        {
+          "id": "cluster-b-master-3",
+          "demand": {
+            "cpu_cores": 4,
+            "memory_mib": 16384,
+            "storage_gb": 100,
+            "gpu_count": 0
+          },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        },
+        {
+          "id": "cluster-b-worker-1",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        },
+        {
+          "id": "cluster-b-worker-2",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        },
+        {
+          "id": "cluster-b-worker-3",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b"
+        }
+      ]
+    },
+    {
+      "name": "cluster-c",
+      "vms": [
+        {
+          "id": "cluster-c-worker-1",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-c"
+        },
+        {
+          "id": "cluster-c-worker-2",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-c"
+        },
+        {
+          "id": "cluster-c-worker-3",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-c"
+        },
+        {
+          "id": "cluster-c-worker-4",
+          "demand": {
+            "cpu_cores": 32,
+            "memory_mib": 131072,
+            "storage_gb": 800,
+            "gpu_count": 0
+          },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-c"
+        }
+      ]
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "max_solve_time_seconds": 10
+  }
+}
