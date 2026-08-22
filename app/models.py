@@ -622,6 +622,88 @@ class SplitPlacementResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rollout simulation I/O: replay a user-specified build order step by step,
+# carrying each step's placements forward as pinned VMs (ADR-012/ADR-013)
+# ---------------------------------------------------------------------------
+
+class RolloutStep(BaseModel):
+    """
+    One build batch (typically one cluster) in a rollout simulation.
+
+    The step's payload is what a single scheduling call would carry —
+    exact VMs (production pure solve), coarse requirements (fuzzy future
+    demand for the splitter), or both — minus the shared `baremetals`,
+    which the simulator owns and rolls forward.
+
+    Rules accumulate: step k is solved under the UNION of rules from
+    steps 1..k, so e.g. an exclusive appliance placed in step 1 stays
+    protected from step 2's outsiders. vm_ids-form rules may reference
+    only explicit VM ids from this or earlier steps (or existing_vms);
+    synthetic VMs are addressable via selectors only.
+    """
+    name: str
+    vms: list[VM] = Field(default_factory=list)
+    requirements: list[ResourceRequirement] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+
+
+class RolloutRequest(BaseModel):
+    """
+    Input for the rollout endpoint: shared stock + ordered build steps.
+
+    existing_vms: optional brownfield starting state — VMs already running
+    before step 1. Every entry must carry `pinned_to`, and (per the pinned
+    contract, ADR-012) its demand must already be included in the starting
+    `used_capacity` of its host. VMs placed BY the simulation are folded
+    forward automatically; existing_vms are never re-folded.
+    """
+    baremetals: list[Baremetal]
+    steps: list[RolloutStep]
+    existing_vms: list[VM] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class RolloutStepReport(BaseModel):
+    """
+    Outcome of one simulated step.
+
+    new_assignments contains only THIS step's placements (pinned=False in
+    the underlying solve); carried-forward VMs from earlier steps are not
+    repeated. A step after the first failure is not solved at all — its
+    solver_status is "BLOCKED: not simulated — step '<failed>' failed".
+    """
+    name: str
+    success: bool
+    solver_status: str = ""
+    new_assignments: list[PlacementAssignment] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    unplaced_vms: list[str] = Field(default_factory=list)
+    bm_used_count: int = 0
+    bm_total_count: int = 0
+    solve_time_seconds: float = 0.0
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class RolloutResult(BaseModel):
+    """
+    Output for the rollout endpoint.
+
+    success is True only when every step solved successfully. failed_step
+    names the first failing step (later steps are BLOCKED stubs).
+    final_baremetals is the stock snapshot after all successful folds —
+    used_capacity includes everything the simulation placed.
+    """
+    success: bool
+    reports: list[RolloutStepReport] = Field(default_factory=list)
+    failed_step: str | None = None
+    final_baremetals: list[Baremetal] = Field(default_factory=list)
+    config_fingerprint: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Procurement I/O (capacity planning Phase 2): single fab/period —
 # "given demand + in-stock, how many BMs of each type must we buy?"
 # ---------------------------------------------------------------------------
