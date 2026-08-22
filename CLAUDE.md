@@ -17,6 +17,7 @@ app/
 ├── solver.py        # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
 ├── splitter.py      # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 ├── split_solver.py  # Orchestrates splitter + solver joint solve (split-and-solve endpoint)
+├── rollout.py       # Rollout simulation — replays a build order, folding placements forward as pins (ADR-013)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
 ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
 ├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
