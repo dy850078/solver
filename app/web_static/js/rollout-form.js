@@ -339,13 +339,19 @@ export function buildFleet(n) {
  * instead; this function requires a concrete machine count.
  */
 export function buildRequest() {
-  if (!state.specs.length) throw new Error("Add at least one VM spec.");
-  if (!state.steps.length) throw new Error("Add at least one build step.");
   if (isSizingMode()) {
     throw new Error("Machine count is blank — use sizing mode.");
   }
-  const baremetals = buildFleet(fleetCount());
-  if (!baremetals.length) throw new Error("The fleet has zero baremetals.");
+  return buildRequestWith(fleetCount(), { withCandidates: true });
+}
+
+function buildRequestWith(n, { withCandidates }) {
+  if (!state.specs.length) throw new Error("Add at least one VM spec.");
+  if (!state.steps.length) throw new Error("Add at least one build step.");
+  const baremetals = buildFleet(n);
+  if (withCandidates && !baremetals.length) {
+    throw new Error("The fleet has zero baremetals.");
+  }
   const allBmIds = baremetals.map((b) => b.id);
 
   const names = new Set();
@@ -369,7 +375,7 @@ export function buildRequest() {
           node_role: g.role,
           ip_type: g.ipType,
           cluster_id: name,
-          candidate_baremetals: allBmIds,
+          ...(withCandidates ? { candidate_baremetals: allBmIds } : {}),
         });
       }
     });
@@ -384,6 +390,27 @@ export function buildRequest() {
       auto_generate_anti_affinity: !!state.cfg.autoAA,
       max_solve_time_seconds: Math.max(1, Number(state.cfg.maxSolve) || 10),
     },
+  };
+}
+
+/**
+ * Assemble a RolloutSizingRequest: the same build plan, but the fleet is
+ * described by the topology knobs and the machine count is the answer.
+ * Candidate lists are deliberately omitted — the sizer generates a fresh
+ * fleet per probe and fills them in.
+ */
+export function buildSizingRequest() {
+  const req = buildRequestWith(0, { withCandidates: false });
+  const f = state.fleet;
+  return {
+    fleet: {
+      total_capacity: resources(f.cpu, f.memGiB, f.disk, f.gpu),
+      sites: dim(f.sites), phases: dim(f.phases),
+      datacenters: dim(f.datacenters), rooms: dim(f.rooms),
+      racks: dim(f.racks), ags: dim(f.ags),
+    },
+    steps: req.steps,
+    config: req.config,
   };
 }
 

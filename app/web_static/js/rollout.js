@@ -7,7 +7,7 @@
  * exact population the next step's solve saw.
  */
 
-import { listExamples, getExample, rollout } from "./api.js";
+import { listExamples, getExample, rollout, rolloutSize } from "./api.js";
 import { escapeHtml } from "./util.js";
 import { rebuildColorScale, legendEntries, clusterLegendEntries } from "./colors.js";
 import {
@@ -18,7 +18,9 @@ import {
   showRackEmpty,
 } from "./rackdiagram.js";
 import { renderStats, renderResult } from "./summary.js";
-import { initForm, buildRequest, loadIntoForm } from "./rollout-form.js";
+import {
+  initForm, buildRequest, buildSizingRequest, isSizingMode, loadIntoForm,
+} from "./rollout-form.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -31,6 +33,7 @@ const state = {
   vmIndex: null,   // pseudo-request {vms, requirements:[]} for lookupVm/colors
   selected: 0,     // index into result.reports
   groupBy: "rack",
+  sizing: null,    // RolloutSizingResult when the fleet size was estimated
 };
 
 function statusKind(status) {
@@ -93,6 +96,35 @@ function cumulativeAssignments(upToIdx) {
 /* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
+
+function renderSizingBanner() {
+  const el = $("#sizing-banner");
+  const s = state.sizing;
+  if (!s) { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden", "alert--ok", "alert--error", "alert--warn");
+  const trail = s.probes.map((p) =>
+    `<span class="probe ${p.success ? "probe--ok" : "probe--fail"}"
+       title="${escapeHtml(p.solver_status)}">${p.baremetals}</span>`).join("");
+  if (!s.success) {
+    el.classList.add("alert--error");
+    const bracket = s.upper_bound
+      ? `between ${s.lower_bound} and ${s.upper_bound}`
+      : `at least ${s.lower_bound}`;
+    el.innerHTML =
+      `<strong>Could not pin down the fleet size.</strong> ` +
+      `${escapeHtml(s.solver_status)} — the answer is ${bracket} machines. ` +
+      `<span class="probe-trail">tried ${trail}</span>`;
+    return;
+  }
+  el.classList.add("alert--ok");
+  const perAg = Object.entries(s.per_ag)
+    .map(([ag, n]) => `${escapeHtml(ag)}: ${n}`).join(" · ");
+  el.innerHTML =
+    `<strong>Needs ${s.required_baremetals} baremetal(s).</strong> ` +
+    `${perAg} — the smallest fleet this build order can be built on ` +
+    `(floor ${s.analytic_floor}). ` +
+    `<span class="probe-trail">tried ${trail}</span>`;
+}
 
 function renderBanner() {
   const el = $("#overall-banner");
@@ -255,6 +287,7 @@ function selectStep(i) {
 }
 
 function renderAll() {
+  renderSizingBanner();
   renderBanner();
   const r = state.result;
   if (!r.reports.length) {
@@ -350,6 +383,33 @@ function handleUpload(file) {
 
 /* The form is the source of truth unless the user ticked the override (or
  * loaded a request the form cannot express). */
+/** Sizing mode: the fleet is the answer, so send the template instead. */
+function currentSizingRequest() {
+  try {
+    const built = buildSizingRequest();
+    hideFormError();
+    return built;
+  } catch (err) {
+    showFormError(err.message);
+    return null;
+  }
+}
+
+/** A sizing run that produced no simulation: show only its verdict. */
+function renderSizingOnly(sized) {
+  renderSizingBanner();
+  $("#overall-banner").classList.add("hidden");
+  $("#step-strip").innerHTML = sized.solver_status.startsWith("INPUT_ERROR")
+    ? `<p class="muted" style="margin:0">${escapeHtml(
+        (sized.diagnostics?.input_errors ?? [sized.solver_status]).join(" · "),
+      )}</p>`
+    : `<p class="muted" style="margin:0">No fleet size was found within the budget.</p>`;
+  $("#step-stats").classList.add("hidden");
+  $("#detail-card").classList.add("hidden");
+  $("#rack-card").classList.add("hidden");
+  $("#stock-card").classList.add("hidden");
+}
+
 function currentRequest() {
   if ($("#json-override").checked) {
     try {
@@ -376,7 +436,7 @@ function currentRequest() {
 function syncJson() {
   if ($("#json-override").checked) return;
   try {
-    setJsonEditor(buildRequest());
+    setJsonEditor(isSizingMode() ? buildSizingRequest() : buildRequest());
     hideFormError();
   } catch (err) {
     showFormError(err.message);
@@ -384,11 +444,37 @@ function syncJson() {
 }
 
 async function runSimulation() {
-  const body = currentRequest();
+  const useJson = $("#json-override").checked;
+  const sizingMode = !useJson && isSizingMode();
+  const body = sizingMode ? currentSizingRequest() : currentRequest();
   if (!body) return;
   const btn = $("#run-btn");
   btn.disabled = true;
   try {
+    if (sizingMode) {
+      const sized = await rolloutSize(body);
+      state.sizing = sized;
+      if (!sized.rollout) {
+        // Nothing was simulated (input error or budget) — the sizing
+        // banner carries the whole story.
+        state.request = null;
+        state.result = null;
+        renderSizingOnly(sized);
+        return;
+      }
+      // Re-render the timeline against the fleet the sizer settled on.
+      const effective = {
+        baremetals: sized.baremetals,
+        steps: body.steps,
+        config: body.config,
+      };
+      state.request = effective;
+      state.result = sized.rollout;
+      state.vmIndex = buildVmIndex(effective, sized.rollout);
+      renderAll();
+      return;
+    }
+    state.sizing = null;
     const result = await rollout(body);
     state.request = body;
     state.result = result;
