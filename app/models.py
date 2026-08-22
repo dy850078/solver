@@ -672,8 +672,11 @@ class RolloutStepReport(BaseModel):
 
     new_assignments contains only THIS step's placements (pinned=False in
     the underlying solve); carried-forward VMs from earlier steps are not
-    repeated. A step after the first failure is not solved at all — its
-    solver_status is "BLOCKED: not simulated — step '<failed>' failed".
+    repeated. Synthetic (splitter-created) VM ids are namespaced
+    "{step_name}/{synthetic_id}" so ids stay unique across the whole
+    rollout; explicit VM ids are reported verbatim. A step after the first
+    failure is not solved at all — its solver_status is
+    "BLOCKED: not simulated — step '<failed>' failed".
     """
     name: str
     success: bool
@@ -695,12 +698,19 @@ class RolloutResult(BaseModel):
     names the first failing step (later steps are BLOCKED stubs).
     final_baremetals is the stock snapshot after all successful folds —
     used_capacity includes everything the simulation placed.
+
+    solver_status is "" on a simulated run (per-step statuses live in the
+    reports); request-level contract violations short-circuit the whole
+    simulation with "INPUT_ERROR: ..." here (full list under
+    diagnostics["input_errors"]), matching the other endpoints' convention.
     """
     success: bool
+    solver_status: str = ""
     reports: list[RolloutStepReport] = Field(default_factory=list)
     failed_step: str | None = None
     final_baremetals: list[Baremetal] = Field(default_factory=list)
     config_fingerprint: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
