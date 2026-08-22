@@ -388,13 +388,27 @@ class TestRolloutExample:
     """examples/rollout/*.json are invisible to test_examples.py (top-level
     glob only) — cover them here explicitly."""
 
-    def test_basic_two_step_example(self):
-        path = Path(__file__).parent.parent / "examples" / "rollout" / "basic_two_step.json"
-        request = RolloutRequest.model_validate_json(path.read_text())
-        r = solve_rollout(request)
+    def _run(self, filename):
+        path = Path(__file__).parent.parent / "examples" / "rollout" / filename
+        r = solve_rollout(RolloutRequest.model_validate_json(path.read_text()))
         assert r.success, [rep.solver_status for rep in r.reports]
         assert all(rep.success for rep in r.reports)
         assert r.failed_step is None
+        return r
+
+    def test_basic_two_step_example(self):
+        self._run("basic_two_step.json")
+
+    def test_multi_cluster_mixed_specs_example(self):
+        """Each cluster carries its own spec mix; all three must place."""
+        r = self._run("multi_cluster_mixed_specs.json")
+        assert [rep.name for rep in r.reports] == [
+            "cluster-a", "cluster-b", "cluster-c",
+        ]
+        specs_per_step = []
+        for rep in r.reports:
+            specs_per_step.append(len(rep.new_assignments))
+        assert specs_per_step == [5, 6, 6]
 
 
 class TestRolloutEndpoint:

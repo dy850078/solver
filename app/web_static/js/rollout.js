@@ -18,6 +18,7 @@ import {
   showRackEmpty,
 } from "./rackdiagram.js";
 import { renderStats, renderResult } from "./summary.js";
+import { initForm, buildRequest, loadIntoForm } from "./rollout-form.js";
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -298,7 +299,20 @@ async function loadExample(name) {
   if (!name) return;
   try {
     const content = await getExample(name);
-    $("#json-editor").value = JSON.stringify(content, null, 2);
+    setJsonEditor(content);
+    // Fill the form when the request is expressible in it; otherwise keep
+    // the JSON as the source of truth and say so.
+    const ok = loadIntoForm(content);
+    $("#json-override").checked = !ok;
+    if (!ok) {
+      showFormError(
+        "This example uses features the form can't express (coarse " +
+        "requirements, existing VMs or explicit rules) — simulating from " +
+        "the JSON below instead.",
+      );
+    } else {
+      hideFormError();
+    }
     $("#json-error").classList.add("hidden");
   } catch (err) {
     $("#json-error").classList.remove("hidden");
@@ -306,30 +320,71 @@ async function loadExample(name) {
   }
 }
 
+function setJsonEditor(obj) {
+  $("#json-editor").value = JSON.stringify(obj, null, 2);
+}
+
+function showFormError(msg) {
+  const el = $("#form-error");
+  el.classList.remove("hidden");
+  el.textContent = msg;
+}
+
+function hideFormError() {
+  $("#form-error").classList.add("hidden");
+}
+
 function handleUpload(file) {
   const reader = new FileReader();
   reader.onload = () => {
     $("#json-editor").value = String(reader.result);
+    $("#json-override").checked = true;
     $("#json-error").classList.add("hidden");
+    try {
+      const parsed = JSON.parse(String(reader.result));
+      if (loadIntoForm(parsed)) $("#json-override").checked = false;
+    } catch { /* invalid JSON is reported when Simulate runs */ }
   };
   reader.readAsText(file);
 }
 
-function parseRequestText() {
-  const errEl = $("#json-error");
+/* The form is the source of truth unless the user ticked the override (or
+ * loaded a request the form cannot express). */
+function currentRequest() {
+  if ($("#json-override").checked) {
+    try {
+      const parsed = JSON.parse($("#json-editor").value);
+      $("#json-error").classList.add("hidden");
+      return parsed;
+    } catch (err) {
+      $("#json-error").classList.remove("hidden");
+      $("#json-error").textContent = `Invalid JSON: ${err.message}`;
+      return null;
+    }
+  }
   try {
-    const parsed = JSON.parse($("#json-editor").value);
-    errEl.classList.add("hidden");
-    return parsed;
+    const built = buildRequest();
+    hideFormError();
+    return built;
   } catch (err) {
-    errEl.classList.remove("hidden");
-    errEl.textContent = `Invalid JSON: ${err.message}`;
+    showFormError(err.message);
     return null;
   }
 }
 
+/* Keep the advanced JSON view in step with the form. */
+function syncJson() {
+  if ($("#json-override").checked) return;
+  try {
+    setJsonEditor(buildRequest());
+    hideFormError();
+  } catch (err) {
+    showFormError(err.message);
+  }
+}
+
 async function runSimulation() {
-  const body = parseRequestText();
+  const body = currentRequest();
   if (!body) return;
   const btn = $("#run-btn");
   btn.disabled = true;
@@ -363,11 +418,17 @@ function init() {
     if (state.result?.reports?.length) renderRack();
   });
 
+  initForm(syncJson);
+  syncJson();
+
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
   $("#upload-btn").addEventListener("click", () => $("#upload-input").click());
   $("#upload-input").addEventListener("change", (e) => {
     if (e.target.files?.[0]) handleUpload(e.target.files[0]);
     e.target.value = "";
+  });
+  $("#json-override").addEventListener("change", () => {
+    if (!$("#json-override").checked) syncJson();
   });
   $("#run-btn").addEventListener("click", runSimulation);
 
