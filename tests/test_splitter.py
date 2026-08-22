@@ -896,3 +896,29 @@ class TestSplitWithExclusiveBm:
         assert r.success, r.solver_status
         placed = {a.vm_id: a.baremetal_id for a in r.assignments}
         assert placed["f5-1"] != placed["w-1"]
+
+
+class TestSplitWithSynthetics:
+    """The tuple entry point hands back the splitter's synthetic VM objects."""
+
+    def test_synthetics_match_placed_assignments(self):
+        from app.split_solver import solve_split_placement_with_synthetics
+
+        bms = [make_bm(f"bm-{i}", cpu=64, mem=256_000, disk=2000) for i in range(2)]
+        spec = Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)
+        req = SplitPlacementRequest(
+            requirements=[make_req(cpu=32, mem=128_000, disk=800, vm_specs=[spec],
+                                   candidate_bms=[b.id for b in bms])],
+            baremetals=bms,
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        result, synthetics = solve_split_placement_with_synthetics(req)
+        assert result.success, result.solver_status
+        by_id = {vm.id: vm for vm in synthetics}
+        placed_ids = {a.vm_id for a in result.assignments}
+        # every placed assignment is attributable to a returned VM object,
+        # carrying its concrete demand (the spec)
+        assert placed_ids <= set(by_id)
+        for vid in placed_ids:
+            assert by_id[vid].demand == spec

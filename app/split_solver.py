@@ -13,6 +13,7 @@ import time
 from ortools.sat.python import cp_model
 
 from .models import (
+    VM,
     PlacementRequest,
     SplitPlacementRequest,
     SplitPlacementResult,
@@ -24,15 +25,29 @@ from .solver import VMPlacementSolver
 logger = logging.getLogger(__name__)
 
 
-def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResult:
-    """Public entry point: every return path (early NO_VMS bail included)
-    carries the config fingerprint (E0/S4)."""
-    result = _solve_split_placement(request)
+def solve_split_placement_with_synthetics(
+    request: SplitPlacementRequest,
+) -> tuple[SplitPlacementResult, list[VM]]:
+    """In-process entry point that also returns the splitter's synthetic VM
+    objects (with their concrete demand). The result alone cannot recover
+    them: SplitDecision has no per-VM attribution, and re-deriving specs
+    from synthetic ids depends on the splitter's private, order-sensitive
+    spec filtering. Rollout simulation needs the objects to carry placed
+    synthetics forward as pinned VMs. Every return path (early NO_VMS bail
+    included) carries the config fingerprint (E0/S4)."""
+    result, synthetic_vms = _solve_split_placement(request)
     result.config_fingerprint = config_fingerprint(request.config)
-    return result
+    return result, synthetic_vms
 
 
-def _solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResult:
+def solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResult:
+    """Public HTTP-facing entry point (wire contract unchanged)."""
+    return solve_split_placement_with_synthetics(request)[0]
+
+
+def _solve_split_placement(
+    request: SplitPlacementRequest,
+) -> tuple[SplitPlacementResult, list[VM]]:
     """
     1. Build a shared CpModel.
     2. ResourceSplitter adds split variables + coverage constraints → synthetic VMs.
@@ -61,7 +76,7 @@ def _solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResu
             solver_status="NO_VMS: no synthetic or explicit VMs to place",
             solve_time_seconds=time.time() - start,
             bm_total_count=len(request.baremetals),
-        )
+        ), []
 
     logger.info(
         "Split phase: %d requirements → %d synthetic VMs + %d explicit VMs",
@@ -104,4 +119,4 @@ def _solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResu
         bm_used_count=result.bm_used_count,
         bm_total_count=result.bm_total_count,
         diagnostics=result.diagnostics,
-    )
+    ), synthetic_vms
