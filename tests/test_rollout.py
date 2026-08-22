@@ -218,6 +218,9 @@ class TestRolloutDeadEnd:
             "BLOCKED: not simulated — step 's2' failed"
         )
         assert r.reports[2].new_assignments == []
+        # the failed step reports only ITS OWN VMs as unplaced — carried
+        # pins from step 1 were placed and must not reappear here
+        assert r.reports[1].unplaced_vms == ["b-0", "b-1"]
         # step 1's fold still reflected in the final snapshot
         assert used_of(r, "bm-1") == 4
 

@@ -108,6 +108,17 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
 
         explicit_of = {vm.id: vm for vm in step.vms}
         synth_of = {vm.id: vm for vm in synthetics}
+        carried_ids = {vm.id for vm in carried}
+
+        # A failed solve lists EVERY request VM as unplaced — but carried
+        # pins were placed by earlier steps; only this step's own VMs
+        # belong in the step report (synthetics namespaced like elsewhere).
+        unplaced = [
+            u if u in explicit_of else f"{step.name}/{u}"
+            for u in result.unplaced_vms
+            if u not in carried_ids
+        ]
+
         new_assignments: list[PlacementAssignment] = []
         for a in result.assignments:
             if a.pinned:
@@ -126,7 +137,7 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
             solver_status=result.solver_status,
             new_assignments=new_assignments,
             split_decisions=result.split_decisions,
-            unplaced_vms=result.unplaced_vms,
+            unplaced_vms=unplaced,
             bm_used_count=result.bm_used_count,
             bm_total_count=result.bm_total_count,
             solve_time_seconds=result.solve_time_seconds,

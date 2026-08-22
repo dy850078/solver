@@ -1078,3 +1078,99 @@ details.diagnostics pre {
   .rack-grid { grid-template-columns: 1fr; }
   #sidebar-resizer, #sidebar-collapse-tab { display: none; }
 }
+
+/* ==========================================================================
+   Rollout page: step timeline + final stock
+   ========================================================================== */
+
+.step-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 2px;
+}
+.step-cell {
+  flex: 0 0 auto;
+  min-width: 150px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-base);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.step-cell:hover { background: var(--bg-hover); }
+.step-cell--selected {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.step-cell__name {
+  display: block;
+  font-weight: 600;
+  font-size: var(--font-body, 13px);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.step-cell__sub {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.step-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.step-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.step-chip--ok { color: var(--success); }
+.step-chip--err { color: var(--error); }
+.step-chip--warn { color: var(--warning); }
+.step-chip--blocked { color: var(--text-subtle); }
+.step-arrow {
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--text-subtle);
+  user-select: none;
+}
+
+.stock-meter {
+  display: inline-block;
+  vertical-align: middle;
+  width: 90px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--meter-track);
+  overflow: hidden;
+}
+.stock-meter__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.stock-meter__fill--hot { background: var(--warning); }
+.stock-meter__fill--full { background: var(--error); }
+.stock-cell {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.stock-cell .stock-meter { margin-left: 8px; }

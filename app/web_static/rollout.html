@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>VM Placement Solver — Topology Visualizer</title>
+<title>VM Placement Solver — Rollout Simulation</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%233987e5%27/%3E%3Cpath d=%27M4 12V7M8 12V4M12 12V9%27 stroke=%27white%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
 <script>
 /* Apply the theme before first paint: saved choice, else system preference. */
@@ -32,24 +32,24 @@
     </div>
     <div>
       <span class="app-header__title">VM Placement Solver</span>
-      <span class="app-header__subtitle">Topology Visualizer</span>
+      <span class="app-header__subtitle">Rollout Simulation</span>
     </div>
   </div>
   <div class="app-header__actions">
+    <a class="app-header__link" href="./" title="Topology Visualizer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+      Topology
+    </a>
     <a class="app-header__link" href="report.html" title="Capacity Report">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
       </svg>
       Capacity Report
-    </a>
-    <a class="app-header__link" href="rollout.html" title="Rollout Simulation">
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M2 8h3.5M9 8h3.5"/>
-        <circle cx="7" cy="8" r="1.6"/>
-        <circle cx="14" cy="8" r="1.6"/>
-        <circle cx="2.2" cy="8" r="0.4" fill="currentColor"/>
-      </svg>
-      Rollout
     </a>
     <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -75,54 +75,15 @@
   <aside class="sidebar">
     <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Generate mock</h2>
-        <span class="card__hint">Build a request from high-level knobs</span>
-      </header>
-      <div class="card__body">
-
-        <div class="field">
-          <label class="field-label" for="mock-preset">Preset</label>
-          <select id="mock-preset" class="select">
-            <option value="">— Choose a mock preset —</option>
-          </select>
-        </div>
-
-        <div id="mock-form"></div>
-
-        <details class="mock-advanced">
-          <summary>Advanced overrides (JSON)</summary>
-          <textarea id="mock-advanced" class="editor editor--short" spellcheck="false"
-            placeholder='Deep-merged over the form, e.g. { "config_overrides": {...}, "phases": 2 }'></textarea>
-        </details>
-
-        <div id="mock-error" class="alert alert--error hidden"></div>
-
-        <div class="mock-actions">
-          <button id="generate-btn" type="button" class="btn btn--ghost">
-            <span class="btn__label">Generate</span>
-          </button>
-          <button id="generate-run-btn" type="button" class="btn btn--primary">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
-            </svg>
-            <span class="btn__label">Generate &amp; Run</span>
-          </button>
-        </div>
-        <div id="mock-status" class="alert hidden" style="margin-top:8px"></div>
-
-      </div>
-    </section>
-
-    <section class="card">
-      <header class="card__header">
         <h2 class="card__title">Input</h2>
+        <span class="card__hint">RolloutRequest: shared stock + ordered build steps</span>
       </header>
       <div class="card__body">
 
         <div class="field">
           <label class="field-label" for="example-select">Load example</label>
           <select id="example-select" class="select">
-            <option value="">— Choose a sample request —</option>
+            <option value="">— Choose a rollout request —</option>
           </select>
         </div>
 
@@ -139,22 +100,8 @@
         </div>
 
         <div class="field">
-          <span class="field-label">Endpoint</span>
-          <div class="segmented segmented--block" role="radiogroup" aria-label="Endpoint">
-            <label>
-              <input type="radio" name="endpoint" value="solve" checked>
-              <span>solve</span>
-            </label>
-            <label>
-              <input type="radio" name="endpoint" value="split-and-solve">
-              <span>split &amp; solve</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="field">
           <label class="field-label" for="json-editor">Request JSON</label>
-          <textarea id="json-editor" class="editor" spellcheck="false" placeholder="Paste PlacementRequest JSON here…"></textarea>
+          <textarea id="json-editor" class="editor" spellcheck="false" placeholder="Paste RolloutRequest JSON here…"></textarea>
           <div id="json-error" class="alert alert--error hidden"></div>
         </div>
 
@@ -162,7 +109,7 @@
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
           </svg>
-          <span class="btn__label">Run solver</span>
+          <span class="btn__label">Simulate rollout</span>
         </button>
 
       </div>
@@ -171,68 +118,62 @@
 
   <div class="content">
 
-    <div id="stats" class="stats hidden"></div>
+    <div id="overall-banner" class="alert hidden"></div>
 
-    <section class="card viz-card">
+    <section class="card">
       <header class="card__header">
-        <h2 class="card__title">Topology</h2>
+        <h2 class="card__title">Build timeline</h2>
+        <span class="card__hint">Each cell is one simulated step — click to inspect</span>
+      </header>
+      <div class="card__body">
+        <div id="step-strip" class="step-strip">
+          <div class="viz-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12h4M11 12h4M19 12h2"/>
+              <circle cx="9" cy="12" r="2"/>
+              <circle cx="17" cy="12" r="2"/>
+            </svg>
+            <span>Run a simulation to see the step timeline.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="step-stats" class="stats hidden"></div>
+
+    <section id="detail-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="detail-title">Step detail</h2>
+        <span class="card__hint">New placements made by this step</span>
+      </header>
+      <div class="card__body">
+        <div id="detail-content"></div>
+      </div>
+    </section>
+
+    <section id="rack-card" class="card viz-card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="rack-title">Stock after step</h2>
         <div class="card__header-right">
-          <label class="cap-toggle" title="Show per-BM capacity bars">
-            <input type="checkbox" id="show-capacity">
-            <span>Capacity</span>
-          </label>
           <label class="select-inline">
             <span class="select-inline__label">Group by</span>
-            <select id="group-by" class="select select--compact">
-              <option value="site">Site</option>
-              <option value="phase">Phase</option>
-              <option value="datacenter">DataCenter</option>
-              <option value="room">Room</option>
-              <option value="rack" selected>Rack</option>
-              <option value="ag">AG</option>
-            </select>
+            <select id="group-by" class="select select--compact"></select>
           </label>
         </div>
       </header>
-      <div id="filter-bar" class="filter-bar hidden">
-        <span class="filter-bar__label">Filter:</span>
-        <div id="filter-cluster"></div>
-        <div id="filter-role"></div>
-        <div id="filter-iptype"></div>
-        <button id="filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
-      </div>
       <div class="card__body card__body--scroll">
-        <div id="rack-container" class="rack-area">
-          <div class="viz-empty">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="4" y="3" width="16" height="18" rx="1.5"/>
-              <path d="M4 8h16M4 13h16M4 18h16"/>
-            </svg>
-            <span>Run the solver to see the rack diagram.</span>
-          </div>
-        </div>
+        <div id="rack-container" class="rack-area"></div>
         <div id="ag-legend" class="legend"></div>
       </div>
     </section>
 
-    <section id="matrix-card" class="card hidden">
+    <section id="stock-card" class="card hidden">
       <header class="card__header">
-        <h2 class="card__title">AG × Rack distribution</h2>
-        <span class="card__hint">Each cell = VMs assigned to that AG inside that rack</span>
+        <h2 class="card__title">Final stock ledger</h2>
+        <span class="card__hint">used_capacity after every successful fold — what the next real scheduling call would see</span>
       </header>
       <div class="card__body">
-        <div id="matrix-container"></div>
-      </div>
-    </section>
-
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Result</h2>
-      </header>
-      <div class="card__body">
-        <div id="summary-content">
-          <p class="muted" style="margin:0">No result yet. Submit a request to see assignments.</p>
-        </div>
+        <div id="stock-content"></div>
       </div>
     </section>
 
@@ -243,6 +184,6 @@
 <div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
 
 <script type="module" src="js/theme.js"></script>
-<script type="module" src="js/main.js"></script>
+<script type="module" src="js/rollout.js"></script>
 </body>
 </html>
