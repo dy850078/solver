@@ -131,6 +131,15 @@ class VMPlacementSolver:
             else:
                 seen_bm_ids.add(bm.id)
 
+        # Duplicate VM ids would silently alias assign vars (vm_map is
+        # last-win and self.assign is keyed by (vm_id, bm_id)) — reject.
+        seen_vm_ids: set[str] = set()
+        for vm in request.vms:
+            if vm.id in seen_vm_ids:
+                self._input_errors.append(f"duplicate VM '{vm.id}' in vms list")
+            else:
+                seen_vm_ids.add(vm.id)
+
         for vm in request.vms:
             if not vm.candidate_baremetals:
                 self._input_errors.append(

@@ -1687,3 +1687,13 @@ class TestPinnedExclusive:
         r = solve(vms, bms, exclusive_rules=[rule])
         assert r.success, r.solver_status
         assert amap(r)["f5-a"] == "bm-2"
+
+
+class TestDuplicateVmIds:
+
+    def test_duplicate_vm_id_is_input_error(self):
+        """Duplicates would silently alias assign vars (vm_map last-win)."""
+        r = solve([make_vm("vm-1"), make_vm("vm-1")], [make_bm("bm-1")])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "duplicate VM 'vm-1'" in r.solver_status
