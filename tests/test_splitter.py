@@ -766,3 +766,133 @@ class TestPinnedWithSplitter:
         assert [a.vm_id for a in pinned_a] == ["w-old"]
         assert pinned_a[0].baremetal_id == "bm-a0"
         assert "w-old" not in r.unplaced_vms
+
+
+# ===========================================================================
+# Rule passthrough on the split path (C5 / C6)
+# ===========================================================================
+
+class TestSplitWithFailover:
+    """failover_rules exists on SplitPlacementRequest but was never passed
+    into the PlacementRequest — C5 silently never ran on the split path."""
+
+    def test_failover_preflight_reaches_split_path(self):
+        """|P|=2 > |L|=1 must be INPUT_ERROR; with the rule dropped it
+        would falsely succeed."""
+        from app.models import FailoverRule, VM
+
+        bms = [make_bm(f"bm-{i}", room=f"room-{i % 2}") for i in range(4)]
+        vms = [
+            VM(id=f"m-{i}", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role=NodeRole.MASTER, cluster_id="A",
+               candidate_baremetals=[b.id for b in bms])
+            for i in range(2)
+        ] + [
+            VM(id="l-0", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role=NodeRole.LEARNER, cluster_id="A",
+               candidate_baremetals=[b.id for b in bms])
+        ]
+        f = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        req = SplitPlacementRequest(
+            requirements=[], vms=vms, baremetals=bms,
+            failover_rules=[f],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(req)
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "|primary|=2" in r.solver_status
+
+    def test_failover_constrains_split_placement(self):
+        """N-1 invariant must hold on the split path once C5 is wired."""
+        from app.models import FailoverRule, VM
+
+        bms = [make_bm(f"bm-{i}", room=f"room-{i % 2}", cpu=16) for i in range(4)]
+        vms = [
+            VM(id=f"m-{i}", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role=NodeRole.MASTER, cluster_id="A",
+               candidate_baremetals=[b.id for b in bms])
+            for i in range(2)
+        ] + [
+            VM(id=f"l-{i}", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role=NodeRole.LEARNER, cluster_id="A",
+               candidate_baremetals=[b.id for b in bms])
+            for i in range(2)
+        ]
+        f = FailoverRule(
+            rule_id="fo",
+            primary=GroupSelector(cluster_id="A", node_role=NodeRole.MASTER),
+            backup=GroupSelector(cluster_id="A", node_role=NodeRole.LEARNER),
+            fault_domain="room",
+        )
+        req = SplitPlacementRequest(
+            requirements=[], vms=vms, baremetals=bms,
+            failover_rules=[f],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(req)
+        assert r.success, r.solver_status
+        room_of = {bm.id: bm.topology.room for bm in bms}
+        per_room = {}
+        for a in r.assignments:
+            d = per_room.setdefault(room_of[a.baremetal_id], {"M": 0, "L": 0})
+            d["M" if a.vm_id.startswith("m-") else "L"] += 1
+        total_l = sum(d["L"] for d in per_room.values())
+        for room, d in per_room.items():
+            assert total_l - d["L"] >= d["M"], f"N-1 broken in {room}: {per_room}"
+
+
+class TestSplitWithExclusiveBm:
+    """SplitPlacementRequest had no exclusive_bm_rules field at all —
+    C6 was unreachable on the split path."""
+
+    def test_exclusive_enforced_on_split_path(self):
+        """1 BM, an exclusive appliance + a worker: C6 must refuse to
+        co-locate them; with the rule dropped it would falsely succeed."""
+        from app.models import ExclusiveBaremetalRule, VM
+
+        bms = [make_bm("bm-1")]
+        vms = [
+            VM(id="f5-1", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role="f5", cluster_id="shared", candidate_baremetals=["bm-1"]),
+            VM(id="w-1", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role="worker", candidate_baremetals=["bm-1"]),
+        ]
+        req = SplitPlacementRequest(
+            requirements=[], vms=vms, baremetals=bms,
+            exclusive_bm_rules=[ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-1"])],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(req)
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+
+    def test_exclusive_steers_outsider_on_split_path(self):
+        from app.models import ExclusiveBaremetalRule, VM
+
+        bms = [make_bm("bm-1"), make_bm("bm-2")]
+        vms = [
+            VM(id="f5-1", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role="f5", cluster_id="shared",
+               candidate_baremetals=["bm-1", "bm-2"]),
+            VM(id="w-1", demand=Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100),
+               node_role="worker", candidate_baremetals=["bm-1", "bm-2"]),
+        ]
+        req = SplitPlacementRequest(
+            requirements=[], vms=vms, baremetals=bms,
+            exclusive_bm_rules=[ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-1"])],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(req)
+        assert r.success, r.solver_status
+        placed = {a.vm_id: a.baremetal_id for a in r.assignments}
+        assert placed["f5-1"] != placed["w-1"]

@@ -73,6 +73,8 @@ def _solve_split_placement(request: SplitPlacementRequest) -> SplitPlacementResu
         baremetals=request.baremetals,
         anti_affinity_rules=request.anti_affinity_rules,
         max_per_bm_rules=request.max_per_bm_rules,
+        exclusive_bm_rules=request.exclusive_bm_rules,
+        failover_rules=request.failover_rules,
         config=request.config,
     )
 

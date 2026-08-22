@@ -589,6 +589,7 @@ class SplitPlacementRequest(BaseModel):
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
