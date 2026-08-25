@@ -367,6 +367,23 @@ def _solve_once(request: ProcurementRequest, *, use_caps: bool) -> _Pass:
     # lands on a virtual (buyable/committed) BM and an empty candidate list
     # surfaces as the solver's documented INPUT_ERROR. Demand that should
     # drive procurement belongs in `requirements`.
+    #
+    # Pinned VMs are rejected on this path: the planner's health gauges and
+    # roll-forward book placements against RAW in-stock used_capacity, so a
+    # pinned VM (whose demand is already inside used_capacity) would be
+    # double-counted. Placement/split-and-solve are the pinned-aware paths.
+    pinned = sorted(vm.id for vm in request.vms if vm.pinned_to is not None)
+    if pinned:
+        result = PlacementResult(
+            success=False,
+            solver_status=(
+                f"INPUT_ERROR: pinned VMs are not supported on the capacity "
+                f"planning path (got {pinned})"
+            ),
+            bm_total_count=len(all_bms),
+        )
+        return _Pass(result, buyable_type_of, committed_type_of,
+                     committed_entry_of, {}, virtual_bms, None, None, [])
     vms = list(request.vms)
 
     model = cp_model.CpModel()

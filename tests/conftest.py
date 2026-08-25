@@ -32,7 +32,7 @@ def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
 
 def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
             role=NodeRole.WORKER, cluster="cluster-1",
-            ip_type="routable", candidates=None):
+            ip_type="routable", candidates=None, pinned_to=None):
     return VM(
         id=vm_id,
         demand=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
@@ -40,6 +40,7 @@ def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
         ip_type=ip_type,
         cluster_id=cluster,
         candidate_baremetals=candidates or [],
+        pinned_to=pinned_to,
     )
 
 

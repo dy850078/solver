@@ -1,0 +1,76 @@
+{
+  "_description": "Rollout simulation: cluster-a (an exclusive F5 appliance + a master) builds first, cluster-b (two workers) second. The simulator carries cluster-a's placements forward as pinned VMs, so cluster-b's workers are barred from the appliance's machine and the stock ledger advances between steps.",
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-001.rack1",
+      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 },
+      "used_capacity": { "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1" }
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-002.rack2",
+      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 },
+      "used_capacity": { "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2" }
+    },
+    {
+      "id": "bm-03",
+      "hostname": "bare-003.rack3",
+      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 },
+      "used_capacity": { "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0 },
+      "topology": { "site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-3", "ag": "ag-3" }
+    }
+  ],
+  "steps": [
+    {
+      "name": "cluster-a",
+      "vms": [
+        {
+          "id": "f5-1",
+          "demand": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
+          "node_role": "f5",
+          "ip_type": "routable",
+          "cluster_id": "shared",
+          "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+        },
+        {
+          "id": "master-a1",
+          "demand": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 },
+          "node_role": "master",
+          "ip_type": "routable",
+          "cluster_id": "cluster-a",
+          "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+        }
+      ],
+      "exclusive_bm_rules": [
+        { "group_id": "f5-appliances", "vm_ids": ["f5-1"] }
+      ]
+    },
+    {
+      "name": "cluster-b",
+      "vms": [
+        {
+          "id": "worker-b1",
+          "demand": { "cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400 },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b",
+          "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+        },
+        {
+          "id": "worker-b2",
+          "demand": { "cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400 },
+          "node_role": "worker",
+          "ip_type": "routable",
+          "cluster_id": "cluster-b",
+          "candidate_baremetals": ["bm-01", "bm-02", "bm-03"]
+        }
+      ]
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 10
+  }
+}

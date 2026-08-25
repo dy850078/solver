@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM Placement Solver — Rollout Simulation</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%233987e5%27/%3E%3Cpath d=%27M4 12V7M8 12V4M12 12V9%27 stroke=%27white%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+<script>
+/* Apply the theme before first paint: saved choice, else system preference. */
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("solver-theme"); } catch (e) {}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">Rollout Simulation</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="./" title="Topology Visualizer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+      Topology
+    </a>
+    <a class="app-header__link" href="report.html" title="Capacity Report">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
+      </svg>
+      Capacity Report
+    </a>
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+    <button id="theme-toggle" class="app-header__link theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Light / Dark">
+      <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="8" cy="8" r="3.2"/>
+        <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/>
+      </svg>
+      <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Build plan</h2>
+        <span class="card__hint">Define specs once, reuse them per cluster</span>
+      </header>
+      <div class="card__body" id="builder">
+
+        <div class="field">
+          <label class="field-label" for="example-select">Start from an example</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose a rollout request —</option>
+          </select>
+        </div>
+
+        <p class="subhead">VM spec catalog</p>
+        <div id="spec-rows" class="form-rows"></div>
+        <button type="button" class="btn btn--add" data-act="spec-add">+ VM spec</button>
+
+        <p class="subhead">Build order — one step per cluster</p>
+        <div class="segmented segmented--block" role="radiogroup" aria-label="Build mode"
+             style="margin-bottom:8px">
+          <label title="Replay the steps in order, carrying placements forward (the rollout)">
+            <input type="radio" name="build-mode" value="sequential" checked>
+            <span>Sequential</span>
+          </label>
+          <label title="Place every cluster at once in a single joint solve (like the Topology page)">
+            <input type="radio" name="build-mode" value="parallel">
+            <span>All at once</span>
+          </label>
+        </div>
+        <div id="step-rows" class="form-rows"></div>
+        <button type="button" class="btn btn--add" data-act="step-add">+ Cluster step</button>
+
+        <p class="subhead">Baremetal fleet</p>
+        <div id="fleet-card" class="form-rows"></div>
+
+        <p class="subhead">Solver</p>
+        <div class="frow frow--2">
+          <label class="mini"><span class="mini__label">Max solve seconds</span>
+            <input id="cfg-max-solve" class="input" type="number" min="1" value="10"></label>
+          <label class="mini"><span class="mini__label">Spread AGs (target)</span>
+            <input id="cfg-spread-ag" class="input" type="number" min="1" value="3"
+              title="Advisory target: a warning is raised when a group spreads over fewer AGs"></label>
+        </div>
+        <div class="frow frow--2">
+          <label class="mini mini--check">
+            <input id="cfg-auto-aa" type="checkbox" checked>
+            <span class="mini__label">Auto anti-affinity</span>
+          </label>
+          <label class="mini mini--check"
+                 title="Per cluster: masters backed by learners of the same cluster, N-1 over AGs; skipped when a cluster lacks either role">
+            <input id="cfg-failover" type="checkbox">
+            <span class="mini__label">Failover (master→learner)</span>
+          </label>
+        </div>
+
+        <div id="builder-summary" class="builder-summary"></div>
+        <div id="form-error" class="alert alert--error hidden"></div>
+
+        <button id="run-btn" type="button" class="btn btn--primary btn--block">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="btn__label">Simulate rollout</span>
+        </button>
+
+        <details class="adv">
+          <summary>Advanced — request JSON</summary>
+          <p class="form-empty" style="margin-bottom:8px">
+            Generated from the form. Edit it (or upload a file) to use features the
+            form doesn't cover — coarse <code>requirements</code>, brownfield
+            <code>existing_vms</code>, explicit rules — then Simulate uses this JSON.
+          </p>
+          <div class="field">
+            <button id="upload-btn" type="button" class="btn btn--ghost btn--block">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 11V3M8 3l-3 3M8 3l3 3"/>
+                <path d="M2.5 11v1.5a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5V11"/>
+              </svg>
+              Upload JSON file…
+            </button>
+            <input id="upload-input" type="file" accept=".json" hidden>
+          </div>
+          <textarea id="json-editor" class="editor" spellcheck="false"
+            placeholder="RolloutRequest JSON…"></textarea>
+          <label class="mini mini--check" style="margin-top:6px">
+            <input id="json-override" type="checkbox">
+            <span class="mini__label">Use this JSON instead of the form</span>
+          </label>
+          <div id="json-error" class="alert alert--error hidden"></div>
+        </details>
+
+      </div>
+    </section>
+  </aside>
+
+  <div class="content">
+
+    <div id="sizing-banner" class="alert hidden"></div>
+    <div id="overall-banner" class="alert hidden"></div>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Build timeline</h2>
+        <span class="card__hint">Each cell is one simulated step — click to inspect</span>
+      </header>
+      <div class="card__body">
+        <div id="step-strip" class="step-strip">
+          <div class="viz-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12h4M11 12h4M19 12h2"/>
+              <circle cx="9" cy="12" r="2"/>
+              <circle cx="17" cy="12" r="2"/>
+            </svg>
+            <span>Run a simulation to see the step timeline.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="step-stats" class="stats hidden"></div>
+
+    <section id="rack-card" class="card viz-card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="rack-title">Stock after step</h2>
+        <div class="card__header-right">
+          <label class="cap-toggle" title="Show per-BM capacity bars (remaining / total)">
+            <input type="checkbox" id="show-capacity">
+            <span>Capacity</span>
+          </label>
+          <label class="select-inline">
+            <span class="select-inline__label">Group by</span>
+            <select id="group-by" class="select select--compact"></select>
+          </label>
+        </div>
+      </header>
+      <div id="filter-bar" class="filter-bar hidden">
+        <span class="filter-bar__label">Filter:</span>
+        <div id="filter-cluster"></div>
+        <div id="filter-role"></div>
+        <div id="filter-iptype"></div>
+        <button id="filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
+      </div>
+      <div class="card__body card__body--scroll">
+        <div id="rack-container" class="rack-area"></div>
+        <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="detail-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="detail-title">Step detail</h2>
+        <span class="card__hint">New placements made by this step</span>
+      </header>
+      <div class="card__body">
+        <div id="detail-content"></div>
+      </div>
+    </section>
+
+    <section id="stock-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Final stock ledger</h2>
+        <span class="card__hint">used_capacity after every successful fold — what the next real scheduling call would see</span>
+      </header>
+      <div class="card__body">
+        <div id="stock-content"></div>
+      </div>
+    </section>
+
+  </div>
+
+</main>
+
+<div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
+
+<script type="module" src="js/theme.js"></script>
+<script type="module" src="js/rollout.js"></script>
+</body>
+</html>

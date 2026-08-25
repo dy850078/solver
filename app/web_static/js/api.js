@@ -36,6 +36,24 @@ export async function splitAndSolve(body) {
   return jsonOrThrow(res);
 }
 
+export async function rollout(body) {
+  const res = await fetch("/v1/placement/rollout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function rolloutSize(body) {
+  const res = await fetch("/v1/placement/rollout/size", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
 export async function planCapacity(body) {
   const res = await fetch("/v1/capacity/plan", {
     method: "POST",

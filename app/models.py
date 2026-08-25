@@ -156,6 +156,21 @@ class VM(BaseModel):
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
       anti-affinity rules.
+
+    pinned_to: the BM this VM ALREADY lives on (add-node / rollout carry-in).
+      A statement of fact about the past, not a placement request — for
+      "user wants this NEW VM on exactly one BM" use a single-element
+      candidate_baremetals instead. Contract:
+      - the hosting BM must be present in request.baremetals (the scheduler
+        sends the schedulable group ∪ hosts of all pinned VMs; presence in
+        the request does NOT make a BM schedulable — per-VM candidates do);
+      - baremetal used_capacity stays inventory truth and INCLUDES pinned
+        consumption; the solver normalizes internally (subtracts pinned
+        demand once, re-adds it via the fixed assignment), so `demand` must
+        be the inventory-recorded value, not user re-input;
+      - pinned VMs are counted by C2–C6 (global vision) with grandfathered
+        caps on C3/C4/C5: existing violations are tolerated but frozen —
+        new VMs cannot make a bucket worse. C6 violations are INPUT_ERROR.
     """
     id: str
     hostname: str = ""
@@ -164,6 +179,7 @@ class VM(BaseModel):
     ip_type: str = ""
     cluster_id: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
+    pinned_to: str | None = None
 
     @field_validator("node_role")
     @classmethod
@@ -480,12 +496,21 @@ class PlacementRequest(BaseModel):
 
 
 class PlacementAssignment(BaseModel):
-    """One VM → one BM assignment, with the AG for easy verification."""
+    """
+    One VM → one BM assignment, with the AG for easy verification.
+
+    pinned=True marks a carried-in existing VM (VM.pinned_to) echoed back so
+    the result describes the full final state — verification, UI and
+    bm_used_count all need the complete population. The Go scheduler acts
+    only on pinned=False entries (marking is the scheduler's job on input,
+    filtering is the scheduler's job on output).
+    """
     vm_id: str
     vm_hostname: str = ""
     baremetal_id: str
     bm_hostname: str = ""
     ag: str = ""
+    pinned: bool = False
 
 
 class PlacementResult(BaseModel):
@@ -564,6 +589,7 @@ class SplitPlacementRequest(BaseModel):
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
@@ -593,6 +619,188 @@ class SplitPlacementResult(BaseModel):
 
     def to_assignment_map(self) -> dict[str, str]:
         return {a.vm_id: a.baremetal_id for a in self.assignments}
+
+
+# ---------------------------------------------------------------------------
+# Rollout simulation I/O: replay a user-specified build order step by step,
+# carrying each step's placements forward as pinned VMs (ADR-012/ADR-013)
+# ---------------------------------------------------------------------------
+
+class RolloutStep(BaseModel):
+    """
+    One build batch (typically one cluster) in a rollout simulation.
+
+    The step's payload is what a single scheduling call would carry —
+    exact VMs (production pure solve), coarse requirements (fuzzy future
+    demand for the splitter), or both — minus the shared `baremetals`,
+    which the simulator owns and rolls forward.
+
+    Rules accumulate: step k is solved under the UNION of rules from
+    steps 1..k, so e.g. an exclusive appliance placed in step 1 stays
+    protected from step 2's outsiders. vm_ids-form rules may reference
+    only explicit VM ids from this or earlier steps (or existing_vms);
+    synthetic VMs are addressable via selectors only.
+    """
+    name: str
+    vms: list[VM] = Field(default_factory=list)
+    requirements: list[ResourceRequirement] = Field(default_factory=list)
+    anti_affinity_rules: list[AntiAffinityRule] = Field(default_factory=list)
+    max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
+    failover_rules: list[FailoverRule] = Field(default_factory=list)
+
+
+class RolloutRequest(BaseModel):
+    """
+    Input for the rollout endpoint: shared stock + ordered build steps.
+
+    existing_vms: optional brownfield starting state — VMs already running
+    before step 1. Every entry must carry `pinned_to`, and (per the pinned
+    contract, ADR-012) its demand must already be included in the starting
+    `used_capacity` of its host. VMs placed BY the simulation are folded
+    forward automatically; existing_vms are never re-folded.
+    """
+    baremetals: list[Baremetal]
+    steps: list[RolloutStep]
+    existing_vms: list[VM] = Field(default_factory=list)
+    config: SolverConfig = Field(default_factory=SolverConfig)
+
+
+class RolloutStepReport(BaseModel):
+    """
+    Outcome of one simulated step.
+
+    new_assignments contains only THIS step's placements (pinned=False in
+    the underlying solve); carried-forward VMs from earlier steps are not
+    repeated. Synthetic (splitter-created) VM ids are namespaced
+    "{step_name}/{synthetic_id}" so ids stay unique across the whole
+    rollout; explicit VM ids are reported verbatim. A step after the first
+    failure is not solved at all — its solver_status is
+    "BLOCKED: not simulated — step '<failed>' failed".
+    """
+    name: str
+    success: bool
+    solver_status: str = ""
+    new_assignments: list[PlacementAssignment] = Field(default_factory=list)
+    split_decisions: list[SplitDecision] = Field(default_factory=list)
+    unplaced_vms: list[str] = Field(default_factory=list)
+    bm_used_count: int = 0
+    bm_total_count: int = 0
+    solve_time_seconds: float = 0.0
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class RolloutResult(BaseModel):
+    """
+    Output for the rollout endpoint.
+
+    success is True only when every step solved successfully. failed_step
+    names the first failing step (later steps are BLOCKED stubs).
+    final_baremetals is the stock snapshot after all successful folds —
+    used_capacity includes everything the simulation placed.
+
+    solver_status is "" on a simulated run (per-step statuses live in the
+    reports); request-level contract violations short-circuit the whole
+    simulation with "INPUT_ERROR: ..." here (full list under
+    diagnostics["input_errors"]), matching the other endpoints' convention.
+    """
+    success: bool
+    solver_status: str = ""
+    reports: list[RolloutStepReport] = Field(default_factory=list)
+    failed_step: str | None = None
+    final_baremetals: list[Baremetal] = Field(default_factory=list)
+    config_fingerprint: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Rollout sizing I/O: "how many machines does this build order need?"
+# (greenfield fab planning — ADR-014)
+# ---------------------------------------------------------------------------
+
+class FleetTemplate(BaseModel):
+    """
+    A homogeneous fleet described by topology counts instead of a machine list.
+
+    Racks are the leaf: one Topology per rack, every dimension above it
+    derived by modulo over the rack ordinal, so racks fan out across sites,
+    rooms and AGs simultaneously (the rule mockgen._build_racks uses, and
+    each rack belongs to exactly one AG). Machines then round-robin over
+    the racks, which keeps per-AG counts balanced to within one.
+
+    Counts left at 1 collapse that dimension to a single bucket — harmless
+    unless a rule spreads on it, in which case the whole fleet is one
+    bucket and the spread cannot be satisfied at any size.
+    """
+    total_capacity: Resources
+    sites: int = Field(default=1, ge=1)
+    phases: int = Field(default=1, ge=1)
+    datacenters: int = Field(default=1, ge=1)
+    rooms: int = Field(default=1, ge=1)
+    racks: int = Field(default=3, ge=1)
+    ags: int = Field(default=3, ge=1)
+    network: str = ""
+    pool: str = ""
+
+
+class RolloutSizingRequest(BaseModel):
+    """
+    Input for the sizing endpoint: the build order WITHOUT a fleet.
+
+    The answer is "the fewest machines of this model, in this topology,
+    that let every step place" — a sequential-build number, which is
+    necessarily ≥ what a single joint solve (mockgen's elastic sizing) or
+    the procurement planner would report, because earlier steps fragment
+    the fleet for later ones.
+
+    Steps must not pre-set candidate_baremetals (the fleet is generated
+    fresh for every probe, so any id would dangle), carry pinned_to, or
+    come with existing_vms — v1 is greenfield only. All three are
+    INPUT_ERROR rather than silent corrections.
+    """
+    fleet: FleetTemplate
+    steps: list[RolloutStep]
+    config: SolverConfig = Field(default_factory=SolverConfig)
+    max_baremetals: int = Field(default=200, ge=1)
+    max_probes: int = Field(default=12, ge=1)
+    deadline_seconds: float = Field(default=120.0, gt=0)
+
+
+class SizingProbe(BaseModel):
+    """One simulated fleet size and how it went."""
+    baremetals: int
+    success: bool
+    solver_status: str = ""
+    failed_step: str | None = None
+    elapsed_seconds: float = 0.0
+
+
+class RolloutSizingResult(BaseModel):
+    """
+    Output for the sizing endpoint.
+
+    required_baremetals is exact when success=True: the search scans
+    upward from a provable lower bound, so every smaller size was either
+    ruled out by the bound or actually tried and failed. (Feasibility is
+    NOT monotone in fleet size — see ADR-014 — which is precisely why the
+    scan is linear and every probe is recorded here.)
+
+    On budget exhaustion success=False with solver_status
+    "BUDGET_EXHAUSTED", and lower_bound/upper_bound bracket the answer.
+    """
+    success: bool
+    solver_status: str = ""
+    required_baremetals: int = 0
+    per_ag: dict[str, int] = Field(default_factory=dict)
+    analytic_floor: int = 0
+    floor_breakdown: dict[str, int] = Field(default_factory=dict)
+    lower_bound: int = 0
+    upper_bound: int | None = None
+    probes: list[SizingProbe] = Field(default_factory=list)
+    rollout: RolloutResult | None = None
+    baremetals: list[Baremetal] = Field(default_factory=list)
+    config_fingerprint: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

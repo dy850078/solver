@@ -80,3 +80,42 @@ class TestDiagnosticsSections:
         counts = r.diagnostics["counts"]
         assert counts["vms"] == 1
         assert counts["bms"] == 1
+
+
+class TestPinnedDiagnostics:
+    """The layer check mirrors pin fixing AND grandfathered caps — without
+    the mirror, a grandfathered skew would falsely attribute the failure
+    to anti_affinity instead of the real layer."""
+
+    def test_grandfathered_skew_does_not_blame_anti_affinity(self):
+        from app.models import ExclusiveBaremetalRule
+
+        # 3 pinned masters all in ag-0: cap ceil(3/3)=1 is violated by
+        # history, but grandfathered — the REAL infeasibility is the
+        # exclusive group: 2 members, only 1 reachable BM.
+        bms = [
+            make_bm("bm-a0", ag="ag-0",
+                    used_cpu=12, used_mem=48_000, used_disk=300),
+            make_bm("bm-a1", ag="ag-1"),
+            make_bm("bm-a2", ag="ag-2"),
+        ]
+        # Distinct roles keep the two appliances out of any shared auto
+        # anti-affinity group — the ONLY structural problem left is C6.
+        vms = [
+            make_vm(f"m-{i}", role=NodeRole.MASTER, ip_type="routable",
+                    pinned_to="bm-a0")
+            for i in range(3)
+        ] + [
+            make_vm("f5-a", role="f5", candidates=["bm-a1"]),
+            make_vm("f5-b", role="f5b", candidates=["bm-a1"]),
+        ]
+        rule = ExclusiveBaremetalRule(group_id="ex", vm_ids=["f5-a", "f5-b"])
+        r = solve(vms, bms, exclusive_rules=[rule],
+                  auto_generate_anti_affinity=True)
+
+        assert not r.success
+        cc = r.diagnostics["constraint_check"]
+        assert cc["anti_affinity"] == "OK", (
+            f"grandfathered skew must not fail the AA layer: {cc}"
+        )
+        assert cc["failed_at"] == "exclusive", cc

@@ -30,11 +30,17 @@ from .models import (
     ProcurementResult,
     ReconcileReport,
     ReconcileRequest,
+    RolloutRequest,
+    RolloutResult,
+    RolloutSizingRequest,
+    RolloutSizingResult,
     SplitPlacementRequest,
     SplitPlacementResult,
 )
 from .capacity_planner import solve_capacity_horizon, solve_capacity_plan
 from .reconcile import reconcile as run_reconcile
+from .rollout import solve_rollout
+from .rollout_sizing import size_rollout
 from .solver import VMPlacementSolver
 from .split_solver import solve_split_placement
 
@@ -152,6 +158,18 @@ def solve(request: PlacementRequest) -> PlacementResult:
 def split_and_solve(request: SplitPlacementRequest) -> SplitPlacementResult:
     """Split total resource requirements into VM specs and solve placement jointly."""
     return solve_split_placement(request)
+
+
+@api.post("/v1/placement/rollout", response_model=RolloutResult)
+def rollout(request: RolloutRequest) -> RolloutResult:
+    """Simulate a step-by-step build order, carrying placements forward as pins."""
+    return solve_rollout(request)
+
+
+@api.post("/v1/placement/rollout/size", response_model=RolloutSizingResult)
+def rollout_size(request: RolloutSizingRequest) -> RolloutSizingResult:
+    """Estimate the smallest fleet that lets a whole build order place."""
+    return size_rollout(request)
 
 
 @api.post("/v1/capacity/procure", response_model=ProcurementResult)

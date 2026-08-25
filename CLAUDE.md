@@ -17,6 +17,9 @@ app/
 ├── solver.py        # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
 ├── splitter.py      # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 ├── split_solver.py  # Orchestrates splitter + solver joint solve (split-and-solve endpoint)
+├── rollout.py       # Rollout simulation — replays a build order, folding placements forward as pins (ADR-013)
+├── rollout_sizing.py    # "How many BMs does this build order need?" — fleet template + ascending search (ADR-014)
+├── sizing_floors.py     # Analytic lower bounds on fleet size (strict under-estimates)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
 ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
 ├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
@@ -50,6 +53,14 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
     siblings; reified via `add_max_equality`, see ADR-011).
   - New constraints get the next label (C7, C8, …), a `CONSTRAINT Cn:` comment
     with the math in the builder method, and dedicated tests.
+- **Pinned VMs** (`VM.pinned_to`, ADR-012): existing VMs carried into a request
+  as facts — forced assignments that give C2–C6 global vision for add-node /
+  rollout. `used_capacity` stays inventory truth (includes pinned demand); the
+  solver normalizes internally. C3/C4/C5 caps are **grandfathered** per bucket
+  (`max(cap, pinned count)` — existing violations frozen, never worsened,
+  never INFEASIBLE); C6 violations by pinned layout → INPUT_ERROR. Results
+  echo pins with `PlacementAssignment.pinned=True`; the scheduler marks on
+  input and filters on output. Capacity-planner path rejects pins.
 - **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
   — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
   C6 has NO auto-generation — exclusivity is always an explicit rule.

@@ -71,6 +71,23 @@ class DiagnosticsBuilder:
     def _eligible(self, vm: VM) -> list[str]:
         return get_eligible_baremetals(vm, self.bm_map, self.request.baremetals)
 
+    def _pinned_in_bucket(self, vm_ids: list[str], bm_ids: list[str]) -> int:
+        """Pinned census — mirrors VMPlacementSolver._pinned_count_in_bucket
+        so grandfathered caps here match the main model exactly."""
+        bucket = set(bm_ids)
+        count = 0
+        for vm_id in vm_ids:
+            vm = self.vm_map.get(vm_id)
+            if vm is not None and vm.pinned_to in bucket:
+                count += 1
+        return count
+
+    def _rule_has_pinned(self, vm_ids: list[str]) -> bool:
+        return any(
+            (vm := self.vm_map.get(vid)) is not None and vm.pinned_to is not None
+            for vid in vm_ids
+        )
+
     def build(self) -> dict[str, object]:
         """Main entry point — collect all diagnostic sections."""
         diag: dict[str, object] = {}
@@ -156,12 +173,42 @@ class DiagnosticsBuilder:
                 per_dim_caps[dim] = cap
                 if cap < 1:
                     continue
-                min_buckets_needed = -(-N // cap)  # ceil division
-                if len(reachable_buckets) < min_buckets_needed:
+                if not self._rule_has_pinned(rule.vm_ids):
+                    min_buckets_needed = -(-N // cap)  # ceil division
+                    if len(reachable_buckets) < min_buckets_needed:
+                        failed_dims.append({
+                            "dimension": dim,
+                            "cap_per_bucket": cap,
+                            "min_buckets_needed": min_buckets_needed,
+                            "reachable_buckets": len(reachable_buckets),
+                        })
+                    continue
+                # Pinned-aware variant: under grandfathered caps a bucket
+                # at/over cap is frozen (0 seats for new members), the rest
+                # offer cap − pinned seats. Structural infeasibility means
+                # the FREE members outnumber the seats.
+                pinned_by_bucket: dict[str, int] = {}
+                for vm_id in rule.vm_ids:
+                    vm = self.vm_map.get(vm_id)
+                    if vm is not None and vm.pinned_to in self.bm_map:
+                        label = getattr(
+                            self.bm_map[vm.pinned_to].topology, dim
+                        )
+                        pinned_by_bucket[label] = (
+                            pinned_by_bucket.get(label, 0) + 1
+                        )
+                n_free = N - sum(pinned_by_bucket.values())
+                seats = sum(
+                    max(cap, pinned_by_bucket.get(b, 0))
+                    - pinned_by_bucket.get(b, 0)
+                    for b in reachable_buckets
+                )
+                if seats < n_free:
                     failed_dims.append({
                         "dimension": dim,
                         "cap_per_bucket": cap,
-                        "min_buckets_needed": min_buckets_needed,
+                        "free_vms": n_free,
+                        "seats_under_grandfathered_caps": seats,
                         "reachable_buckets": len(reachable_buckets),
                     })
 
@@ -191,6 +238,10 @@ class DiagnosticsBuilder:
         for f, primary_ids, backup_ids in self.failover_resolved:
             # Already validated in solver._resolve_failover_rules, but stay
             # defensive — if it slips through, it lands here as a flag.
+            # Rules with pinned members are exempt (mirrors the solver:
+            # grandfathered buckets make the counting argument non-binding).
+            if self._rule_has_pinned(primary_ids + backup_ids):
+                continue
             if f.policy == "n_minus_1" and len(primary_ids) > len(backup_ids):
                 infeasible.append({
                     "rule_id": f.rule_id,
@@ -215,14 +266,35 @@ class DiagnosticsBuilder:
             for vm_id in rule.vm_ids:
                 if vm_id in self.vm_map:
                     reachable_bms.update(self._eligible(self.vm_map[vm_id]))
-            capacity = rule.max_per_bm * len(reachable_bms)
-            if capacity < len(rule.vm_ids):
+            if not self._rule_has_pinned(rule.vm_ids):
+                capacity = rule.max_per_bm * len(reachable_bms)
+                if capacity < len(rule.vm_ids):
+                    infeasible.append({
+                        "group_id": rule.group_id,
+                        "vm_count": len(rule.vm_ids),
+                        "max_per_bm": rule.max_per_bm,
+                        "reachable_bms": len(reachable_bms),
+                        "slots_available": capacity,
+                    })
+                continue
+            # Pinned-aware variant: per BM the grandfathered cap leaves
+            # max(cap, pinned) − pinned seats for new members; free members
+            # must fit into the sum of those seats.
+            pinned_total = 0
+            seats = 0
+            for bm_id in reachable_bms:
+                p = self._pinned_in_bucket(rule.vm_ids, [bm_id])
+                pinned_total += p
+                seats += max(rule.max_per_bm, p) - p
+            n_free = len(rule.vm_ids) - pinned_total
+            if seats < n_free:
                 infeasible.append({
                     "group_id": rule.group_id,
                     "vm_count": len(rule.vm_ids),
                     "max_per_bm": rule.max_per_bm,
                     "reachable_bms": len(reachable_bms),
-                    "slots_available": capacity,
+                    "free_vms": n_free,
+                    "seats_under_grandfathered_caps": seats,
                 })
         return infeasible
 
@@ -273,7 +345,11 @@ class DiagnosticsBuilder:
                 if not vm_vars:
                     model.add(0 == 1)
                     return
-                if self.config.allow_partial_placement:
+                if vm.pinned_to is not None:
+                    # Mirror the main model: a pin is a fact, forced even
+                    # under allow_partial_placement.
+                    model.add(assign[(vm.id, vm.pinned_to)] == 1)
+                elif self.config.allow_partial_placement:
                     model.add(sum(vm_vars) <= 1)
                 else:
                     model.add(sum(vm_vars) == 1)
@@ -308,7 +384,12 @@ class DiagnosticsBuilder:
                         vbucket = [assign[(vid, bid)] for vid in rule.vm_ids
                                    for bid in bm_ids if (vid, bid) in assign]
                         if vbucket:
-                            model.add(sum(vbucket) <= cap)
+                            # Mirror grandfathered caps or the layer
+                            # attribution contradicts the main model.
+                            cap_b = max(
+                                cap, self._pinned_in_bucket(rule.vm_ids, bm_ids)
+                            )
+                            model.add(sum(vbucket) <= cap_b)
 
         def add_max_per_bm(model, assign):
             for rule in self.max_per_bm_rules:
@@ -316,7 +397,11 @@ class DiagnosticsBuilder:
                     vbm = [assign[(vid, bm_id)] for vid in rule.vm_ids
                            if (vid, bm_id) in assign]
                     if vbm:
-                        model.add(sum(vbm) <= rule.max_per_bm)
+                        cap = max(
+                            rule.max_per_bm,
+                            self._pinned_in_bucket(rule.vm_ids, [bm_id]),
+                        )
+                        model.add(sum(vbm) <= cap)
 
         def add_failover(model, assign):
             for f, primary_ids, backup_ids in self.failover_resolved:
@@ -327,7 +412,12 @@ class DiagnosticsBuilder:
                     bin_ = [assign[(vid, bid)] for vid in backup_ids
                             for bid in bm_ids if (vid, bid) in assign]
                     if pin or bin_:
-                        model.add(sum(pin) + sum(bin_) <= len(backup_ids))
+                        rhs = max(
+                            len(backup_ids),
+                            self._pinned_in_bucket(primary_ids, bm_ids)
+                            + self._pinned_in_bucket(backup_ids, bm_ids),
+                        )
+                        model.add(sum(pin) + sum(bin_) <= rhs)
 
         def add_exclusive(model, assign):
             for rule in self.exclusive_rules:

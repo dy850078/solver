@@ -182,6 +182,9 @@ async function populateExamples() {
         populateMockPreset({ ...item, file });
         continue;
       }
+      // rollout/ examples are RolloutRequests — they belong to rollout.html,
+      // not this page's solve/split-and-solve editor.
+      if (item.endpoint_hint === "rollout") continue;
       if (!groups.has(dir)) groups.set(dir, []);
       groups.get(dir).push({ ...item, file });
     }
