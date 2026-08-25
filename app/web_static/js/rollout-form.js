@@ -22,19 +22,36 @@
 import { escapeHtml as esc } from "./util.js";
 
 const GiB = 1024;
+// Advisory suggestion catalogs only — node_role and ip_type are OPEN
+// strings (ADR-010): type anything into the combo inputs below.
 const ROLES = ["worker", "master", "learner", "infra", "l4lb-storage", "bastion"];
 const IP_TYPES = ["routable", "non-routable"];
+
+const combo = (sec, i, f, v, label, listId) =>
+  `<label class="mini"><span class="mini__label">${esc(label)}</span>
+    <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}"
+      pattern="[\\w.-]+" ${bind(sec, i, f)}></label>`;
+
+export function renderDatalists(root) {
+  const dl = (id, values) =>
+    `<datalist id="${id}">${values.map((x) => `<option value="${esc(x)}">`).join("")}</datalist>`;
+  root.insertAdjacentHTML("beforeend",
+    dl("role-options", ROLES) + dl("ip-options", IP_TYPES));
+}
 
 export const state = {
   specs: [],   // {name, cpu, memGiB, disk, gpu}
   // groups: {role, ipType, specIdx, count, maxPerBm|null, shared, exclusive}
   steps: [],
-  // One homogeneous fleet described by topology counts, mirroring the mock
-  // generator's knobs. `count` empty/null = "size it for me" (the sizing
-  // endpoint decides); a number = fixed stock.
+  // The fleet: one shared topology skeleton + one or more machine models.
+  // A model's `roles` list makes it a dedicated pool (only those roles may
+  // land on its machines — mockgen's BmProfile.roles semantics); blank =
+  // usable by every role. `count` blank on a SINGLE model = sizing mode.
   fleet: {
-    count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0,
-    sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3,
+    topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
+    models: [
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+    ],
   },
   // buildMode "sequential" replays steps in order (the rollout);
   // "parallel" merges every cluster into ONE joint step — the same
@@ -45,6 +62,7 @@ export const state = {
 
 const blank = {
   spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: 0 }),
+  fmodel: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] }),
   group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3,
                   maxPerBm: null, shared: false, exclusive: false }),
 };
@@ -111,8 +129,8 @@ function groupRow(g, gi, si) {
     </label>`;
   return `<div class="group-row">
     <div class="frow frow--group-top">
-      ${pick(`groups.${si}`, gi, "role", g.role, "Role", ROLES.map((r) => ({ value: r, label: r })))}
-      ${pick(`groups.${si}`, gi, "ipType", g.ipType, "IP type", IP_TYPES.map((t) => ({ value: t, label: t })))}
+      ${combo(`groups.${si}`, gi, "role", g.role, "Role", "role-options")}
+      ${combo(`groups.${si}`, gi, "ipType", g.ipType, "IP type", "ip-options")}
       ${num(`groups.${si}`, gi, "count", g.count, "Count", 1)}
       ${act("group-dup", gi, "⧉", "Duplicate this group", "", extra)}
       ${act("group-del", gi, "✕", "Delete group", "row-act--del", extra)}
@@ -157,30 +175,49 @@ function stepCard(st, i) {
   </div>`;
 }
 
-const fleetNum = (f, v, label, ph = "") =>
+const topoNum = (f, v, label) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
     <input class="input" type="number" min="1" value="${v ?? ""}"
-      placeholder="${esc(ph)}" data-fleet="${f}"></label>`;
+      placeholder="1" data-fleet="${f}"></label>`;
+
+const modelNum = (i, f, v, label, ph = "") =>
+  `<label class="mini"><span class="mini__label">${esc(label)}</span>
+    <input class="input" type="number" min="1" value="${v ?? ""}"
+      placeholder="${esc(ph)}" ${bind("fmodels", i, f)}></label>`;
+
+function modelRow(m, i) {
+  return `<div class="frow-card">
+    <div class="frow frow--spec">
+      ${modelNum(i, "count", m.count, "How many", "auto")}
+      ${modelNum(i, "cpu", m.cpu, "vCore")}
+      ${modelNum(i, "memGiB", m.memGiB, "Mem GiB")}
+      ${modelNum(i, "disk", m.disk, "Disk GB")}
+      ${act("fmodel-del", i, "✕", "Delete model", "row-act--del")}
+    </div>
+    <label class="mini"><span class="mini__label">Roles (comma — blank = all roles)</span>
+      <input class="input" type="text" placeholder="all roles"
+        value="${esc((m.roles || []).join(", "))}"
+        title="Dedicated pool: only these node roles may land on this model's machines"
+        ${bind("fmodels", i, "roles")}></label>
+  </div>`;
+}
 
 function fleetCard() {
   const f = state.fleet;
-  return `<div class="frow-card">
-    <div class="frow frow--spec">
-      ${fleetNum("count", f.count, "How many", "auto")}
-      ${fleetNum("cpu", f.cpu, "vCore")}
-      ${fleetNum("memGiB", f.memGiB, "Mem GiB")}
-      ${fleetNum("disk", f.disk, "Disk GB")}
-      <span></span>
-    </div>
-    <div class="frow frow--topo">
-      ${TOPO_DIMS.map(([k, label]) => fleetNum(k, f[k], label, "1")).join("")}
-    </div>
-    <p class="form-empty">
-      Leave <b>How many</b> blank to estimate the minimum fleet this rollout
-      needs. Machines are spread round-robin over the racks, and racks over
-      the AGs.
-    </p>
-  </div>`;
+  return `
+    ${f.models.map(modelRow).join("")}
+    <button type="button" class="btn btn--add" data-act="fmodel-add">+ BM model</button>
+    <div class="frow-card" style="margin-top:8px">
+      <div class="frow frow--topo">
+        ${TOPO_DIMS.map(([k, label]) => topoNum(k, f.topo[k], label)).join("")}
+      </div>
+      <p class="form-empty">
+        One topology skeleton for the whole fleet: racks fan out over the
+        dimensions, and each model's machines round-robin over the racks
+        independently so every pool spans the AGs. With a single model,
+        leave <b>How many</b> blank to estimate the minimum fleet.
+      </p>
+    </div>`;
 }
 
 /* ── render ────────────────────────────────────────────────────────── */
@@ -210,15 +247,20 @@ function renderSummary() {
     (n, st) => n + st.groups.reduce((m, g) => m + Math.max(0, g.count), 0), 0);
   const fleet = isSizingMode()
     ? "fleet size: estimate"
-    : `${state.fleet.count} baremetal(s)`;
+    : `${fleetCount()} baremetal(s)`;
   const mode = state.cfg.buildMode === "parallel" ? " · all at once" : "";
   $("#builder-summary").textContent =
     `${state.steps.length} step(s) · ${vms} VM(s) · ${fleet}${mode}`;
 }
 
-/** Blank/zero machine count means "work out the minimum for me". */
+/** Blank/zero machine count on the SINGLE model means "work out the
+ * minimum for me". With several models the count is never optional —
+ * mixed-fleet sizing is the capacity planner's job, not the rollout
+ * sizer's (ADR-014 keeps its search single-model). */
 export function isSizingMode() {
-  const c = state.fleet.count;
+  const ms = state.fleet.models;
+  if (ms.length !== 1) return false;
+  const c = ms[0].count;
   return c === null || c === undefined || c === "" || Number(c) < 1;
 }
 
@@ -245,6 +287,14 @@ function applyFieldEdit(el) {
     if (f === "maxPerBm") g[f] = el.value.trim() === "" ? null : Number(value);
     else if (f === "specIdx" || f === "count") g[f] = Number(value);
     else g[f] = value;
+  } else if (sec === "fmodels") {
+    const m = state.fleet.models[i];
+    if (!m) return;
+    // Blank count = sizing request (single model only, checked at build time).
+    if (f === "count") m.count = el.value.trim() === "" ? null : Number(value);
+    else if (f === "roles") {
+      m.roles = el.value.split(",").map((s) => s.trim()).filter(Boolean);
+    } else m[f] = Number(value);
   } else {
     const row = state[sec]?.[i];
     if (!row) return;
@@ -297,6 +347,11 @@ function handleAction(action, i, stepIdx) {
       if (st) st.groups.splice(i + 1, 0, { ...st.groups[i] });
       break;
     }
+    case "fmodel-add": state.fleet.models.push(blank.fmodel()); break;
+    case "fmodel-del":
+      // Keep at least one model — a fleet with zero models is meaningless.
+      if (state.fleet.models.length > 1) state.fleet.models.splice(i, 1);
+      break;
     default: return false;
   }
   renderForm();
@@ -314,8 +369,10 @@ const resources = (cpu, memGiB, disk, gpu = 0) => ({
 
 const dim = (v) => Math.max(1, Math.round(Number(v) || 1));
 
+const modelCount = (m) => Math.max(0, Math.round(Number(m.count) || 0));
+
 export function fleetCount() {
-  return Math.max(0, Math.round(Number(state.fleet.count) || 0));
+  return state.fleet.models.reduce((n, m) => n + modelCount(m), 0);
 }
 
 /**
@@ -325,38 +382,58 @@ export function fleetCount() {
  * (app/mockgen.py `_build_racks`). Each rack belongs to exactly one AG.
  */
 export function buildRackTopologies() {
-  const f = state.fleet;
-  const racks = dim(f.racks);
+  const t = state.fleet.topo;
+  const racks = dim(t.racks);
   const out = [];
   for (let r = 0; r < racks; r++) {
     out.push({
-      site: `site-${(r % dim(f.sites)) + 1}`,
-      phase: `p${(r % dim(f.phases)) + 1}`,
-      datacenter: `dc-${(r % dim(f.datacenters)) + 1}`,
-      room: `room-${(r % dim(f.rooms)) + 1}`,
+      site: `site-${(r % dim(t.sites)) + 1}`,
+      phase: `p${(r % dim(t.phases)) + 1}`,
+      datacenter: `dc-${(r % dim(t.datacenters)) + 1}`,
+      room: `room-${(r % dim(t.rooms)) + 1}`,
       rack: `rack-${r + 1}`,
-      ag: `ag-${(r % dim(f.ags)) + 1}`,
+      ag: `ag-${(r % dim(t.ags)) + 1}`,
     });
   }
   return out;
 }
 
-/** `n` identical machines round-robined over the rack skeleton. */
-export function buildFleet(n) {
-  const f = state.fleet;
+/**
+ * The concrete fleet: each model's machines round-robin over the rack
+ * skeleton INDEPENDENTLY (their own 0-based counter, not a global one),
+ * so every pool spans the racks — and therefore the AGs — on its own.
+ * A global counter would let a later pool start mid-cycle and end up
+ * concentrated in a subset of AGs (mockgen's per-profile convention,
+ * app/mockgen.py profile loop). Returns [{bm, roles}] — `roles` is the
+ * model's pool restriction ([] = any role may land there).
+ */
+function buildFleetEntries() {
   const racks = buildRackTopologies();
   const out = [];
-  for (let i = 0; i < n; i++) {
-    const seq = String(i + 1).padStart(3, "0");
-    out.push({
-      id: `bm-${seq}`,
-      hostname: `bare-${seq}`,
-      total_capacity: resources(f.cpu, f.memGiB, f.disk, f.gpu),
-      used_capacity: resources(0, 0, 0),
-      topology: { ...racks[i % racks.length] },
-    });
+  let seq = 0;
+  for (const m of state.fleet.models) {
+    const n = modelCount(m);
+    const roles = (m.roles ?? []).map((r) => String(r).trim()).filter(Boolean);
+    for (let i = 0; i < n; i++) {
+      seq += 1;
+      const s = String(seq).padStart(3, "0");
+      out.push({
+        bm: {
+          id: `bm-${s}`,
+          hostname: `bare-${s}`,
+          total_capacity: resources(m.cpu, m.memGiB, m.disk, m.gpu),
+          used_capacity: resources(0, 0, 0),
+          topology: { ...racks[i % racks.length] },
+        },
+        roles,
+      });
+    }
   }
   return out;
+}
+
+export function buildFleet() {
+  return buildFleetEntries().map((e) => e.bm);
 }
 
 /**
@@ -370,17 +447,38 @@ export function buildRequest() {
   if (isSizingMode()) {
     throw new Error("Machine count is blank — use sizing mode.");
   }
-  return buildRequestWith(fleetCount(), { withCandidates: true });
+  const bad = state.fleet.models.findIndex((m) => modelCount(m) < 1);
+  if (bad >= 0) {
+    throw new Error(`BM model ${bad + 1} needs a machine count — ` +
+      "leaving it blank only estimates the fleet when there is a single model.");
+  }
+  return buildRequestWith({ withCandidates: true });
 }
 
-function buildRequestWith(n, { withCandidates }) {
+function buildRequestWith({ withCandidates }) {
   if (!state.specs.length) throw new Error("Add at least one VM spec.");
   if (!state.steps.length) throw new Error("Add at least one build step.");
-  const baremetals = buildFleet(n);
+  const entries = withCandidates ? buildFleetEntries() : [];
+  const baremetals = entries.map((e) => e.bm);
   if (withCandidates && !baremetals.length) {
     throw new Error("The fleet has zero baremetals.");
   }
   const allBmIds = baremetals.map((b) => b.id);
+  // Pool restriction: a VM of role r may land on machines of models whose
+  // roles list is empty (general purpose) or contains r. When no model
+  // declares a pool the whole fleet is eligible.
+  const pooled = entries.some((e) => e.roles.length);
+  const candidatesFor = (role) => {
+    if (!pooled) return allBmIds;
+    const ids = entries
+      .filter((e) => !e.roles.length || e.roles.includes(role))
+      .map((e) => e.bm.id);
+    if (!ids.length) {
+      throw new Error(`No BM model accepts role "${role}" — ` +
+        "add it to a model's Roles list or clear the pools.");
+    }
+    return ids;
+  };
 
   const names = new Set();
   // Selector-form rules are emitted once, in the FIRST step where a group
@@ -415,7 +513,7 @@ function buildRequestWith(n, { withCandidates }) {
           node_role: g.role,
           ip_type: g.ipType,
           cluster_id: cluster,
-          ...(withCandidates ? { candidate_baremetals: allBmIds } : {}),
+          ...(withCandidates ? { candidate_baremetals: candidatesFor(g.role) } : {}),
         });
       }
       const selector = { cluster_id: cluster, ip_type: g.ipType, node_role: g.role };
@@ -484,14 +582,24 @@ function buildRequestWith(n, { withCandidates }) {
  * fleet per probe and fills them in.
  */
 export function buildSizingRequest() {
-  const req = buildRequestWith(0, { withCandidates: false });
-  const f = state.fleet;
+  const ms = state.fleet.models;
+  if (ms.length !== 1) {
+    throw new Error("Sizing works on a single BM model — " +
+      "give every model a count, or delete the extra models.");
+  }
+  if ((ms[0].roles ?? []).some((r) => String(r).trim())) {
+    throw new Error("Sizing doesn't support role pools — " +
+      "clear the model's Roles list to estimate the fleet.");
+  }
+  const req = buildRequestWith({ withCandidates: false });
+  const m = ms[0];
+  const t = state.fleet.topo;
   return {
     fleet: {
-      total_capacity: resources(f.cpu, f.memGiB, f.disk, f.gpu),
-      sites: dim(f.sites), phases: dim(f.phases),
-      datacenters: dim(f.datacenters), rooms: dim(f.rooms),
-      racks: dim(f.racks), ags: dim(f.ags),
+      total_capacity: resources(m.cpu, m.memGiB, m.disk, m.gpu),
+      sites: dim(t.sites), phases: dim(t.phases),
+      datacenters: dim(t.datacenters), rooms: dim(t.rooms),
+      racks: dim(t.racks), ags: dim(t.ags),
     },
     steps: req.steps,
     config: req.config,
@@ -603,10 +711,12 @@ export function loadIntoForm(req) {
     }
   }
 
-  const fleet = deriveFleet(req.baremetals);
-  if (!fleet) return false;   // topology the generator cannot reproduce
+  const fleet = deriveFleet(
+    req.baremetals, req.steps.flatMap((s) => s.vms ?? []));
+  if (!fleet) return false;   // topology/pools the generator cannot reproduce
 
-  const saved = { specs: state.specs, steps: state.steps, cfg: state.cfg };
+  const saved = { specs: state.specs, steps: state.steps,
+                  fleet: state.fleet, cfg: state.cfg };
   state.specs = specs;
   state.steps = steps;
   state.fleet = fleet;
@@ -620,9 +730,10 @@ export function loadIntoForm(req) {
   };
   // The generator must round-trip the fleet exactly, or the form would
   // silently redefine the user's topology on the next Simulate.
-  if (!sameFleet(buildFleet(fleet.count), req.baremetals)) {
+  if (!sameFleet(buildFleet(), req.baremetals)) {
     state.specs = saved.specs;
     state.steps = saved.steps;
+    state.fleet = saved.fleet;
     state.cfg = saved.cfg;
     return false;
   }
@@ -633,24 +744,96 @@ export function loadIntoForm(req) {
 const topoKey = (t = {}) =>
   [t.site, t.phase, t.datacenter, t.room, t.rack, t.ag].join("|");
 
-/** Machine model + topology counts implied by an existing fleet. */
-function deriveFleet(bms) {
+/**
+ * Machine models + topology counts implied by an existing fleet, plus the
+ * pool restriction each model must carry to reproduce the request's
+ * candidate lists. Machines are grouped into models by capacity
+ * (first-appearance order); pools are inferred from the VMs' candidate
+ * sets:
+ *   - all VMs of one role must share ONE candidate set (the form emits
+ *     candidates per role, never per VM),
+ *   - each model must sit fully inside or fully outside every role's set
+ *     (a half-included model has no roles-list encoding),
+ *   - a model inside every role's set is general purpose (roles: []),
+ *     otherwise its roles list is exactly the roles that include it.
+ * A final replay check confirms the inferred pools regenerate every
+ * candidate set verbatim; anything that doesn't stays in JSON mode.
+ */
+function deriveFleet(bms, vms) {
   if (!bms.length) return null;
-  const cap = bms[0].total_capacity ?? {};
-  const key = specKey(cap);
-  // One homogeneous model only — mixed fleets stay in JSON mode.
-  if (bms.some((b) => specKey(b.total_capacity ?? {}) !== key)) return null;
   if (bms.some((b) => (b.used_capacity?.cpu_cores ?? 0) !== 0)) return null;
+
+  const models = [];
+  const byCap = new Map();
+  for (const b of bms) {
+    const key = specKey(b.total_capacity ?? {});
+    if (!byCap.has(key)) {
+      const c = b.total_capacity ?? {};
+      byCap.set(key, models.length);
+      models.push({
+        count: 0,
+        cpu: c.cpu_cores ?? 0,
+        memGiB: Math.round((c.memory_mib ?? 0) / GiB),
+        disk: c.storage_gb ?? 0,
+        gpu: c.gpu_count ?? 0,
+        roles: [],
+        ids: new Set(),
+      });
+    }
+    const m = models[byCap.get(key)];
+    m.count += 1;
+    m.ids.add(b.id);
+  }
+
+  // One candidate set per role. A VM without candidate_baremetals means
+  // "anywhere" (the server treats a missing list as unrestricted).
+  const allIds = new Set(bms.map((b) => b.id));
+  const setKey = (s) => [...s].sort().join("\n");
+  const byRole = new Map();
+  for (const vm of vms) {
+    const set = vm.candidate_baremetals?.length
+      ? new Set(vm.candidate_baremetals) : allIds;
+    const role = vm.node_role || "worker";
+    const prev = byRole.get(role);
+    if (prev) {
+      if (prev.key !== setKey(set)) return null;
+    } else {
+      byRole.set(role, { key: setKey(set), set });
+    }
+  }
+
+  for (const m of models) {
+    let inAll = true;
+    const accepts = [];
+    for (const [role, { set }] of byRole) {
+      let inside = 0;
+      for (const id of m.ids) if (set.has(id)) inside += 1;
+      if (inside !== 0 && inside !== m.ids.size) return null;
+      if (inside === m.ids.size) accepts.push(role);
+      else inAll = false;
+    }
+    m.roles = inAll ? [] : accepts;
+  }
+  // Replay: the inferred pools must reproduce each role's candidate set.
+  for (const [role, { set }] of byRole) {
+    const expected = new Set();
+    for (const m of models) {
+      if (!m.roles.length || m.roles.includes(role)) {
+        for (const id of m.ids) expected.add(id);
+      }
+    }
+    if (expected.size !== set.size) return null;
+    for (const id of expected) if (!set.has(id)) return null;
+  }
+
   const distinct = (f) => new Set(bms.map((b) => b.topology?.[f])).size;
   return {
-    count: bms.length,
-    cpu: cap.cpu_cores ?? 0,
-    memGiB: Math.round((cap.memory_mib ?? 0) / GiB),
-    disk: cap.storage_gb ?? 0,
-    gpu: cap.gpu_count ?? 0,
-    sites: distinct("site"), phases: distinct("phase"),
-    datacenters: distinct("datacenter"), rooms: distinct("room"),
-    racks: distinct("rack"), ags: distinct("ag"),
+    topo: {
+      sites: distinct("site"), phases: distinct("phase"),
+      datacenters: distinct("datacenter"), rooms: distinct("room"),
+      racks: distinct("rack"), ags: distinct("ag"),
+    },
+    models: models.map(({ ids, ...m }) => m),
   };
 }
 
@@ -692,16 +875,21 @@ function seed() {
   // Three AGs by default: with a single AG, spread constraints have no
   // buckets to work with and the demo would look artificially packed.
   state.fleet = {
-    count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0,
-    sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3,
+    topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
+    models: [
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+    ],
   };
 }
 
 export function initForm(onChange) {
   seed();
-  renderForm();
 
   const root = document.querySelector("#builder");
+  // Suggestion datalists live directly under #builder, outside the row
+  // containers renderForm() rewrites, so they survive re-renders.
+  renderDatalists(root);
+  renderForm();
   root.addEventListener("input", (e) => {
     const el = e.target;
     if (el.id === "cfg-auto-aa") { state.cfg.autoAA = el.checked; onChange?.(); return; }
@@ -710,10 +898,8 @@ export function initForm(onChange) {
     if (el.id === "cfg-failover") { state.cfg.failover = el.checked; onChange?.(); return; }
     if (el.name === "build-mode") { state.cfg.buildMode = el.value; renderSummary(); onChange?.(); return; }
     if (el.dataset?.fleet) {
-      // "How many" is deliberately allowed to be empty — that is the
-      // request to size the fleet instead of fixing it.
-      const raw = el.value.trim();
-      state.fleet[el.dataset.fleet] = raw === "" ? null : Number(raw);
+      // Topology knobs only; machine counts live on the model rows.
+      state.fleet.topo[el.dataset.fleet] = Number(el.value) || 1;
       renderSummary();
       onChange?.();
       return;
