@@ -7,6 +7,9 @@
 > **相關 ADR**: [ADR-012](decisions/ADR-012-pinned-vms-grandfathered-caps.md)(pinned VM)、
 > [ADR-013](decisions/ADR-013-rollout-simulation.md)(rollout 模擬)、
 > [ADR-014](decisions/ADR-014-rollout-sizing.md)(rollout sizing)
+> **分講版本**(對外說明用,各自獨立成篇):
+> [Add-Node / Pinned VM 說明](add-node-guide.md)、
+> [Rollout 模擬說明](rollout-simulation-guide.md)
 
 ---
 
