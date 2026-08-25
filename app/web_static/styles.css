@@ -1163,6 +1163,9 @@ details.diagnostics pre {
   overflow: hidden;
 }
 .stock-meter__fill {
+  /* Must be block: width % on an inline span is ignored, which left the
+     ledger meters as empty gray tracks. */
+  display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--accent);

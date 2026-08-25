@@ -18,13 +18,14 @@ import {
   showRackEmpty,
 } from "./rackdiagram.js";
 import { renderStats, renderResult } from "./summary.js";
+import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
+import { createMultiSelect } from "./multiselect.js";
 import {
   initForm, buildRequest, buildSizingRequest, isSizingMode, loadIntoForm,
 } from "./rollout-form.js";
 
 const $ = (sel) => document.querySelector(sel);
 
-const EMPTY_FILTER = { clusters: new Set(), roles: new Set(), ipTypes: new Set() };
 const SYNTH_RE = /^split-r(\d+)-s\d+-\d+$/;
 
 const state = {
@@ -34,7 +35,12 @@ const state = {
   selected: 0,     // index into result.reports
   groupBy: "rack",
   sizing: null,    // RolloutSizingResult when the fleet size was estimated
+  filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set() },
+  // Shared preference with the Topology page (same localStorage key).
+  showCapacity: localStorage.getItem("solver-show-capacity") === "1",
 };
+
+let clusterMs, roleMs, ipTypeMs;   // filter multi-selects (built in init)
 
 function statusKind(status) {
   if (!status) return "warn";
@@ -185,7 +191,12 @@ function markStripSelection() {
 
 function renderStepDetail() {
   const rep = state.result.reports[state.selected];
-  const adapter = { ...rep, assignments: rep.new_assignments };
+  // The active filter narrows the detail list the same way it narrows the
+  // rack diagram; renderStats/renderResult show "n of total — filtered".
+  const adapter = applyFilter(
+    { ...rep, assignments: rep.new_assignments },
+    state.vmIndex, state.filter,
+  );
   renderStats($("#step-stats"), adapter);
   $("#detail-card").classList.remove("hidden");
   $("#detail-title").textContent = `Step detail — ${rep.name}`;
@@ -235,9 +246,33 @@ function renderRack() {
     state.vmIndex.vms.map((v) => v.cluster_id).filter(Boolean),
   );
   rebuildColorScale(collectAgSet(pseudoRequest, pseudoResult), clusterSet);
-  const panels = buildPanels(pseudoRequest, pseudoResult, state.groupBy, EMPTY_FILTER);
-  renderRackDiagram(rackEl, panels, { showCapacity: false });
+  const panels = buildPanels(pseudoRequest, pseudoResult, state.groupBy, state.filter);
+  renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity });
   renderTopologyLegend($("#ag-legend"));
+}
+
+/* Filter options span the WHOLE simulation (every step's placements and
+ * failures), not just the selected step — switching steps must not reset
+ * or re-scope what the user can filter on. */
+function updateFilterControls() {
+  const bar = $("#filter-bar");
+  if (!state.result?.reports?.length) {
+    bar.classList.add("hidden");
+    return;
+  }
+  bar.classList.remove("hidden");
+  const pseudoResult = {
+    assignments: state.result.reports.flatMap((r) => r.new_assignments ?? []),
+    unplaced_vms: state.result.reports.flatMap((r) => r.unplaced_vms ?? []),
+  };
+  const opts = buildFilterOptions(state.vmIndex, pseudoResult);
+  const toOptions = (m) => [...m.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([value, count]) => ({ value, count }));
+  clusterMs.update({ options: toOptions(opts.clusters), selected: state.filter.clusters });
+  roleMs.update({ options: toOptions(opts.roles), selected: state.filter.roles });
+  ipTypeMs.update({ options: toOptions(opts.ipTypes), selected: state.filter.ipTypes });
+  $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
 const STOCK_FIELDS = [
@@ -298,9 +333,11 @@ function renderAll() {
     $("#detail-card").classList.add("hidden");
     $("#rack-card").classList.add("hidden");
     $("#stock-card").classList.add("hidden");
+    $("#filter-bar").classList.add("hidden");
     return;
   }
   renderStrip();
+  updateFilterControls();
   renderStock();
   // Default focus: the failing step if any, else the last step.
   const failedIdx = r.failed_step
@@ -408,6 +445,7 @@ function renderSizingOnly(sized) {
   $("#detail-card").classList.add("hidden");
   $("#rack-card").classList.add("hidden");
   $("#stock-card").classList.add("hidden");
+  $("#filter-bar").classList.add("hidden");
 }
 
 function currentRequest() {
@@ -502,6 +540,39 @@ function init() {
   groupSel.addEventListener("change", () => {
     state.groupBy = groupSel.value;
     if (state.result?.reports?.length) renderRack();
+  });
+
+  const capToggle = $("#show-capacity");
+  capToggle.checked = state.showCapacity;
+  capToggle.addEventListener("change", () => {
+    state.showCapacity = capToggle.checked;
+    localStorage.setItem("solver-show-capacity", capToggle.checked ? "1" : "0");
+    if (state.result?.reports?.length) renderRack();
+  });
+
+  const onFilterChange = (key) => (selected) => {
+    state.filter[key] = selected;
+    $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
+    if (state.result?.reports?.length) {
+      renderStepDetail();
+      renderRack();
+    }
+  };
+  clusterMs = createMultiSelect({ label: "Cluster", onChange: onFilterChange("clusters") });
+  roleMs    = createMultiSelect({ label: "Role",    onChange: onFilterChange("roles") });
+  ipTypeMs  = createMultiSelect({ label: "IP type", onChange: onFilterChange("ipTypes") });
+  $("#filter-cluster").appendChild(clusterMs.element);
+  $("#filter-role").appendChild(roleMs.element);
+  $("#filter-iptype").appendChild(ipTypeMs.element);
+  $("#filter-clear").addEventListener("click", () => {
+    state.filter.clusters.clear();
+    state.filter.roles.clear();
+    state.filter.ipTypes.clear();
+    updateFilterControls();
+    if (state.result?.reports?.length) {
+      renderStepDetail();
+      renderRack();
+    }
   });
 
   initForm(syncJson);

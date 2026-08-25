@@ -207,15 +207,19 @@ function renderVm(vm) {
 }
 
 function renderCapacity(rows) {
+  // The number reads REMAINING/total ("how much room is left?" — the
+  // question capacity planning actually asks); the bar still fills with
+  // consumption (pre-existing + this run) so fuller machines look fuller.
   return `<div class="bm__cap">${rows.map((r) => {
     const pctText = `${Math.round(r.pct * 100)}%`;
+    const free = Math.max(0, r.cap - r.pre - r.placed);
     const preW = Math.min(100, (r.pre / r.cap) * 100);
     const placedW = Math.min(100 - preW, (r.placed / r.cap) * 100);
     return `<div class="cap ${r.hot ? "cap--hot" : ""}"
-      title="${r.label}: used ${r.fmt(r.pre)} + placed ${r.fmt(r.placed)} of ${r.fmt(r.cap)} (${pctText}), free ${r.fmt(r.cap - r.pre - r.placed)}">
+      title="${r.label}: free ${r.fmt(free)} of ${r.fmt(r.cap)} — used ${r.fmt(r.pre)} + placed ${r.fmt(r.placed)} (${pctText} full)">
       <span class="cap__label">${r.label}</span>
       <span class="cap__bar"><i class="cap__pre" style="width:${preW.toFixed(1)}%"></i><i class="cap__placed" style="width:${placedW.toFixed(1)}%"></i></span>
-      <span class="cap__num">${r.fmt(r.pre + r.placed)}/${r.fmt(r.cap)}</span>
+      <span class="cap__num">${r.fmt(free)}/${r.fmt(r.cap)}</span>
     </div>`;
   }).join("")}</div>`;
 }

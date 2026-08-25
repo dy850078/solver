@@ -195,6 +195,33 @@
 
     <div id="step-stats" class="stats hidden"></div>
 
+    <section id="rack-card" class="card viz-card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="rack-title">Stock after step</h2>
+        <div class="card__header-right">
+          <label class="cap-toggle" title="Show per-BM capacity bars (remaining / total)">
+            <input type="checkbox" id="show-capacity">
+            <span>Capacity</span>
+          </label>
+          <label class="select-inline">
+            <span class="select-inline__label">Group by</span>
+            <select id="group-by" class="select select--compact"></select>
+          </label>
+        </div>
+      </header>
+      <div id="filter-bar" class="filter-bar hidden">
+        <span class="filter-bar__label">Filter:</span>
+        <div id="filter-cluster"></div>
+        <div id="filter-role"></div>
+        <div id="filter-iptype"></div>
+        <button id="filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
+      </div>
+      <div class="card__body card__body--scroll">
+        <div id="rack-container" class="rack-area"></div>
+        <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
     <section id="detail-card" class="card hidden">
       <header class="card__header">
         <h2 class="card__title" id="detail-title">Step detail</h2>
@@ -202,22 +229,6 @@
       </header>
       <div class="card__body">
         <div id="detail-content"></div>
-      </div>
-    </section>
-
-    <section id="rack-card" class="card viz-card hidden">
-      <header class="card__header">
-        <h2 class="card__title" id="rack-title">Stock after step</h2>
-        <div class="card__header-right">
-          <label class="select-inline">
-            <span class="select-inline__label">Group by</span>
-            <select id="group-by" class="select select--compact"></select>
-          </label>
-        </div>
-      </header>
-      <div class="card__body card__body--scroll">
-        <div id="rack-container" class="rack-area"></div>
-        <div id="ag-legend" class="legend"></div>
       </div>
     </section>
 
