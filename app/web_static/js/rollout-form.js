@@ -27,7 +27,8 @@ const IP_TYPES = ["routable", "non-routable"];
 
 export const state = {
   specs: [],   // {name, cpu, memGiB, disk, gpu}
-  steps: [],   // {name, groups:[{role, ipType, specIdx, count}]}
+  // groups: {role, ipType, specIdx, count, maxPerBm|null, shared, exclusive}
+  steps: [],
   // One homogeneous fleet described by topology counts, mirroring the mock
   // generator's knobs. `count` empty/null = "size it for me" (the sizing
   // endpoint decides); a number = fixed stock.
@@ -35,12 +36,17 @@ export const state = {
     count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0,
     sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3,
   },
-  cfg: { autoAA: true, maxSolve: 10 },
+  // buildMode "sequential" replays steps in order (the rollout);
+  // "parallel" merges every cluster into ONE joint step — the same
+  // semantics as the Topology page's single PlacementRequest.
+  cfg: { autoAA: true, maxSolve: 10, spreadAg: 3, failover: false,
+         buildMode: "sequential" },
 };
 
 const blank = {
   spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: 0 }),
-  group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3 }),
+  group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3,
+                  maxPerBm: null, shared: false, exclusive: false }),
 };
 
 /* Topology knobs, in hierarchy order. The four that default to 1 collapse
@@ -98,6 +104,11 @@ function groupRow(g, gi, si) {
   const extra = `data-step="${si}"`;
   // Two lines: the sidebar is too narrow to fit role + ip + spec + count
   // on one row without truncating every label into "ma..".
+  const checkbox = (f, v, label, title) =>
+    `<label class="mini mini--check" title="${esc(title)}">
+      <input type="checkbox" ${v ? "checked" : ""} ${bind(`groups.${si}`, gi, f)}>
+      <span class="mini__label">${esc(label)}</span>
+    </label>`;
   return `<div class="group-row">
     <div class="frow frow--group-top">
       ${pick(`groups.${si}`, gi, "role", g.role, "Role", ROLES.map((r) => ({ value: r, label: r })))}
@@ -106,8 +117,17 @@ function groupRow(g, gi, si) {
       ${act("group-dup", gi, "⧉", "Duplicate this group", "", extra)}
       ${act("group-del", gi, "✕", "Delete group", "row-act--del", extra)}
     </div>
-    ${pick(`groups.${si}`, gi, "specIdx", g.specIdx, "VM spec",
-      specOpts.length ? specOpts : [{ value: 0, label: "— add a spec first —" }])}
+    <div class="frow frow--group-bot">
+      ${pick(`groups.${si}`, gi, "specIdx", g.specIdx, "VM spec",
+        specOpts.length ? specOpts : [{ value: 0, label: "— add a spec first —" }])}
+      <label class="mini"><span class="mini__label">max/BM</span>
+        <input class="input" type="number" min="1" value="${g.maxPerBm ?? ""}"
+          placeholder="∞" ${bind(`groups.${si}`, gi, "maxPerBm")}></label>
+      ${checkbox("shared", g.shared, "sh",
+        "Shared eco-system group: cluster_id becomes \"shared\" so the group spans clusters")}
+      ${checkbox("exclusive", g.exclusive, "ex",
+        "Exclusive occupancy (C6): each member owns its machine outright")}
+    </div>
   </div>`;
 }
 
@@ -177,6 +197,11 @@ export function renderForm() {
   $("#fleet-card").innerHTML = fleetCard();
   $("#cfg-auto-aa").checked = state.cfg.autoAA;
   $("#cfg-max-solve").value = state.cfg.maxSolve;
+  $("#cfg-spread-ag").value = state.cfg.spreadAg;
+  $("#cfg-failover").checked = state.cfg.failover;
+  const mode = document.querySelector(
+    `input[name="build-mode"][value="${state.cfg.buildMode}"]`);
+  if (mode) mode.checked = true;
   renderSummary();
 }
 
@@ -186,8 +211,9 @@ function renderSummary() {
   const fleet = isSizingMode()
     ? "fleet size: estimate"
     : `${state.fleet.count} baremetal(s)`;
+  const mode = state.cfg.buildMode === "parallel" ? " · all at once" : "";
   $("#builder-summary").textContent =
-    `${state.steps.length} step(s) · ${vms} VM(s) · ${fleet}`;
+    `${state.steps.length} step(s) · ${vms} VM(s) · ${fleet}${mode}`;
 }
 
 /** Blank/zero machine count means "work out the minimum for me". */
@@ -216,7 +242,9 @@ function applyFieldEdit(el) {
     const si = Number(sec.slice("groups.".length));
     const g = state.steps[si]?.groups?.[i];
     if (!g) return;
-    g[f] = f === "specIdx" || f === "count" ? Number(value) : value;
+    if (f === "maxPerBm") g[f] = el.value.trim() === "" ? null : Number(value);
+    else if (f === "specIdx" || f === "count") g[f] = Number(value);
+    else g[f] = value;
   } else {
     const row = state[sec]?.[i];
     if (!row) return;
@@ -355,6 +383,10 @@ function buildRequestWith(n, { withCandidates }) {
   const allBmIds = baremetals.map((b) => b.id);
 
   const names = new Set();
+  // Selector-form rules are emitted once, in the FIRST step where a group
+  // key appears: rules accumulate across steps (union), so re-adding an
+  // identical shared-group rule every step would only duplicate constraints.
+  const emittedRules = new Set();
   const steps = state.steps.map((st, si) => {
     const name = (st.name || "").trim();
     if (!name) throw new Error(`Step ${si + 1} needs a name.`);
@@ -363,32 +395,84 @@ function buildRequestWith(n, { withCandidates }) {
     if (!st.groups.length) throw new Error(`Step "${name}" has no VM groups.`);
 
     const vms = [];
+    const maxPerBmRules = [];
+    const exclusiveRules = [];
+    const failoverRules = [];
+    const roleCounts = {};
     st.groups.forEach((g, gi) => {
       const spec = state.specs[g.specIdx];
       if (!spec) throw new Error(`Step "${name}" group ${gi + 1} has no valid spec.`);
+      // Shared eco-system groups live under cluster_id "shared" so the
+      // auto anti-affinity / C6 group spans clusters (ADR-011); ids keep
+      // the step prefix for rollout-wide uniqueness.
+      const cluster = g.shared ? "shared" : name;
+      if (!g.shared) roleCounts[g.role] = (roleCounts[g.role] ?? 0) + Math.max(0, g.count);
       const count = Math.max(0, Math.round(g.count));
       for (let k = 0; k < count; k++) {
         vms.push({
-          // Step name prefix keeps ids unique across the whole rollout.
           id: `${name}-${g.role}-${gi + 1}-${k + 1}`,
           demand: resources(spec.cpu, spec.memGiB, spec.disk, spec.gpu),
           node_role: g.role,
           ip_type: g.ipType,
-          cluster_id: name,
+          cluster_id: cluster,
           ...(withCandidates ? { candidate_baremetals: allBmIds } : {}),
         });
       }
+      const selector = { cluster_id: cluster, ip_type: g.ipType, node_role: g.role };
+      if (g.maxPerBm != null && g.maxPerBm >= 1) {
+        const id = `maxbm/${cluster}/${g.ipType}/${g.role}`;
+        if (!emittedRules.has(id)) {
+          emittedRules.add(id);
+          maxPerBmRules.push({ group_id: id, selector, max_per_bm: Math.round(g.maxPerBm) });
+        }
+      }
+      if (g.exclusive) {
+        const id = `excl/${cluster}/${g.ipType}/${g.role}`;
+        if (!emittedRules.has(id)) {
+          emittedRules.add(id);
+          exclusiveRules.push({ group_id: id, selector });
+        }
+      }
     });
+    // Failover follows the mockgen convention: per cluster, masters backed
+    // by learners of the SAME cluster, N-1 over AGs; skipped when either
+    // role is absent (the backup selector would resolve empty).
+    if (state.cfg.failover && (roleCounts.master ?? 0) >= 1 && (roleCounts.learner ?? 0) >= 1) {
+      failoverRules.push({
+        rule_id: `auto-failover-${name}`,
+        primary: { cluster_id: name, node_role: "master" },
+        backup: { cluster_id: name, node_role: "learner" },
+        fault_domain: "ag",
+      });
+    }
     if (!vms.length) throw new Error(`Step "${name}" produces zero VMs (counts are 0).`);
-    return { name, vms };
+    const step = { name, vms };
+    if (maxPerBmRules.length) step.max_per_bm_rules = maxPerBmRules;
+    if (exclusiveRules.length) step.exclusive_bm_rules = exclusiveRules;
+    if (failoverRules.length) step.failover_rules = failoverRules;
+    return step;
   });
+
+  // Parallel mode: one joint step — every cluster placed at once, exactly
+  // what the Topology page's single PlacementRequest does. Useful both on
+  // its own and as the baseline to compare the sequential run against.
+  const finalSteps = state.cfg.buildMode === "parallel"
+    ? [{
+        name: "all-clusters",
+        vms: steps.flatMap((st) => st.vms),
+        max_per_bm_rules: steps.flatMap((st) => st.max_per_bm_rules ?? []),
+        exclusive_bm_rules: steps.flatMap((st) => st.exclusive_bm_rules ?? []),
+        failover_rules: steps.flatMap((st) => st.failover_rules ?? []),
+      }]
+    : steps;
 
   return {
     baremetals,
-    steps,
+    steps: finalSteps,
     config: {
       auto_generate_anti_affinity: !!state.cfg.autoAA,
       max_solve_time_seconds: Math.max(1, Number(state.cfg.maxSolve) || 10),
+      target_spread: { ag: Math.max(1, Math.round(Number(state.cfg.spreadAg) || 3)) },
     },
   };
 }
@@ -426,11 +510,13 @@ const specKey = (r) => `${r.cpu_cores}|${r.memory_mib}|${r.storage_gb}|${r.gpu_c
  */
 export function loadIntoForm(req) {
   if (!req || !Array.isArray(req.steps) || !Array.isArray(req.baremetals)) return false;
+  // Only selector-form rules following the form's own naming conventions
+  // (maxbm/…, excl/…, auto-failover-…) can round-trip; anything else —
+  // vm_ids rules, explicit anti-affinity, coarse requirements, brownfield
+  // existing_vms — stays in JSON mode.
   const expressible = req.steps.every(
     (s) => (s.vms?.length ?? 0) > 0 &&
-           !(s.requirements?.length) &&
-           !(s.anti_affinity_rules?.length) && !(s.max_per_bm_rules?.length) &&
-           !(s.exclusive_bm_rules?.length) && !(s.failover_rules?.length),
+           !(s.requirements?.length) && !(s.anti_affinity_rules?.length),
   ) && !(req.existing_vms?.length);
   if (!expressible) return false;
 
@@ -452,11 +538,13 @@ export function loadIntoForm(req) {
   };
 
   const steps = req.steps.map((s) => {
-    // Collapse VMs into groups keyed by (role, ip_type, spec).
+    // Collapse VMs into groups keyed by (role, ip_type, spec, shared).
     const groups = new Map();
     for (const vm of s.vms) {
       const idx = specIdxOf(vm.demand ?? {});
-      const key = `${vm.node_role}|${vm.ip_type}|${idx}`;
+      const shared = vm.cluster_id === "shared";
+      if (!shared && vm.cluster_id && vm.cluster_id !== s.name) return null;
+      const key = `${vm.node_role}|${vm.ip_type}|${idx}|${shared}`;
       const g = groups.get(key);
       if (g) g.count += 1;
       else groups.set(key, {
@@ -464,10 +552,56 @@ export function loadIntoForm(req) {
         ipType: vm.ip_type || "routable",
         specIdx: idx,
         count: 1,
+        maxPerBm: null,
+        shared,
+        exclusive: false,
       });
     }
     return { name: s.name || "", groups: [...groups.values()] };
   });
+  if (steps.some((s) => s === null)) return false;
+
+  // Rules are emitted once, in the first step a group key appears, but a
+  // shared group may recur in later steps — so match every rule against
+  // ALL steps' groups. An unmatched or non-conventional rule → JSON mode.
+  const groupsFor = (sel, stepName) => {
+    const wantShared = sel?.cluster_id === "shared";
+    if (!wantShared && sel?.cluster_id !== stepName) return null;
+    const hits = [];
+    for (const st of steps) {
+      if (!wantShared && st.name !== stepName) continue;
+      for (const g of st.groups) {
+        if (g.shared === wantShared && g.role === sel?.node_role &&
+            g.ipType === sel?.ip_type) hits.push(g);
+      }
+    }
+    return hits.length ? hits : null;
+  };
+  let failover = false;
+  for (const st of req.steps) {
+    for (const rule of st.max_per_bm_rules ?? []) {
+      if (rule.vm_ids?.length || !rule.selector) return false;
+      const hits = groupsFor(rule.selector, st.name);
+      if (!hits || !(rule.max_per_bm >= 1)) return false;
+      hits.forEach((g) => { g.maxPerBm = rule.max_per_bm; });
+    }
+    for (const rule of st.exclusive_bm_rules ?? []) {
+      if (rule.vm_ids?.length || !rule.selector) return false;
+      const hits = groupsFor(rule.selector, st.name);
+      if (!hits) return false;
+      hits.forEach((g) => { g.exclusive = true; });
+    }
+    for (const rule of st.failover_rules ?? []) {
+      const conventional =
+        rule.primary?.cluster_id === st.name &&
+        rule.primary?.node_role === "master" &&
+        rule.backup?.cluster_id === st.name &&
+        rule.backup?.node_role === "learner" &&
+        rule.fault_domain === "ag";
+      if (!conventional) return false;
+      failover = true;
+    }
+  }
 
   const fleet = deriveFleet(req.baremetals);
   if (!fleet) return false;   // topology the generator cannot reproduce
@@ -479,6 +613,10 @@ export function loadIntoForm(req) {
   state.cfg = {
     autoAA: req.config?.auto_generate_anti_affinity ?? true,
     maxSolve: req.config?.max_solve_time_seconds ?? 10,
+    spreadAg: req.config?.target_spread?.ag ?? 3,
+    failover,
+    buildMode: (req.steps.length === 1 && req.steps[0].name === "all-clusters")
+      ? "parallel" : "sequential",
   };
   // The generator must round-trip the fleet exactly, or the form would
   // silently redefine the user's topology on the next Simulate.
@@ -568,6 +706,9 @@ export function initForm(onChange) {
     const el = e.target;
     if (el.id === "cfg-auto-aa") { state.cfg.autoAA = el.checked; onChange?.(); return; }
     if (el.id === "cfg-max-solve") { state.cfg.maxSolve = Number(el.value) || 10; onChange?.(); return; }
+    if (el.id === "cfg-spread-ag") { state.cfg.spreadAg = Number(el.value) || 3; onChange?.(); return; }
+    if (el.id === "cfg-failover") { state.cfg.failover = el.checked; onChange?.(); return; }
+    if (el.name === "build-mode") { state.cfg.buildMode = el.value; renderSummary(); onChange?.(); return; }
     if (el.dataset?.fleet) {
       // "How many" is deliberately allowed to be empty — that is the
       // request to size the fleet instead of fixing it.

@@ -1194,6 +1194,8 @@ details.diagnostics pre {
 #builder .frow { display: grid; gap: 8px; }
 #builder .frow--spec { grid-template-columns: 1.4fr 0.85fr 0.9fr 0.85fr auto; align-items: end; }
 #builder .frow--group-top { grid-template-columns: 1.25fr 1.25fr 0.75fr auto auto; align-items: end; }
+#builder .frow--group-bot { grid-template-columns: 1.6fr 0.7fr auto auto; align-items: end; }
+#builder .frow--group-bot .mini--check { padding-bottom: 8px; }
 #builder .group-row {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px; border-radius: var(--radius-sm);

@@ -92,6 +92,17 @@
         <button type="button" class="btn btn--add" data-act="spec-add">+ VM spec</button>
 
         <p class="subhead">Build order — one step per cluster</p>
+        <div class="segmented segmented--block" role="radiogroup" aria-label="Build mode"
+             style="margin-bottom:8px">
+          <label title="Replay the steps in order, carrying placements forward (the rollout)">
+            <input type="radio" name="build-mode" value="sequential" checked>
+            <span>Sequential</span>
+          </label>
+          <label title="Place every cluster at once in a single joint solve (like the Topology page)">
+            <input type="radio" name="build-mode" value="parallel">
+            <span>All at once</span>
+          </label>
+        </div>
         <div id="step-rows" class="form-rows"></div>
         <button type="button" class="btn btn--add" data-act="step-add">+ Cluster step</button>
 
@@ -102,9 +113,19 @@
         <div class="frow frow--2">
           <label class="mini"><span class="mini__label">Max solve seconds</span>
             <input id="cfg-max-solve" class="input" type="number" min="1" value="10"></label>
+          <label class="mini"><span class="mini__label">Spread AGs (target)</span>
+            <input id="cfg-spread-ag" class="input" type="number" min="1" value="3"
+              title="Advisory target: a warning is raised when a group spreads over fewer AGs"></label>
+        </div>
+        <div class="frow frow--2">
           <label class="mini mini--check">
             <input id="cfg-auto-aa" type="checkbox" checked>
             <span class="mini__label">Auto anti-affinity</span>
+          </label>
+          <label class="mini mini--check"
+                 title="Per cluster: masters backed by learners of the same cluster, N-1 over AGs; skipped when a cluster lacks either role">
+            <input id="cfg-failover" type="checkbox">
+            <span class="mini__label">Failover (master→learner)</span>
           </label>
         </div>
 
