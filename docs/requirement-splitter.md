@@ -123,12 +123,12 @@ solve_split_placement()
 {
   "requirements": [
     {
-      "total_resources": { "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0 },
+      "total_resources": { "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800 },
       "node_role": "worker",
       "cluster_id": "cluster-1",
       "ip_type": "routable",
       "vm_specs": [
-        { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0 }
+        { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }
       ],
       "min_total_vms": null,
       "max_total_vms": null
@@ -138,7 +138,7 @@ solve_split_placement()
   "baremetals": [
     {
       "id": "bm-0",
-      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0 },
+      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 },
       "topology": { "ag": "ag-0" }
     }
   ],
@@ -156,7 +156,7 @@ solve_split_placement()
 {
   "success": true,
   "split_decisions": [
-    { "node_role": "worker", "vm_spec": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0 }, "count": 4 }
+    { "node_role": "worker", "vm_spec": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }, "count": 4 }
   ],
   "assignments": [
     { "vm_id": "split-r0-s0-0", "baremetal_id": "bm-0", "ag": "ag-0" },
@@ -562,17 +562,17 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
   -H 'Content-Type: application/json' \
   -d '{
     "requirements": [{
-      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0},
+      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800},
       "node_role": "worker",
       "cluster_id": "cluster-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0}
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
       ]
     }],
     "baremetals": [
-      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0}, "topology": {"ag": "ag-0"}},
-      {"id": "bm-1", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0}, "topology": {"ag": "ag-1"}}
+      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-0"}},
+      {"id": "bm-1", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-1"}}
     ],
     "config": {"auto_generate_anti_affinity": false}
   }' | python -m json.tool
@@ -587,17 +587,17 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
   -H 'Content-Type: application/json' \
   -d '{
     "requirements": [{
-      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0},
+      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800},
       "node_role": "worker"
     }],
     "baremetals": [
-      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0}, "topology": {"ag": "ag-0"}}
+      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-0"}}
     ],
     "config": {
       "vm_specs": [
-        {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0},
-        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
-        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+        {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100},
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
       ],
       "w_resource_waste": 10,
       "auto_generate_anti_affinity": false

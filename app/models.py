@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from enum import Enum
 from functools import lru_cache
 from importlib import metadata
@@ -29,17 +30,58 @@ SPREAD_DIMENSIONS: frozenset[str] = frozenset({
 # Resources: the multi-dimensional "size" of a VM or baremetal
 # ---------------------------------------------------------------------------
 
+# Open-string format shared by node_role (ADR-010) and GPU model names: the
+# catalog of valid values is owned by the Go scheduler / inventory, not this
+# sidecar — only the FORMAT is hard-validated here.
+_ROLE_RE = re.compile(r"^[\w.-]+$")
+
+
 class Resources(BaseModel):
     """
     Represents resource capacity or demand.
 
     Shared by VM (demand) and Baremetal (capacity) so the solver
     can handle all resource dimensions uniformly.
+
+    gpu: per-model GPU accounting, e.g. {"h200": 5}. Each model name is an
+      independent resource dimension (a VM demanding h200 can only be served
+      by h200 capacity — models are never fungible). Names are normalized by
+      the scheduler; here only the format is validated (open string, same
+      philosophy as node_role / ADR-010). A missing key means 0. Zero-valued
+      entries are stripped on construction so {} is the canonical "no GPU"
+      and equality behaves; negative values are preserved — capacity
+      subtraction legitimately produces them and the solver's pinned-VM
+      normalization checks depend on seeing per-model negatives.
+
+    The scalar `gpu_count` field was REMOVED in favor of `gpu` (breaking
+    contract change): payloads still carrying it are rejected rather than
+    silently ignored, so an un-migrated scheduler cannot lose GPU demand.
     """
     cpu_cores: int = 0
     memory_mib: int = 0
     storage_gb: int = 0
-    gpu_count: int = 0
+    gpu: dict[str, int] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_gpu_count(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "gpu_count" in data:
+            raise ValueError(
+                "'gpu_count' was removed; send per-model counts instead: "
+                '"gpu": {"<model>": <count>}, e.g. "gpu": {"h200": 5}'
+            )
+        return data
+
+    @field_validator("gpu")
+    @classmethod
+    def _validate_gpu(cls, v: dict[str, int]) -> dict[str, int]:
+        for gpu_model in v:
+            if not gpu_model or not _ROLE_RE.match(gpu_model):
+                raise ValueError(
+                    f"gpu model {gpu_model!r} must be non-empty and match ^[\\w.-]+$"
+                )
+        # Canonicalize: strip zero entries (missing key ≡ 0), keep negatives.
+        return {m: c for m, c in v.items() if c != 0}
 
     def fits_in(self, capacity: Resources) -> bool:
         """Can this demand fit within the given capacity?"""
@@ -47,24 +89,61 @@ class Resources(BaseModel):
             self.cpu_cores <= capacity.cpu_cores
             and self.memory_mib <= capacity.memory_mib
             and self.storage_gb <= capacity.storage_gb
-            and self.gpu_count <= capacity.gpu_count
+            and all(c <= capacity.gpu.get(m, 0) for m, c in self.gpu.items())
         )
 
     def __add__(self, other: Resources) -> Resources:
+        gpu_models = self.gpu.keys() | other.gpu.keys()
         return Resources(
             cpu_cores=self.cpu_cores + other.cpu_cores,
             memory_mib=self.memory_mib + other.memory_mib,
             storage_gb=self.storage_gb + other.storage_gb,
-            gpu_count=self.gpu_count + other.gpu_count,
+            gpu={m: self.gpu.get(m, 0) + other.gpu.get(m, 0) for m in gpu_models},
         )
 
     def __sub__(self, other: Resources) -> Resources:
+        gpu_models = self.gpu.keys() | other.gpu.keys()
         return Resources(
             cpu_cores=self.cpu_cores - other.cpu_cores,
             memory_mib=self.memory_mib - other.memory_mib,
             storage_gb=self.storage_gb - other.storage_gb,
-            gpu_count=self.gpu_count - other.gpu_count,
+            gpu={m: self.gpu.get(m, 0) - other.gpu.get(m, 0) for m in gpu_models},
         )
+
+
+# ---------------------------------------------------------------------------
+# Resource dimensions: uniform iteration over scalar fields + per-GPU-model
+# ---------------------------------------------------------------------------
+#
+# A "dimension" is a string: one of SCALAR_RESOURCE_FIELDS, or "gpu:<model>"
+# for each GPU model in play. Every consumer that used to iterate the old
+# RESOURCE_FIELDS list with getattr() now resolves a dimension list from the
+# Resources objects it actually handles (resource_dims) and reads values
+# through res_get. The dim string doubles as the token used in error and
+# diagnostic messages (e.g. "gpu:h200").
+
+SCALAR_RESOURCE_FIELDS: tuple[str, ...] = ("cpu_cores", "memory_mib", "storage_gb")
+GPU_DIM_PREFIX = "gpu:"
+
+
+def res_get(r: Resources, dim: str) -> int:
+    """Read one resource dimension. "gpu:<model>" reads r.gpu (missing key = 0)."""
+    if dim.startswith(GPU_DIM_PREFIX):
+        return r.gpu.get(dim[len(GPU_DIM_PREFIX):], 0)
+    return getattr(r, dim)
+
+
+def resource_dims(resources: Iterable[Resources]) -> list[str]:
+    """Dimension list covering every input: the three scalars plus one
+    "gpu:<model>" per model appearing in ANY of them. The union must span
+    both capacities and demands or a demand for a model no BM carries would
+    silently read as 0 instead of constraining. sorted() keeps the order
+    deterministic (stable CP-SAT var names, reproducible solves)."""
+    gpu_models: set[str] = set()
+    for r in resources:
+        gpu_models.update(r.gpu)
+    return [*SCALAR_RESOURCE_FIELDS,
+            *(GPU_DIM_PREFIX + m for m in sorted(gpu_models))]
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +212,9 @@ class NodeRole(str, Enum):
 
 
 # Roles are open strings (see NodeRole docstring); only the FORMAT is hard-
-# validated — membership in the known catalog is advisory, checked by callers
+# validated (_ROLE_RE, defined above Resources and shared with GPU model
+# names) — membership in the known catalog is advisory, checked by callers
 # that care (e.g. mockgen surfaces unknown_roles in diagnostics).
-_ROLE_RE = re.compile(r"^[\w.-]+$")
-
-
 def validate_role(v: str) -> str:
     if not v or not _ROLE_RE.match(v):
         raise ValueError(f"node_role {v!r} must be non-empty and match ^[\\w.-]+$")

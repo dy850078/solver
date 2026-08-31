@@ -61,7 +61,9 @@
 ### Resources / Topology / Baremetal
 
 ```jsonc
-"Resources":  { "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0, "gpu_count": 0 }
+"Resources":  { "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0, "gpu": { "h200": 0 } }
+// gpu：逐型號記帳（型號名稱由 scheduler 正規化，格式 ^[\w.-]+$）。
+// 舊欄位 gpu_count 已移除；payload 帶 gpu_count → 422（不會被靜默忽略）。
 "Topology":   { "site": "", "phase": "", "datacenter": "", "room": "", "rack": "", "ag": "" }
 "Baremetal": {
   "id": "bm-1", "hostname": "",

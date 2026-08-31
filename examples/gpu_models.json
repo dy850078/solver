@@ -1,0 +1,87 @@
+{
+  "vms": [
+    {
+      "id": "vm-h200-1",
+      "hostname": "train-01",
+      "demand": {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu": {"h200": 2}},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "cluster_id": "ml-a",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    },
+    {
+      "id": "vm-h200-2",
+      "hostname": "train-02",
+      "demand": {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu": {"h200": 2}},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "cluster_id": "ml-a",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    },
+    {
+      "id": "vm-h200-3",
+      "hostname": "train-03",
+      "demand": {"cpu_cores": 8, "memory_mib": 65536, "storage_gb": 200, "gpu": {"h200": 2}},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "cluster_id": "ml-a",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    },
+    {
+      "id": "vm-a100-1",
+      "hostname": "infer-01",
+      "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100, "gpu": {"a100": 2}},
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "cluster_id": "ml-b",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    },
+    {
+      "id": "vm-cpu-1",
+      "hostname": "web-01",
+      "demand": {"cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "web",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    },
+    {
+      "id": "vm-cpu-2",
+      "hostname": "web-02",
+      "demand": {"cpu_cores": 16, "memory_mib": 65536, "storage_gb": 400},
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "web",
+      "candidate_baremetals": ["bm-h200-1", "bm-h200-2", "bm-mixed", "bm-cpu"]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-h200-1",
+      "hostname": "gpu-host-01",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 786432, "storage_gb": 8000, "gpu": {"h200": 4}},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-1", "rack": "rack-1", "ag": "ag1"}
+    },
+    {
+      "id": "bm-h200-2",
+      "hostname": "gpu-host-02",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 786432, "storage_gb": 8000, "gpu": {"h200": 4}},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-1", "rack": "rack-2", "ag": "ag2"}
+    },
+    {
+      "id": "bm-mixed",
+      "hostname": "gpu-host-03",
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 786432, "storage_gb": 8000, "gpu": {"h200": 4, "a100": 4}},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-2", "rack": "rack-3", "ag": "ag3"}
+    },
+    {
+      "id": "bm-cpu",
+      "hostname": "cpu-host-01",
+      "total_capacity": {"cpu_cores": 128, "memory_mib": 1048576, "storage_gb": 8000},
+      "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "room": "room-2", "rack": "rack-4", "ag": "ag1"}
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 10
+  }
+}

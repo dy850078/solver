@@ -68,9 +68,9 @@ Scheduler                                  Solver
    "config": {
 -    "slot_tshirt_sizes": [
 +    "vm_specs": [
-       {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100,  "gpu_count": 0},
-       {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200,  "gpu_count": 0},
-       {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400,  "gpu_count": 0}
+       {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100},
+       {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
+       {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
      ]
    }
  }
@@ -218,27 +218,27 @@ POST /v1/placement/split-and-solve
   "requirements": [
     {
       "total_resources": {
-        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300, "gpu_count": 0
+        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300
       },
       "node_role": "master",
       "cluster_id": "cluster-prod-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}
       ],
       "min_total_vms": 3,
       "max_total_vms": 3
     },
     {
       "total_resources": {
-        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600, "gpu_count": 0
+        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600
       },
       "node_role": "worker",
       "cluster_id": "cluster-prod-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
-        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
       ]
     }
   ],
@@ -246,22 +246,22 @@ POST /v1/placement/split-and-solve
     {
       "id": "bm-001",
       "hostname": "bare-001.rack1.site-a",
-      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
     },
     {
       "id": "bm-002",
       "hostname": "bare-002.rack2.site-a",
-      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
     },
     {
       "id": "bm-003",
       "hostname": "bare-003.rack3.site-a",
-      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"}
     }
   ],
@@ -289,13 +289,13 @@ POST /v1/placement/split-and-solve
   "requirements": [
     {
       "total_resources": {
-        "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0
+        "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800
       },
       "node_role": "worker",
       "cluster_id": "cluster-prod-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0}
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
       ]
     }
   ],
@@ -303,15 +303,15 @@ POST /v1/placement/split-and-solve
     {
       "id": "bm-001",
       "hostname": "bare-001.rack1.site-a",
-      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 24, "memory_mib": 96000,  "storage_gb": 600,  "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 24, "memory_mib": 96000,  "storage_gb": 600},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
     },
     {
       "id": "bm-002",
       "hostname": "bare-002.rack2.site-a",
-      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
     }
   ],
@@ -341,13 +341,13 @@ POST /v1/placement/split-and-solve
   "requirements": [
     {
       "total_resources": {
-        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300, "gpu_count": 0
+        "cpu_cores": 12, "memory_mib": 48000, "storage_gb": 300
       },
       "node_role": "master",
       "cluster_id": "cluster-prod-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}
+        {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}
       ],
       "min_total_vms": 3,
       "max_total_vms": 3,
@@ -355,14 +355,14 @@ POST /v1/placement/split-and-solve
     },
     {
       "total_resources": {
-        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600, "gpu_count": 0
+        "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 1600
       },
       "node_role": "worker",
       "cluster_id": "cluster-prod-1",
       "ip_type": "routable",
       "vm_specs": [
-        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
-        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0}
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
       ],
       "candidate_baremetals": ["bm-wk-01", "bm-wk-02"]
     }
@@ -370,32 +370,32 @@ POST /v1/placement/split-and-solve
   "baremetals": [
     {
       "id": "bm-cp-01",
-      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-1", "ag": "ag-1"}
     },
     {
       "id": "bm-cp-02",
-      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-1", "rack": "rack-2", "ag": "ag-2"}
     },
     {
       "id": "bm-cp-03",
-      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 1000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-3", "ag": "ag-3"}
     },
     {
       "id": "bm-wk-01",
-      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-4", "ag": "ag-1"}
     },
     {
       "id": "bm-wk-02",
-      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 0},
-      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0,    "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000},
+      "used_capacity":  {"cpu_cores": 0,  "memory_mib": 0,      "storage_gb": 0},
       "topology": {"site": "site-a", "phase": "p1", "datacenter": "dc-2", "rack": "rack-5", "ag": "ag-2"}
     }
   ],
@@ -424,12 +424,12 @@ POST /v1/placement/split-and-solve
   "split_decisions": [
     {
       "node_role": "master",
-      "vm_spec": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0},
+      "vm_spec": {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
       "count": 3
     },
     {
       "node_role": "worker",
-      "vm_spec": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0},
+      "vm_spec": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
       "count": 8
     }
   ],

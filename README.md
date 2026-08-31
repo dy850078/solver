@@ -153,14 +153,14 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
   -H "Content-Type: application/json" \
   -d '{
     "requirements": [{
-      "total_resources": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400, "gpu_count": 0},
+      "total_resources": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
       "node_role": "worker",
       "cluster_id": "cluster-1",
-      "vm_specs": [{"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0}]
+      "vm_specs": [{"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}]
     }],
     "baremetals": [{
       "id": "bm-1",
-      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0},
+      "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000},
       "topology": {"ag": "ag-1"}
     }],
     "config": {"auto_generate_anti_affinity": false}

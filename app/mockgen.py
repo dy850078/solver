@@ -36,9 +36,11 @@ from .models import (
     SolverConfig,
     Topology,
     VM,
+    res_get,
+    resource_dims,
     validate_role,
 )
-from .solver import RESOURCE_FIELDS, VMPlacementSolver
+from .solver import VMPlacementSolver
 
 router = APIRouter(prefix="/api/mock", tags=["mock"])
 
@@ -431,8 +433,7 @@ class _Generator:
 
     @staticmethod
     def _covers(have: Resources, need: Resources) -> bool:
-        return (have.cpu_cores >= need.cpu_cores and have.memory_mib >= need.memory_mib
-                and have.storage_gb >= need.storage_gb and have.gpu_count >= need.gpu_count)
+        return need.fits_in(have)
 
     @staticmethod
     def _required(demand: Resources, tightness: float) -> Resources:
@@ -440,7 +441,7 @@ class _Generator:
             cpu_cores=math.ceil(demand.cpu_cores / tightness),
             memory_mib=math.ceil(demand.memory_mib / tightness),
             storage_gb=math.ceil(demand.storage_gb / tightness),
-            gpu_count=math.ceil(demand.gpu_count / tightness),
+            gpu={m: math.ceil(c / tightness) for m, c in demand.gpu.items()},
         )
 
     def _headcount_bounds(self) -> dict[str, int]:
@@ -543,11 +544,11 @@ class _Generator:
             # copies — the loop below would spin until the guard and hand back
             # a runaway fleet. Name the exact fields instead.
             deficient = [
-                f for f in RESOURCE_FIELDS
-                if getattr(p.capacity, f) == 0 and getattr(need, f) > getattr(have, f)
+                d for d in resource_dims([p.capacity, need, have])
+                if res_get(p.capacity, d) == 0 and res_get(need, d) > res_get(have, d)
             ]
             if deficient:
-                needs = {f: getattr(need, f) - getattr(have, f) for f in deficient}
+                needs = {d: res_get(need, d) - res_get(have, d) for d in deficient}
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -580,16 +581,16 @@ class _Generator:
             # items each could host (cap // smallest big item), so this floor
             # errs low — escalation covers any remainder, never overshoot.
             pack_gap = 0
-            for f in RESOURCE_FIELDS:
-                cap_f = getattr(p.capacity, f)
-                if cap_f <= 0:
+            for d in resource_dims([p.capacity, *(vm.demand for vm in vms)]):
+                cap_d = res_get(p.capacity, d)
+                if cap_d <= 0:
                     continue
-                bigs = [getattr(vm.demand, f) for vm in vms
+                bigs = [res_get(vm.demand, d) for vm in vms
                         if (not served or vm.node_role in served)
-                        and getattr(vm.demand, f) * 2 > cap_f]
+                        and res_get(vm.demand, d) * 2 > cap_d]
                 if not bigs:
                     continue
-                slots = sum(getattr(cap_e, f) // min(bigs)
+                slots = sum(res_get(cap_e, d) // min(bigs)
                             for cap_e, roles in specs if serves(roles, served))
                 pack_gap = max(pack_gap, len(bigs) - slots)
             # Solo floor: a pool of exclusive roles needs one BM per VM —

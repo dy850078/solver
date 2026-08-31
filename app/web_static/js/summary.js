@@ -92,7 +92,8 @@ function splitDecisionsTable(decisions) {
   if (!decisions || decisions.length === 0) return "";
   const rows = decisions.map((d) => {
     const r = d.vm_spec ?? {};
-    const spec = `${r.cpu_cores ?? 0} vCPU · ${r.memory_mib ?? 0} MiB · ${r.storage_gb ?? 0} GB · ${r.gpu_count ?? 0} GPU`;
+    const gpu = Object.entries(r.gpu ?? {}).map(([m, c]) => `${c}×${m}`).join(" + ") || "0";
+    const spec = `${r.cpu_cores ?? 0} vCPU · ${r.memory_mib ?? 0} MiB · ${r.storage_gb ?? 0} GB · ${gpu} GPU`;
     return `<tr><td>${escapeHtml(d.node_role)}</td><td class="cell-mono">${escapeHtml(spec)}</td><td>${d.count}</td></tr>`;
   }).join("");
   return `
