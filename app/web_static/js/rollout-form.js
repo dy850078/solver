@@ -19,7 +19,7 @@
  * JSON escape hatch on the page.
  */
 
-import { escapeHtml as esc } from "./util.js";
+import { escapeHtml as esc, formatGpu, gpuSummary } from "./util.js";
 
 const GiB = 1024;
 // Advisory suggestion catalogs only — node_role and ip_type are OPEN
@@ -40,7 +40,7 @@ export function renderDatalists(root) {
 }
 
 export const state = {
-  specs: [],   // {name, cpu, memGiB, disk, gpu}
+  specs: [],   // {name, cpu, memGiB, disk, gpu: {model: count}}
   // groups: {role, ipType, specIdx, count, maxPerBm|null, shared, exclusive}
   steps: [],
   // The fleet: one shared topology skeleton + one or more machine models.
@@ -50,7 +50,7 @@ export const state = {
   fleet: {
     topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
     models: [
-      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] },
     ],
   },
   // buildMode "sequential" replays steps in order (the rollout);
@@ -61,8 +61,8 @@ export const state = {
 };
 
 const blank = {
-  spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: 0 }),
-  fmodel: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] }),
+  spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: {} }),
+  fmodel: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] }),
   group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3,
                   maxPerBm: null, shared: false, exclusive: false }),
 };
@@ -76,7 +76,7 @@ const TOPO_DIMS = [
 ];
 
 export const specLabel = (s) =>
-  `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb${s.gpu ? `/${s.gpu}gpu` : ""}`;
+  `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb${Object.keys(s.gpu || {}).length ? `/${gpuSummary(s.gpu)}` : ""}`;
 
 /* ── field helpers ─────────────────────────────────────────────────── */
 
@@ -360,11 +360,14 @@ function handleAction(action, i, stepIdx) {
 
 /* ── request assembly ──────────────────────────────────────────────── */
 
-const resources = (cpu, memGiB, disk, gpu = 0) => ({
+const resources = (cpu, memGiB, disk, gpu = {}) => ({
   cpu_cores: Math.max(0, Math.round(cpu)),
   memory_mib: Math.max(0, Math.round(memGiB * GiB)),
   storage_gb: Math.max(0, Math.round(disk)),
-  gpu_count: Math.max(0, Math.round(gpu)),
+  gpu: Object.fromEntries(
+    Object.entries(gpu || {}).filter(([, c]) => c > 0)
+      .map(([m, c]) => [m, Math.round(c)])
+  ),
 });
 
 const dim = (v) => Math.max(1, Math.round(Number(v) || 1));
@@ -608,7 +611,7 @@ export function buildSizingRequest() {
 
 /* ── load an existing RolloutRequest back into the form ────────────── */
 
-const specKey = (r) => `${r.cpu_cores}|${r.memory_mib}|${r.storage_gb}|${r.gpu_count ?? 0}`;
+const specKey = (r) => `${r.cpu_cores}|${r.memory_mib}|${r.storage_gb}|${formatGpu(r.gpu)}`;
 
 /**
  * Best-effort reverse mapping (used when an example/upload is loaded).
@@ -639,7 +642,7 @@ export function loadIntoForm(req) {
         cpu: demand.cpu_cores ?? 0,
         memGiB: Math.round((demand.memory_mib ?? 0) / GiB),
         disk: demand.storage_gb ?? 0,
-        gpu: demand.gpu_count ?? 0,
+        gpu: demand.gpu ?? {},
       });
     }
     return byKey.get(key);
@@ -775,7 +778,7 @@ function deriveFleet(bms, vms) {
         cpu: c.cpu_cores ?? 0,
         memGiB: Math.round((c.memory_mib ?? 0) / GiB),
         disk: c.storage_gb ?? 0,
-        gpu: c.gpu_count ?? 0,
+        gpu: c.gpu ?? {},
         roles: [],
         ids: new Set(),
       });
@@ -859,8 +862,8 @@ function sameFleet(a, b) {
 
 function seed() {
   state.specs = [
-    { name: "M-8c32g", cpu: 8, memGiB: 32, disk: 200, gpu: 0 },
-    { name: "L-16c64g", cpu: 16, memGiB: 64, disk: 400, gpu: 0 },
+    { name: "M-8c32g", cpu: 8, memGiB: 32, disk: 200, gpu: {} },
+    { name: "L-16c64g", cpu: 16, memGiB: 64, disk: 400, gpu: {} },
   ];
   state.steps = [
     { name: "cluster-a", groups: [
@@ -877,7 +880,7 @@ function seed() {
   state.fleet = {
     topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
     models: [
-      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] },
     ],
   };
 }

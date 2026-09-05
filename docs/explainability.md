@@ -124,7 +124,7 @@ solve() 進入點
 **為什麼診斷分散在 2 個模組？**
 - `solver.py` 持有 model、變數、`solver.value()` 結果 — 「成功 + advisory」相關 diagnostic 必須在這裡
 - `diagnostics.py` 重建獨立小模型且用 5 秒 timeout — 與主求解隔離，避免診斷邏輯影響主路徑效能與正確性
-- 兩者透過 `get_eligible_baremetals()` 與 `RESOURCE_FIELDS`（`solver.py:51, 54-76`）共享原子邏輯，避免不一致
+- 兩者透過 `get_eligible_baremetals()` 與 `request_dims()`（`solver.py`）共享原子邏輯，避免不一致
 
 ---
 
@@ -193,7 +193,7 @@ eligibility 邏輯（candidate list 過濾 + capacity fits_in 檢查）若在 so
 - Diagnostics 認為 VM 可放 → 不報 `vms_with_no_eligible_bm`
 - → INFEASIBLE 但找不到根因，scheduler 完全無線索
 
-`RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]` 同理 — 任何 per-resource 計算（capacity、headroom、slot score、未來 capacity_gap）都必須走這個常數，避免遺漏新增的維度。
+資源維度同理 — GPU 改為逐型號記帳後，維度不再是固定常數而是每個 request 解析出的清單（`models.resource_dims()`，scalar 欄位 + 每個 GPU 型號一個 `gpu:<model>` 維度），讀值一律走 `models.res_get()`。任何 per-resource 計算（capacity、headroom、slot score、未來 capacity_gap）都必須走這組 helper，避免遺漏新增的維度；solver 與 diagnostics 則共用 `solver.request_dims()` 保證兩邊迭代同一份清單。
 
 **讀者規則**：`solver.py` 與 `diagnostics.py` 共用的邏輯，**必須**抽到 module-level 函式，由 diagnostics 透過 import 或薄 wrapper 呼叫，不可複製。
 
@@ -373,7 +373,7 @@ OPTIMAL/FEASIBLE 時，透過 `solver.value()` 讀取 CP-SAT 變數值計算 pos
           "cpu_cores": { "used": 40, "total": 64, "pct": 62 },
           "memory_mib": { "used": 192000, "total": 256000, "pct": 75 },
           "storage_gb": { "used": 1200, "total": 2000, "pct": 60 },
-          "gpu_count": { "used": 0, "total": 0, "pct": 0 }
+          "gpu:h200": { "used": 2, "total": 4, "pct": 50 }
         }
       },
       "bm-02": { "..." : "..." }
@@ -447,9 +447,9 @@ def _build_success_diagnostics(self, solver: cp_model.CpSolver) -> dict:
         )
         after = bm.used_capacity + new_demand
         util = {}
-        for field in RESOURCE_FIELDS:
-            total = getattr(bm.total_capacity, field)
-            used = getattr(after, field)
+        for field in request_dims(self.request):
+            total = res_get(bm.total_capacity, field)
+            used = res_get(after, field)
             util[field] = {
                 "used": used,
                 "total": total,
@@ -525,16 +525,17 @@ def _compute_capacity_gaps(self, vm_ids: list[str]) -> dict:
         if best is None:
             continue
         shortfall = {}
-        for field in RESOURCE_FIELDS:
-            d = getattr(vm.demand, field)
-            a = getattr(best, field)
+        dims = request_dims(self.request)
+        for field in dims:
+            d = res_get(vm.demand, field)
+            a = res_get(best, field)
             if d > a:
                 shortfall[field] = d - a
         if shortfall:
             gaps[vm_id] = {
-                "demand": {f: getattr(vm.demand, f) for f in RESOURCE_FIELDS
-                           if getattr(vm.demand, f) > 0},
-                "best_available": {f: getattr(best, f) for f in RESOURCE_FIELDS
+                "demand": {f: res_get(vm.demand, f) for f in dims
+                           if res_get(vm.demand, f) > 0},
+                "best_available": {f: res_get(best, f) for f in dims
                                    if f in shortfall},
                 "shortfall": shortfall,
             }

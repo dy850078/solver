@@ -42,7 +42,6 @@ from .models import (
 )
 from .rollout import solve_rollout
 from .sizing_floors import fleet_floor
-from .splitter import RESOURCE_FIELDS
 
 logger = logging.getLogger(__name__)
 

@@ -125,6 +125,139 @@ class TestCapacity:
 
 
 # ===========================================================================
+# 2b. Capacity constraint, per GPU model: each model is its own dimension
+# ===========================================================================
+
+class TestGpuModelCapacity:
+    """C2 with per-model GPU accounting: models are independent dimensions,
+    never fungible — h200 demand is served only by h200 capacity."""
+
+    def test_gpu_model_is_bottleneck(self):
+        """3 VMs × 1 h200 on a 2-h200 BM: cpu/mem plentiful, GPU binds."""
+        r = solve(
+            [make_vm(f"vm-{i}", gpu={"h200": 1}) for i in range(3)],
+            [make_bm("bm-1", gpu={"h200": 2})],
+        )
+        assert not r.success
+
+    def test_gpu_exact_fit(self):
+        r = solve(
+            [make_vm(f"vm-{i}", gpu={"h200": 1}) for i in range(2)],
+            [make_bm("bm-1", gpu={"h200": 2})],
+        )
+        assert r.success
+
+    def test_mixed_model_bm_accounts_each_model(self):
+        """A {"h200":3, "a100":2} BM hosts exactly 3 h200 + 2 a100 VMs;
+        one more h200 VM cannot ride on the free a100 (not fungible)."""
+        bm = [make_bm("bm-1", gpu={"h200": 3, "a100": 2})]
+        vms = (
+            [make_vm(f"h-{i}", gpu={"h200": 1}) for i in range(3)]
+            + [make_vm(f"a-{i}", gpu={"a100": 1}) for i in range(2)]
+        )
+        assert solve(vms, bm).success
+        assert not solve(vms + [make_vm("h-3", gpu={"h200": 1})], bm).success
+
+    def test_demanded_model_absent_from_fleet(self):
+        """h200 demand against CPU-only BMs → INFEASIBLE, not a crash and
+        not a silent placement."""
+        r = solve([make_vm("vm-1", gpu={"h200": 1})], [make_bm("bm-1")])
+        assert not r.success
+
+    def test_model_lands_on_matching_bm_only(self):
+        """h200 VM must pick the h200 BM even when the a100 BM is bigger."""
+        bms = [
+            make_bm("bm-a100", cpu=128, gpu={"a100": 8}),
+            make_bm("bm-h200", cpu=8, gpu={"h200": 1}),
+        ]
+        r = solve([make_vm("vm-1", gpu={"h200": 1})], bms)
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-h200"
+
+    def test_cpu_vm_may_land_on_gpu_bm(self):
+        """No reservation semantics: GPU capacity does not repel CPU VMs."""
+        r = solve([make_vm("vm-1")], [make_bm("bm-1", gpu={"h200": 8})])
+        assert r.success
+
+    def test_respects_used_gpu_capacity(self):
+        """2 h200 total, 1 already used → second demand of 2 can't fit."""
+        r = solve(
+            [make_vm("vm-1", gpu={"h200": 2})],
+            [make_bm("bm-1", gpu={"h200": 2}, used_gpu={"h200": 1})],
+        )
+        assert not r.success
+
+    def test_objective_terms_with_gpu_specs_stay_feasible(self):
+        """Headroom + slot score iterate GPU dims: a gpu-bearing t-shirt on
+        a mixed fleet must not produce inconsistent bounds (false
+        INFEASIBLE)."""
+        bms = [
+            make_bm("bm-1", gpu={"h200": 4}),
+            make_bm("bm-2"),
+        ]
+        vms = [make_vm("vm-1", gpu={"h200": 1}), make_vm("vm-2")]
+        r = solve(
+            vms, bms,
+            w_slot_score=5,
+            vm_specs=[Resources(cpu_cores=4, memory_mib=16_000, gpu={"h200": 1})],
+        )
+        assert r.success
+        assert amap(r)["vm-1"] == "bm-1"
+
+
+class TestGpuPinnedValidation:
+    """Pinned-VM normalization checks run per GPU model: a deficit on one
+    model must not be masked by surplus on another. Mirrors the INPUT_ERROR
+    pattern of TestPinnedInputValidation."""
+
+    def _request(self, vms, bms):
+        return PlacementRequest(
+            vms=vms, baremetals=bms,
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+
+    def test_pinned_gpu_not_in_used_capacity_is_input_error(self):
+        """Pinned VM demands h200 but the host's used_capacity has none
+        recorded → per-model negative → INPUT_ERROR naming gpu:h200."""
+        bm = make_bm("bm-1", gpu={"h200": 4},
+                     used_cpu=4, used_mem=16_000, used_disk=100)
+        vm = make_vm("vm-1", gpu={"h200": 1},
+                     candidates=["bm-1"], pinned_to="bm-1")
+        r = VMPlacementSolver(self._request([vm], [bm])).solve()
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "gpu:h200" in r.solver_status
+
+    def test_pinned_host_overcommitted_on_model_is_input_error(self):
+        """used > total on one GPU model → over-commit INPUT_ERROR naming
+        the model, even with scalar dimensions healthy."""
+        bm = make_bm("bm-1", gpu={"h200": 2},
+                     used_cpu=4, used_mem=16_000, used_disk=100,
+                     used_gpu={"h200": 3})
+        vm = make_vm("vm-1", cpu=4, gpu={"h200": 3},
+                     candidates=["bm-1"], pinned_to="bm-1")
+        r = VMPlacementSolver(self._request([vm], [bm])).solve()
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "over-committed" in r.solver_status
+        assert "gpu:h200" in r.solver_status
+
+    def test_valid_pinned_gpu_normalizes_and_solves(self):
+        """Healthy carry-in: used_capacity includes the pinned VM's h200;
+        normalization frees it back and the new VM takes the last h200."""
+        bm = make_bm("bm-1", gpu={"h200": 2},
+                     used_cpu=4, used_mem=16_000, used_disk=100,
+                     used_gpu={"h200": 1})
+        pinned = make_vm("vm-old", gpu={"h200": 1},
+                         candidates=["bm-1"], pinned_to="bm-1")
+        new = make_vm("vm-new", gpu={"h200": 1}, candidates=["bm-1"])
+        r = VMPlacementSolver(self._request([pinned, new], [bm])).solve()
+        assert r.success
+        assert len(r.assignments) == 2
+
+
+# ===========================================================================
 # 3. Candidate list: respect step 3 filtering
 # ===========================================================================
 
@@ -753,6 +886,39 @@ class TestSerialization:
     def test_http_invalid_request_returns_422(self, client):
         """Missing required fields → FastAPI returns 422."""
         resp = client.post("/v1/placement/solve", json={"vms": "not-a-list"})
+        assert resp.status_code == 422
+
+    def test_http_removed_gpu_count_returns_422_with_migration_hint(self, client):
+        """Un-migrated payloads carrying gpu_count are rejected loudly, not
+        silently ignored — otherwise live GPU demand would be dropped."""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{
+                "id": "vm-1",
+                "demand": {"cpu_cores": 4, "gpu_count": 1},
+                "candidate_baremetals": ["bm-1"],
+            }],
+            "baremetals": [{
+                "id": "bm-1",
+                "total_capacity": {"cpu_cores": 64},
+            }],
+        })
+        assert resp.status_code == 422
+        assert "gpu_count" in resp.text
+        assert "removed" in resp.text
+
+    def test_http_bad_gpu_model_name_returns_422(self, client):
+        """GPU model names are open strings but format-validated."""
+        resp = client.post("/v1/placement/solve", json={
+            "vms": [{
+                "id": "vm-1",
+                "demand": {"cpu_cores": 4, "gpu": {"h 200": 1}},
+                "candidate_baremetals": ["bm-1"],
+            }],
+            "baremetals": [{
+                "id": "bm-1",
+                "total_capacity": {"cpu_cores": 64, "gpu": {"h200": 2}},
+            }],
+        })
         assert resp.status_code == 422
 
 

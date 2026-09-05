@@ -125,12 +125,12 @@ solve_split_placement()         ← 協調者 (split_solver.py)
 {
   "requirements": [
     {
-      "total_resources": { "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800, "gpu_count": 0 },
+      "total_resources": { "cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800 },
       "node_role": "worker",
       "cluster_id": "cluster-1",
       "ip_type": "routable",
       "vm_specs": [
-        { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200, "gpu_count": 0 }
+        { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }
       ],
       "min_total_vms": null,
       "max_total_vms": null
@@ -140,7 +140,7 @@ solve_split_placement()         ← 協調者 (split_solver.py)
   "baremetals": [
     {
       "id": "bm-0",
-      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000, "gpu_count": 0 },
+      "total_capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 },
       "topology": { "ag": "ag-0" }
     }
   ],

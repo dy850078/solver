@@ -51,9 +51,10 @@ from .models import (
     ShortfallDetail,
     Topology,
     config_fingerprint,
+    res_get,
+    resource_dims,
 )
 from .splitter import (
-    RESOURCE_FIELDS,
     ResourceSplitter,
     has_demand,
     spec_count_upper_bound,
@@ -599,11 +600,15 @@ def _classify(result) -> str:
 
 
 def _fits_count(remaining: Resources, spec: Resources) -> int:
-    """How many `spec` VMs fit in `remaining` (per-BM, per-dimension floor)."""
+    """How many `spec` VMs fit in `remaining` (per-BM, per-dimension floor).
+
+    Dimensions come from the spec: a GPU model in `remaining` the spec
+    doesn't ask for is not a bottleneck; a model the spec asks for but
+    `remaining` lacks reads as 0 → count 0."""
     counts = [
-        getattr(remaining, f) // getattr(spec, f)
-        for f in RESOURCE_FIELDS
-        if getattr(spec, f) > 0
+        res_get(remaining, d) // res_get(spec, d)
+        for d in resource_dims([spec])
+        if res_get(spec, d) > 0
     ]
     return min(counts) if counts else 0
 

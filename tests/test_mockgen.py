@@ -72,7 +72,7 @@ def test_fixed_bm_profiles_respected():
         ip_type_by_role={"worker": "routable"},
         bm_profiles=[
             BmProfile(name="standard", capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000), count=4),
-            BmProfile(name="gpu", capacity=Resources(cpu_cores=96, memory_mib=384_000, storage_gb=4000, gpu_count=8), count=2),
+            BmProfile(name="gpu", capacity=Resources(cpu_cores=96, memory_mib=384_000, storage_gb=4000, gpu={"h200": 8}), count=2),
         ],
     )
     resp = generate_mock_request(req)

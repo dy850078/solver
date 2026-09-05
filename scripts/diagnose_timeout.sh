@@ -22,12 +22,12 @@ cat > "$OUT/payload.json" <<'JSON'
     {"role":"infra","count":5,"ip_type":"non-routable","spec":"Spec1","max_per_bm":2}
   ],
   "vm_specs": {
-    "Spec1": {"cpu_cores":8,"memory_mib":65536,"storage_gb":750,"gpu_count":0},
-    "Spec2": {"cpu_cores":32,"memory_mib":393216,"storage_gb":750,"gpu_count":0}
+    "Spec1": {"cpu_cores":8,"memory_mib":65536,"storage_gb":750},
+    "Spec2": {"cpu_cores":32,"memory_mib":393216,"storage_gb":750}
   },
   "bm_profiles": [
     {"name":"ctrl",
-     "capacity":{"cpu_cores":192,"memory_mib":1507328,"storage_gb":7680,"gpu_count":0},
+     "capacity":{"cpu_cores":192,"memory_mib":1507328,"storage_gb":7680},
      "roles":["master","infra","l4lb-storage","learner"]}
   ],
   "racks": 6,

@@ -23,12 +23,14 @@ from .conftest import make_bm
 # ---------------------------------------------------------------------------
 
 def make_req(
-    cpu=0, mem=0, disk=0, gpu=0, pods=0,
+    cpu=0, mem=0, disk=0, gpu=None, pods=0,
     role=NodeRole.WORKER, cluster="cluster-1", ip_type="routable",
     vm_specs=None, min_vms=None, max_vms=None, candidate_bms=None,
 ) -> ResourceRequirement:
+    """gpu: per-model demand dict, e.g. {"h200": 8}."""
     return ResourceRequirement(
-        total_resources=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
+        total_resources=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk,
+                                  gpu=gpu or {}),
         node_role=role,
         cluster_id=cluster,
         ip_type=ip_type,
@@ -191,6 +193,60 @@ class TestBMCapacityConstraint:
         bms = [make_bm("bm-1", cpu=8, mem=32_000, disk=200)]
         spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
         req = make_req(cpu=32, mem=128_000, disk=800, vm_specs=[spec])
+
+        r = split_solve(req, bms)
+
+        assert not r.success
+
+
+# ===========================================================================
+# 3b. Per-GPU-model coverage: gpu demand is covered per model
+# ===========================================================================
+
+class TestGpuSplit:
+    """The coverage constraint iterates per GPU model: only gpu-bearing
+    specs can cover a "gpu:<model>" dimension, and the joint solve still
+    has to place the resulting slots on model-matching BMs."""
+
+    def test_gpu_demand_forces_gpu_spec(self):
+        """8 h200 demanded; only the gpu spec carries h200, so at least 8
+        gpu-spec VMs must be created even though the cpu spec is cheaper."""
+        bms = [make_bm(f"bm-{i}", cpu=64, mem=256_000, disk=2000,
+                       gpu={"h200": 4}) for i in range(2)]
+        gpu_spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100,
+                             gpu={"h200": 1})
+        cpu_spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(cpu=32, mem=128_000, disk=800, gpu={"h200": 8},
+                       vm_specs=[gpu_spec, cpu_spec])
+
+        r = split_solve(req, bms)
+
+        assert r.success, r.solver_status
+        gpu_vms = sum(d.count for d in r.split_decisions
+                      if d.vm_spec.gpu.get("h200", 0) > 0)
+        assert gpu_vms >= 8
+
+    def test_gpu_demand_without_gpu_spec_infeasible(self):
+        """h200 demand but every spec is CPU-only → uncoverable, never
+        silently coerced to a CPU-only split."""
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000,
+                       gpu={"h200": 8})]
+        cpu_spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        req = make_req(cpu=8, mem=32_000, disk=200, gpu={"h200": 2},
+                       vm_specs=[cpu_spec])
+
+        r = split_solve(req, bms)
+
+        assert not r.success
+
+    def test_gpu_spec_filtered_when_no_bm_carries_model(self):
+        """A spec demanding a model no BM carries can't fit anywhere and is
+        filtered; the demand it was meant to cover then fails loudly."""
+        bms = [make_bm("bm-1", cpu=64, mem=256_000, disk=2000)]
+        gpu_spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100,
+                             gpu={"h200": 1})
+        req = make_req(cpu=8, mem=32_000, disk=200, gpu={"h200": 2},
+                       vm_specs=[gpu_spec])
 
         r = split_solve(req, bms)
 
@@ -504,18 +560,18 @@ class TestSplitEndpoint:
         resp = client.post("/v1/placement/split-and-solve", json={
             "requirements": [{
                 "total_resources": {"cpu_cores": 16, "memory_mib": 64000,
-                                    "storage_gb": 400, "gpu_count": 0},
+                                    "storage_gb": 400},
                 "node_role": "worker",
                 "cluster_id": "cluster-1",
                 "vm_specs": [
-                    {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100, "gpu_count": 0},
+                    {"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100},
                 ],
                 "candidate_baremetals": ["bm-1"],
             }],
             "baremetals": [{
                 "id": "bm-1",
                 "total_capacity": {"cpu_cores": 64, "memory_mib": 256000,
-                                   "storage_gb": 2000, "gpu_count": 0},
+                                   "storage_gb": 2000, "gpu": {}},
                 "topology": {"ag": "ag-1"},
             }],
             "config": {"auto_generate_anti_affinity": False},

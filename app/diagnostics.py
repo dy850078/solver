@@ -24,7 +24,8 @@ from .models import (
     VM,
     SolverConfig,
 )
-from .solver import get_eligible_baremetals, RESOURCE_FIELDS
+from .models import res_get
+from .solver import get_eligible_baremetals, request_dims
 
 
 def status_name(status: cp_model.CpSolverStatus) -> str:
@@ -355,16 +356,20 @@ class DiagnosticsBuilder:
                     model.add(sum(vm_vars) == 1)
 
         def add_capacity(model, assign):
+            # Shadow C2: iterates request_dims(...) — the IDENTICAL dimension
+            # list the real C2 uses — so failing-layer attribution can't
+            # diverge from the main model.
+            dims = request_dims(self.request)
             for bm in self.request.baremetals:
                 avail = bm.available_capacity
                 avars = [(vid, assign[(vid, bm.id)]) for vid in self.vm_map
                          if (vid, bm.id) in assign]
                 if not avars:
                     continue
-                for field in RESOURCE_FIELDS:
-                    usage = sum(getattr(self.vm_map[vid].demand, field) * v
+                for rdim in dims:
+                    usage = sum(res_get(self.vm_map[vid].demand, rdim) * v
                                 for vid, v in avars)
-                    model.add(usage <= getattr(avail, field))
+                    model.add(usage <= res_get(avail, rdim))
 
         def add_anti_affinity(model, assign):
             import math

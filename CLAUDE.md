@@ -40,8 +40,10 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   `SPREAD_DIMENSIONS` in `app/models.py`.
 - **Constraint catalog** (labels used in code comments and tests — keep them):
   - **C1** — each VM assigned to exactly one BM (`assign[vm,bm]` BoolVars).
-  - **C2** — BM capacity per resource field (`RESOURCE_FIELDS`: cpu, mem, storage, gpu),
-    against `available_capacity = total - used`.
+  - **C2** — BM capacity per resource dimension (scalars cpu/mem/storage plus
+    one `gpu:<model>` dimension per GPU model — `resource_dims`/`res_get` in
+    `app/models.py`; GPU models are independent, never fungible), against
+    `available_capacity = total - used`.
   - **C3** — anti-affinity: per dimension d in `spread_on`, per bucket b:
     `Σ assign[vm∈group, bm∈b] ≤ cap_d`, default cap `⌈|VMs|/|buckets(d)|⌉`.
     Dimensions are AND'd, never the Cartesian product.

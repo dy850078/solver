@@ -4,6 +4,8 @@
 // distributions) flows through the "Advanced overrides (JSON)" box, which is
 // deep-merged over the form-built params.
 
+import { parseGpu, formatGpu } from "./util.js";
+
 // Known-role catalog — datalist SUGGESTIONS only; roles are open strings
 // (ADR-010) and any ^[\w.-]+$ value is accepted. First six mirror the
 // backend NodeRole enum; the rest are common eco-system roles worth a
@@ -27,8 +29,8 @@ const DEFAULTS = {
   target_spread_ag: 3,
   failover: false,
   tightness: 0.7,
-  vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu_count: 0 }],
-  bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu_count: 0, count: "" }],
+  vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu: {} }],
+  bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu: {}, count: "" }],
 };
 
 const IP_OPTIONS = ["routable", "non-routable", ""];
@@ -139,7 +141,7 @@ function specRow(p = {}) {
     miniField("spec-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
     miniField("spec-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
     miniField("spec-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
-    miniField("spec-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
+    miniField("spec-gpu", "gpu (model:n)", formatGpu(p.gpu), { text: true, ph: "h200:1" }),
     remove,
   ]);
   row.querySelector(".spec-name").addEventListener("input", refreshSpecDropdowns);
@@ -158,7 +160,7 @@ function bmRow(p = {}) {
     miniField("bm-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
     miniField("bm-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
     miniField("bm-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
-    miniField("bm-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
+    miniField("bm-gpu", "gpu (model:n)", formatGpu(p.gpu), { text: true, ph: "h200:8" }),
     miniField("bm-cnt", "count", p.count, { ph: "auto" }),
     miniField("bm-roles", "roles (comma, blank = all)", (p.roles || []).join(","), { text: true, ph: "all roles", extra: "mini--roles" }),
     remove,
@@ -251,7 +253,7 @@ function readCapacityRows(rootEl, rowSel, prefix, withCount) {
       cpu_cores: Number(row.querySelector(`.${prefix}-cpu`).value || 0),
       memory_mib: Number(row.querySelector(`.${prefix}-mem`).value || 0),
       storage_gb: Number(row.querySelector(`.${prefix}-sto`).value || 0),
-      gpu_count: Number(row.querySelector(`.${prefix}-gpu`).value || 0),
+      gpu: parseGpu(row.querySelector(`.${prefix}-gpu`).value),
     };
     out.push({ name: name || prefix, cap, row });
     if (withCount) {
@@ -416,7 +418,7 @@ export function populateMockForm(preset) {
   const profs = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
   rebuildCapRows(bmRowsEl, bmRow, profs, (prof) => {
     const cap = prof.capacity ?? prof;
-    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "", roles: prof.roles ?? [] };
+    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu: cap.gpu ?? {}, count: prof.count ?? "", roles: prof.roles ?? [] };
   });
 
   // Anything the form can't hold → Advanced box

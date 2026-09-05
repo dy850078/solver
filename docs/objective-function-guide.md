@@ -319,7 +319,7 @@ for field in ["cpu_cores", "memory_mb", "disk_gb", "gpu_count"]:
     print(f"{field} = {val}")
 ```
 
-本 project 中，`RESOURCE_FIELDS = ["cpu_cores", "memory_mb", "disk_gb", "gpu_count"]` 就是用這個模式讓一段程式同時處理四個資源維度。
+本 project 早期用 `RESOURCE_FIELDS` 常數 + `getattr` 套這個模式；GPU 改為逐型號記帳（dict 欄位）後，維度清單改由 `models.resource_dims()` 對每個 request 動態解析（scalar 欄位 + 每個 GPU 型號一個 `gpu:<model>` 維度），讀值走 `models.res_get()` — 精神相同：一段程式迭代所有資源維度。
 
 ---
 

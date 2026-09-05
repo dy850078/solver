@@ -49,12 +49,11 @@ from .models import (
     PlacementResult,
     Resources,
     config_fingerprint,
+    res_get,
+    resource_dims,
 )
 
 logger = logging.getLogger(__name__)
-
-# The resource fields we check for capacity constraints.
-RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
 def get_eligible_baremetals(
@@ -90,6 +89,25 @@ def get_eligible_baremetals(
     ]
 
 
+def request_dims(request: PlacementRequest) -> list[str]:
+    """
+    Resource dimensions in play for this request: the scalar fields plus one
+    "gpu:<model>" per GPU model appearing in any BM capacity, VM demand, or
+    configured t-shirt spec.
+
+    Module-level and derived from the request alone so the solver and
+    DiagnosticsBuilder iterate the IDENTICAL dimension list — the shadow C2
+    in diagnostics must mirror the real C2 or failing-layer attribution
+    lies. (Same sharing pattern as get_eligible_baremetals above.)
+    """
+    return resource_dims([
+        *(bm.total_capacity for bm in request.baremetals),
+        *(bm.used_capacity for bm in request.baremetals),
+        *(vm.demand for vm in request.vms),
+        *request.config.vm_specs,
+    ])
+
+
 class VMPlacementSolver:
 
     def __init__(
@@ -112,6 +130,12 @@ class VMPlacementSolver:
         self.request = request
         self.config = request.config
         self.active_vars: dict[str, cp_model.IntVar] = active_vars or {}
+
+        # Resource dimensions for every per-dimension loop below (C2,
+        # headroom, slot score). Computed once; normalization above only
+        # subtracts, so no GPU model can appear later that isn't in this
+        # union already.
+        self.dims: list[str] = request_dims(request)
 
         # Lookup maps for quick access
         self.vm_map: dict[str, VM] = {vm.id: vm for vm in request.vms}
@@ -294,10 +318,17 @@ class VMPlacementSolver:
             if pinned_demand is None:
                 new_bms.append(bm)
                 continue
+            # Per-BM dimension list: these checks only concern this host's
+            # capacities and its pinned demand. Checking per GPU model
+            # matters — a deficit on one model must not be masked by a
+            # surplus on another.
+            bm_dims = resource_dims(
+                [bm.total_capacity, bm.used_capacity, pinned_demand]
+            )
             over = [
-                f
-                for f in RESOURCE_FIELDS
-                if getattr(bm.used_capacity, f) > getattr(bm.total_capacity, f)
+                d
+                for d in bm_dims
+                if res_get(bm.used_capacity, d) > res_get(bm.total_capacity, d)
             ]
             if over:
                 self._input_errors.append(
@@ -307,7 +338,7 @@ class VMPlacementSolver:
                 )
             effective_used = bm.used_capacity - pinned_demand
             negative = [
-                f for f in RESOURCE_FIELDS if getattr(effective_used, f) < 0
+                d for d in bm_dims if res_get(effective_used, d) < 0
             ]
             if negative:
                 self._input_errors.append(
@@ -886,7 +917,8 @@ class VMPlacementSolver:
         """
         CONSTRAINT: Total VM demand on each BM must not exceed its available capacity.
 
-        For each baremetal, for each resource dimension (cpu, mem, disk, gpu):
+        For each baremetal, for each resource dimension (cpu, mem, disk, and
+        one dimension per GPU model — models are independent, never fungible):
           sum of (vm_demand * assign_var) for all VMs eligible on this BM <= available_capacity
 
         Example: BM has 64 available CPU cores.
@@ -907,13 +939,14 @@ class VMPlacementSolver:
             if not assigned_vars:
                 continue
 
-            # For each resource dimension, add a capacity constraint
-            for field in RESOURCE_FIELDS:
-                capacity = getattr(avail, field)
+            # For each resource dimension (scalars + one per GPU model),
+            # add a capacity constraint
+            for dim in self.dims:
+                capacity = res_get(avail, dim)
 
                 # Build the usage expression: sum(demand * var)
                 usage = sum(
-                    getattr(self.vm_map[vm_id].demand, field) * var
+                    res_get(self.vm_map[vm_id].demand, dim) * var
                     for vm_id, var in assigned_vars
                 )
 
@@ -1245,12 +1278,12 @@ class VMPlacementSolver:
         penalties = []
         for bm in self.request.baremetals:
             dim_overs = []
-            for field in RESOURCE_FIELDS:
-                total_d = getattr(bm.total_capacity, field)
+            for dim in self.dims:
+                total_d = res_get(bm.total_capacity, dim)
                 if total_d == 0:
-                    continue  # skip zero-total dimensions (e.g. gpu_count=0)
+                    continue  # skip zero-total dimensions (e.g. a GPU model this BM doesn't carry)
 
-                used_d = getattr(bm.used_capacity, field)
+                used_d = res_get(bm.used_capacity, dim)
 
                 assigned_vars = [
                     (vm_id, self.assign[(vm_id, bm.id)])
@@ -1262,7 +1295,7 @@ class VMPlacementSolver:
 
                 # New VM usage on this BM
                 new_usage = sum(
-                    getattr(self.vm_map[vm_id].demand, field) * var
+                    res_get(self.vm_map[vm_id].demand, dim) * var
                     for vm_id, var in assigned_vars
                 )
 
@@ -1270,28 +1303,28 @@ class VMPlacementSolver:
                 # Upper bound uses max(total, used + all candidate demand) to avoid
                 # false INFEASIBLE when used_d is already high.
                 max_new_demand = sum(
-                    getattr(self.vm_map[vm_id].demand, field)
+                    res_get(self.vm_map[vm_id].demand, dim)
                     for vm_id, _ in assigned_vars
                 )
                 upper_after = max(total_d, used_d + max_new_demand) * 100
                 after_times_100 = self.model.new_int_var(
-                    0, upper_after, f"a100_{bm.id}_{field}"
+                    0, upper_after, f"a100_{bm.id}_{dim}"
                 )
                 self.model.add(after_times_100 == (used_d + new_usage) * 100)
 
                 # Step B: integer utilization % (can exceed 100 if BM is near-full)
                 max_util = upper_after // total_d if total_d > 0 else 0
-                util_pct = self.model.new_int_var(0, max_util, f"util_{bm.id}_{field}")
+                util_pct = self.model.new_int_var(0, max_util, f"util_{bm.id}_{dim}")
                 self.model.add_division_equality(util_pct, after_times_100, total_d)
 
                 # Step C: amount exceeding the safe upper bound (may be negative)
                 raw = self.model.new_int_var(
-                    -max_util, max_util, f"raw_{bm.id}_{field}"
+                    -max_util, max_util, f"raw_{bm.id}_{dim}"
                 )
                 self.model.add(raw == util_pct - self.config.headroom_upper_bound_pct)
 
                 # Step D: ReLU — clamp negative values to 0
-                over = self.model.new_int_var(0, max_util, f"over_{bm.id}_{field}")
+                over = self.model.new_int_var(0, max_util, f"over_{bm.id}_{dim}")
                 self.model.add_max_equality(over, [self.model.new_constant(0), raw])
                 dim_overs.append(over)
 
@@ -1332,31 +1365,35 @@ class VMPlacementSolver:
             tshirt_slots = []
             for t_idx, tshirt in enumerate(tshirt_sizes):
                 dim_slots = []
-                for field in RESOURCE_FIELDS:
-                    tshirt_d = getattr(tshirt, field)
+                for dim in self.dims:
+                    tshirt_d = res_get(tshirt, dim)
                     if tshirt_d == 0:
                         continue  # no demand on this dimension, not a bottleneck
 
-                    total_d = getattr(bm.total_capacity, field)
-                    used_d = getattr(bm.used_capacity, field)
+                    total_d = res_get(bm.total_capacity, dim)
+                    used_d = res_get(bm.used_capacity, dim)
 
                     # New VM usage on this BM
                     new_usage = sum(
-                        getattr(self.vm_map[vm_id].demand, field) * var
+                        res_get(self.vm_map[vm_id].demand, dim) * var
                         for vm_id, var in assigned_vars
                     )
 
                     # Remaining = total - used - new_placement
                     # Lower bound can be negative to avoid false INFEASIBLE with
-                    # many candidate VMs (capacity constraint ensures actual >= 0)
+                    # many candidate VMs (capacity constraint ensures actual >= 0).
+                    # Bound safety on GPU dims: max_new_d sums ELIGIBLE VMs only,
+                    # and eligibility (fits_in) means no eligible VM demands a
+                    # model this BM lacks — so a missing model degenerates to
+                    # the all-zero case, never an inconsistent bound.
                     max_new_d = sum(
-                        getattr(self.vm_map[vm_id].demand, field)
+                        res_get(self.vm_map[vm_id].demand, dim)
                         for vm_id, _ in assigned_vars
                     )
                     remaining = self.model.new_int_var(
                         total_d - used_d - max_new_d,
                         total_d,
-                        f"rem_{bm.id}_{field}_t{t_idx}",
+                        f"rem_{bm.id}_{dim}_t{t_idx}",
                     )
                     self.model.add(remaining == total_d - used_d - new_usage)
 
@@ -1371,7 +1408,7 @@ class VMPlacementSolver:
                     slots_d = self.model.new_int_var(
                         min(min_slots, 0),
                         max_slots,
-                        f"slotd_{bm.id}_{field}_t{t_idx}",
+                        f"slotd_{bm.id}_{dim}_t{t_idx}",
                     )
                     self.model.add_division_equality(slots_d, remaining, tshirt_d)
                     dim_slots.append(slots_d)
@@ -1379,9 +1416,9 @@ class VMPlacementSolver:
                 if dim_slots:
                     # Min across dimensions = actual fit count (bottleneck dimension decides)
                     max_possible = min(
-                        getattr(bm.total_capacity, f) // getattr(tshirt, f)
-                        for f in RESOURCE_FIELDS
-                        if getattr(tshirt, f) > 0
+                        res_get(bm.total_capacity, d) // res_get(tshirt, d)
+                        for d in self.dims
+                        if res_get(tshirt, d) > 0
                     )
                     # min may be negative (capacity constraint ensures >= 0 at solution)
                     slots_for_tshirt = self.model.new_int_var(
@@ -1394,12 +1431,12 @@ class VMPlacementSolver:
                 # Sum fit counts across all t-shirt sizes
                 max_total = sum(
                     min(
-                        getattr(bm.total_capacity, f) // getattr(ts, f)
-                        for f in RESOURCE_FIELDS
-                        if getattr(ts, f) > 0
+                        res_get(bm.total_capacity, d) // res_get(ts, d)
+                        for d in self.dims
+                        if res_get(ts, d) > 0
                     )
                     for ts in tshirt_sizes
-                    if any(getattr(ts, f) > 0 for f in RESOURCE_FIELDS)
+                    if any(res_get(ts, d) > 0 for d in self.dims)
                 )
                 bm_score = self.model.new_int_var(
                     -max_total, max_total, f"sscore_{bm.id}"
