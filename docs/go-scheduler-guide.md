@@ -414,6 +414,41 @@ POST /v1/placement/split-and-solve
 > - 若 `candidate_baremetals` 中的 BM ID 不在 `baremetals` 陣列中，該 ID 會被靜默忽略
 > - Splitter 在篩選 spec 時只會考慮 candidate BMs 的容量（避免選到只能放在非候選 BM 上的 spec）
 
+### 情境 D：GPU 專用池硬隔離（無 GPU 需求的 VM 不占用 GPU BM）
+
+適用：GPU 機的 cpu/mem 必須保留給 GPU workload——不能讓純 CPU VM 把 GPU 機的
+cpu/mem 吃光，造成 GPU 還在、卻開不出 GPU VM（stranded GPU）。
+
+**歸屬**：這是 eligibility 政策，屬 scheduler 的 step-3 filtering，與情境 C 的
+role-based filtering 是同一機制。Solver 端不需要任何設定——`candidate_baremetals`
+在 Step A 是硬性約束（C2 之前就不建立變數），有既定測試保障。
+
+**Scheduler 端的過濾規則**：
+
+```
+if len(vm.demand.gpu) == 0:            # 無 GPU 需求的 VM
+    candidates = [bm for bm in bms if len(bm.total_capacity.gpu) == 0]
+else:                                  # GPU VM 可只列出載有所需型號的 BM
+    candidates = [bm for bm in bms
+                  if all(bm.total_capacity.gpu.get(m, 0) > 0 for m in vm.demand.gpu)]
+```
+
+GPU VM 那一側其實可以多列（solver 的 fits_in 會自動剔除型號不符的 BM），
+但 CPU VM 那一側**必須**排除 GPU BM——這是硬隔離的本體，solver 不會替你做。
+
+> **重點**：
+> - **邊界：pinned VM 不適用此規則**。`pinned_to` 是既成事實，已住在 GPU BM 上
+>   的 CPU VM 照常以 pin 送入（solver 強制其留在原位），過濾規則只約束新 VM。
+> - **代價是刻意的**：CPU 池滿時，即使 GPU BM 還有大量 cpu/mem，結果也是
+>   `INFEASIBLE`（diagnostics 的 `constraint_check` 會指向 capacity/eligibility 層）。
+>   這就是「硬」的定義——若想要「能避就避、必要時可借用」的軟偏好，那是
+>   solver-side objective 的範疇，目前尚未實作。
+> - `/v1/placement/solve` 路徑：VM 層的 `candidate_baremetals` **不可為空**
+>   （空清單 = INPUT_ERROR）；split 路徑的 requirement 層空清單才是「不限制」。
+>   CPU 池被過濾到剩零台時，scheduler 應在送出前就報錯，而不是送空清單。
+> - 完整可跑的範例：`examples/gpu_dedicated_pool.json`
+>   （`make cli INPUT=examples/gpu_dedicated_pool.json`）。
+
 ---
 
 ## 5. Response 格式說明
