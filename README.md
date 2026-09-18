@@ -7,40 +7,69 @@ Runs as a sidecar service (HTTP or CLI) that receives VM requirements and bareme
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Create .venv and install the project + dev extras (deps live in pyproject.toml)
+make install
 
-# Run the HTTP sidecar server
-python server.py
+# Run the HTTP sidecar server (http://localhost:50051)
+make run                        # or: .venv/bin/python -m app.server --port 50051
 
-# Run the solver directly (CLI mode)
-python solver.py
+# Development server with autoreload + web UI at /ui
+make dev                        # sets ENABLE_UI=enable
+
+# Run the solver directly (CLI mode, no server)
+make cli INPUT=examples/success_basic.json
 
 # Run tests
-python -m pytest tests/
+make test                       # or: .venv/bin/python -m pytest
 ```
+
+Makefile targets: `install`, `venv`, `run`, `dev`, `cli`, `test`, `clean`
+(`make help` lists them). Override `PORT=...` / `PYTHON=...` on the command line.
 
 ## Project Structure
 
 ```
 solver/
-├── solver.py              # Core CP-SAT optimization logic
-├── server.py              # HTTP sidecar service
-├── models.py              # Data models
-├── serialization.py       # Request/response serialization
-├── tests/                 # Test suite
-├── docs/                  # Documentation (api/, user/, dev/)
-├── examples/              # Usage examples and sample requests
-├── src/                   # Extended source modules
-└── output/                # Generated output files
+├── app/
+│   ├── solver.py            # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
+│   ├── splitter.py          # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
+│   ├── split_solver.py      # Orchestrates splitter + solver joint solve (split-and-solve)
+│   ├── rollout.py           # Rollout simulation — replays a build order, folding placements forward as pins
+│   ├── rollout_sizing.py    # "How many BMs does this build order need?" — fleet template + search
+│   ├── sizing_floors.py     # Analytic lower bounds on fleet size
+│   ├── models.py            # Pydantic v2 models — the JSON contract with the Go scheduler
+│   ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
+│   ├── reconcile.py         # Plan-vs-actual drift report
+│   ├── diagnostics.py       # Advisory diagnostics + INFEASIBLE layer ladder
+│   ├── server.py            # FastAPI app + CLI mode; UI gated behind ENABLE_UI
+│   ├── mockgen.py           # Mock request generator (/api/mock/generate)
+│   └── examples_api.py      # Serves examples/ to the UI
+├── tests/                   # pytest suite; test files mirror app/ modules
+├── examples/                # Canonical request JSONs (used by the curl examples below)
+└── docs/                    # Design docs; docs/decisions/ holds the ADRs
 ```
+
+## HTTP Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET  | `/health` | Liveness probe (`{"status":"ok"}`) |
+| POST | `/v1/placement/solve` | Place explicit VMs onto baremetals |
+| POST | `/v1/placement/split-and-solve` | Split resource budgets into VMs and place them jointly |
+| POST | `/v1/placement/rollout` | Replay a step-by-step build order, carrying placements forward as pins |
+| POST | `/v1/placement/rollout/size` | Estimate the smallest fleet that lets a whole build order place |
+| POST | `/v1/capacity/procure` | Procurement sizing: how many BMs of each type to buy |
+| POST | `/v1/capacity/plan` | Multi-period capacity plan (demand book → per-fab monthly report) |
+| POST | `/v1/capacity/reconcile` | Plan-vs-actual drift report |
+| POST | `/api/mock/generate` | Generate a mock placement request |
+| GET  | `/ui` | Topology web UI (only when `ENABLE_UI=enable`); `/docs` serves Swagger UI |
 
 ## Testing with curl
 
 ### 1. Start the server
 
 ```bash
-python -m app.server --port 50051
+make run     # or: .venv/bin/python -m app.server --port 50051
 ```
 
 ### 2. Health check
@@ -59,7 +88,8 @@ curl -s -X POST http://localhost:50051/v1/placement/solve \
     "vms": [
       {
         "id": "vm-1",
-        "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
+        "demand": {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200},
+        "candidate_baremetals": ["bm-1"]
       }
     ],
     "baremetals": [
@@ -72,6 +102,10 @@ curl -s -X POST http://localhost:50051/v1/placement/solve \
     ]
   }' | jq
 ```
+
+`candidate_baremetals` is required on every VM (the Go scheduler's filtering
+result); an empty list is rejected with `INPUT_ERROR`, there is no "all BMs"
+fallback.
 
 ### 4. Full-featured request (from example file)
 
@@ -104,11 +138,23 @@ curl -s -X POST http://localhost:50051/v1/placement/solve \
 
 ```bash
 # Run solver directly on a JSON file
-python -m app.server --cli --input examples/success_basic.json
+make cli INPUT=examples/success_basic.json
+# equivalent: .venv/bin/python -m app.server --cli --input examples/success_basic.json
 
 # Save output to file
-python -m app.server --cli --input examples/success_basic.json --output output/result.json
+make cli INPUT=examples/success_basic.json OUTPUT=result.json
 ```
+
+### Rules and selectors
+
+Rules (`anti_affinity_rules`, `max_per_bm_rules`, `exclusive_bm_rules`,
+`failover_rules`) select VMs either by `vm_ids` or by a `selector` over
+`(cluster_id, ip_type, node_role)`. `node_role` is an open string
+(`^[\w.-]+$`); the selector's `node_role` also accepts a list, meaning
+"role is one of these". `examples/control_plane_learner_separate.json` uses
+that form: one `max_per_bm` rule over `["control-plane",
+"control-plane-learner"]` with `max_per_bm: 1` keeps masters and learners off
+each other's BMs while anti-affinity still spreads each role independently.
 
 ---
 
@@ -156,7 +202,8 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
       "total_resources": {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400},
       "node_role": "worker",
       "cluster_id": "cluster-1",
-      "vm_specs": [{"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}]
+      "vm_specs": [{"cpu_cores": 4, "memory_mib": 16000, "storage_gb": 100}],
+      "candidate_baremetals": ["bm-1"]
     }],
     "baremetals": [{
       "id": "bm-1",
@@ -182,9 +229,16 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
   "solver_status": "OPTIMAL",
   "solve_time_seconds": 0.05,
   "unplaced_vms": [],
+  "bm_used_count": 1,
+  "bm_total_count": 1,
+  "config_fingerprint": "3f2a9c1b7d0e",
   "diagnostics": {}
 }
 ```
+
+`bm_used_count` / `bm_total_count` report how many distinct BMs were placed on
+out of how many were sent; `config_fingerprint` is a short hash of the effective
+solver config + engine versions (same fields exist on `PlacementResult`).
 
 **`split_decisions`** — tells the Go scheduler how many VMs of each spec to provision in Kubernetes.
 **`assignments`** — maps each `vm_id` (synthetic ID) to a `baremetal_id` for placement.
@@ -197,4 +251,4 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
 - Always search first before creating new files
 - Extend existing functionality rather than duplicating
 - Commit after every completed task
-- Push to GitHub after every commit
+- Work on a feature branch (`claude/<topic>`), push with `git push -u origin <branch>`; never push to `main` (see CLAUDE.md)

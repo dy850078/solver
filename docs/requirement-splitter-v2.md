@@ -2,7 +2,7 @@
 
 > **作者**: Claude Opus 4.6
 > **日期**: 2026-04-13
-> **基底分支**: `zs/implement-splitter`（基底 commit `251bbe3`）
+> **適用版本**: `main`（原提案以 `zs/implement-splitter` 分支為基底，已合併；本文已依現行程式碼校正）
 
 ---
 
@@ -59,7 +59,7 @@ Go scheduler                          Python solver
 
 ### 具體失敗情境
 
-假設 master role 需要 12 CPU，scheduler 送出明確的 VM 規格給 `/v1/placement/solve`，且設定了 explicit anti-affinity rule `max_per_ag=1`：
+假設 master role 需要 12 CPU，scheduler 送出明確的 VM 規格給 `/v1/placement/solve`，且設定了 explicit anti-affinity rule `spread_on=["ag"]`、`cap_per_bucket={"ag": 1}`：
 
 | 情境 | Scheduler 決策 | 結果 |
 |------|----------------|------|
@@ -109,7 +109,7 @@ solve_split_placement()         ← 協調者 (split_solver.py)
 |------|------|---------|
 | `app/splitter.py` | 新增 | ResourceSplitter class |
 | `app/split_solver.py` | 新增 | solve_split_placement() orchestrator |
-| `app/models.py` | 修改 | +4 model；`slot_tshirt_sizes` → `vm_specs`；+`w_resource_waste` |
+| `app/models.py` | 修改 | +4 model；`slot_tshirt_sizes` → `vm_specs`（已完成改名，現行程式碼只有 `vm_specs`）；+`w_resource_waste` |
 | `app/solver.py` | 修改 | `__init__` 接受 shared model/active_vars；constraint/objective/extract 支援 active_var |
 | `app/server.py` | 修改 | +endpoint `/v1/placement/split-and-solve` |
 
@@ -174,22 +174,30 @@ solve_split_placement()         ← 協調者 (split_solver.py)
 ```python
 class ResourceRequirement(BaseModel):
     total_resources: Resources          # 這個 role 的總資源需求
-    node_role: NodeRole = WORKER
+    node_role: str = "worker"           # open string（ADR-010）
     cluster_id: str = ""
     ip_type: str = ""
     vm_specs: list[Resources] | None    # None → fallback 到 config.vm_specs
     min_total_vms: int | None = None
     max_total_vms: int | None = None
+    total_pods: int = 0                 # 與 config.max_pods_per_node 搭配的 node 數下限
+    network: str = ""                   # 只放到同 network 的 BM
+    allowed_bm_types: list[str] | None = None
+    pool: str = ""
+    candidate_baremetals: list[str] = []  # 空 = 所有 BM
 
 class SplitPlacementRequest(BaseModel):
     requirements: list[ResourceRequirement]
     vms: list[VM] = []                  # 可混入 explicit VMs
     baremetals: list[Baremetal]
     anti_affinity_rules: list[AntiAffinityRule] = []
+    max_per_bm_rules: list[MaxPerBaremetalRule] = []
+    exclusive_bm_rules: list[ExclusiveBaremetalRule] = []
+    failover_rules: list[FailoverRule] = []
     config: SolverConfig = SolverConfig()
 
 class SplitDecision(BaseModel):
-    node_role: NodeRole
+    node_role: str
     vm_spec: Resources
     count: int
 
@@ -200,11 +208,14 @@ class SplitPlacementResult(BaseModel):
     solver_status: str = ""
     solve_time_seconds: float = 0.0
     unplaced_vms: list[str] = []
+    bm_used_count: int = 0
+    bm_total_count: int = 0
+    config_fingerprint: str = ""
     diagnostics: dict[str, Any] = {}
 ```
 
 `SolverConfig` 欄位變更：
-- `slot_tshirt_sizes` → `vm_specs`（**breaking change**，Go scheduler 需同步更新）
+- `slot_tshirt_sizes` → `vm_specs`（**breaking change**，Go scheduler 需同步更新；此改名已完成，現行 `SolverConfig` 只有 `vm_specs`）
 - 新增 `w_resource_waste: int = 5`（waste penalty 權重）
 
 ---
@@ -223,7 +234,7 @@ Requirement: worker role 需要 32 CPU
 Baremetals:
   bm-0 (ag-0): 可用 64 CPU
   bm-1 (ag-1): 可用 64 CPU
-Anti-affinity: explicit rule, max_per_ag = 1
+Anti-affinity: explicit rule, spread_on=["ag"], cap_per_bucket={"ag": 1}
 ```
 
 ---
@@ -233,7 +244,9 @@ Anti-affinity: explicit rule, max_per_ag = 1
 每個 (requirement, spec) 組合的 slot 數上限，取**各資源維度 ceil 的最大值**：
 
 ```python
-upper = max(ceil(total.field / spec.field) for field in [cpu, mem, disk, gpu] if spec.field > 0)
+# splitter.py::spec_count_upper_bound；維度由 resource_dims() 依請求推導（cpu/mem/storage + 每個 gpu:<model>）
+upper = max(ceil(total[dim] / spec[dim]) for dim in resource_dims([spec, total]) if spec[dim] > 0)
+upper = max(upper, pod_node_floor, min_total_vms)   # 再抬到 pod-node floor 與 min_total_vms
 ```
 
 套用範例（簡化只看 CPU 維度）：
@@ -410,18 +423,18 @@ Anti-affinity 在 splitter 場景中有兩種使用方式：
 
 | 方式 | 適用情境 | 說明 |
 |------|---------|------|
-| **Explicit rules** | 所有情境 | Scheduler 送入固定的 `max_per_ag`，solver 在此約束下選擇 VM 數量 |
+| **Explicit rules** | 所有情境 | Scheduler 送入固定的 `spread_on` / `cap_per_bucket`（未給的維度用 `⌈|VMs|/|buckets(d)|⌉`），solver 在此約束下選擇 VM 數量 |
 | **Auto anti-affinity** | 所有情境（含 VM 數量為決策變數） | Solver 自動依實際啟用數量計算 spreading |
 
 Auto anti-affinity 對含 synthetic VM 的群組使用**動態約束**：
 
 ```
-固定（explicit VM only）:  count_in_ag <= ceil(len(vm_ids) / num_ags)
-動態（含 synthetic VM）:   count_in_ag * num_ags <= total_active + (num_ags - 1)
-                            ≡ count_in_ag <= ceil(total_active / num_ags)
+固定（explicit VM only）:  count_in_bucket <= ceil(len(vm_ids) / num_buckets)
+動態（含 synthetic VM）:   count_in_bucket * num_buckets <= total_active + (num_buckets - 1)
+                            ≡ count_in_bucket <= ceil(total_active / num_buckets)
 ```
 
-其中 `total_active = Σ active_var[synthetic] + count(explicit)`，是 CP-SAT 運算式。solver 會根據實際啟用的 VM 數量動態調整每個 AG 的容許上限，而非基於 upper bound（所有 synthetic slots）。當群組中全部是 explicit VM 時，動態公式退化為與固定公式等價。
+上式對 `spread_on` 中每個維度 d 的每個 bucket 各建一條（多維度 AND）。是否走動態路徑由 `solver.py::_add_anti_affinity_constraints` 的 `use_dynamic = is_auto and len(synthetic_ids) > 0` 決定；某維度若有 `cap_per_bucket` 覆寫則該維度改用固定 cap。其中 `total_active = Σ active_var[synthetic] + count(explicit)`，是 CP-SAT 運算式。solver 會根據實際啟用的 VM 數量動態調整每個 AG 的容許上限，而非基於 upper bound（所有 synthetic slots）。當群組中全部是 explicit VM 時，動態公式退化為與固定公式等價。
 
 ---
 
@@ -429,10 +442,14 @@ Auto anti-affinity 對含 synthetic VM 的群組使用**動態約束**：
 
 ```
 Minimize:
-    w_consolidation × Σ bm_used
+  - 1_000_000       × Σ assign            （僅 allow_partial_placement）
+  + w_consolidation × Σ bm_used
   + w_headroom      × Σ headroom_penalties
   - w_slot_score    × Σ slot_scores
   + w_resource_waste × Σ waste_terms       ← 新增
+  + w_procurement   × Σ bm_used[buyable]  （capacity planning 才有 procurement/committed BM，純 placement 為 0 項）
+  + w_committed_stock × Σ bm_used[committed]
+  + w_procurement_balance 項（預設 0，關閉）
 ```
 
 **waste_terms** 由 splitter 提供，計算每個維度的 over-allocation：
@@ -463,13 +480,13 @@ Waste 進入 objective 被懲罰。`w_resource_waste` 越高，solver 越積極�
 
 #### 完整求解過程演繹
 
-回到範例情境，加上 explicit anti-affinity rule `max_per_ag=1`（scheduler 明確要求每個 AG 最多放 1 台）：
+回到範例情境，加上 explicit anti-affinity rule `spread_on=["ag"]`、`cap_per_bucket={"ag": 1}`（scheduler 明確要求每個 AG 最多放 1 台）：
 
 ```
 需求: 32 CPU worker
 Spec: 8 CPU, 16 CPU
 BM: bm-0(ag-0, 64CPU), bm-1(ag-1, 64CPU)
-Anti-affinity: explicit rule, max_per_ag = 1
+Anti-affinity: explicit rule, spread_on=["ag"], cap_per_bucket={"ag": 1}
 ```
 
 **Solver 搜尋空間**（滿足 coverage 的組合）：
@@ -551,7 +568,9 @@ requirement.vm_specs != None → 使用 requirement 層的 specs
 
 #### 決策 E：不支援 Topology Affinity
 
-此分支以 commit `251bbe3`（不含 cross-cluster constraints）為基底。日後合併只需在 `SplitPlacementRequest` 加入 `existing_vms` 和 `topology_rules` 欄位。
+此分支以 commit `251bbe3`（不含 cross-cluster constraints）為基底，當時預想日後在 `SplitPlacementRequest` 加入 `existing_vms` 和 `topology_rules` 欄位。
+
+> **後記**：現行程式碼並沒有 `existing_vms` / `topology_rules`。既有 VM 的 carry-forward 改由 `VM.pinned_to`（ADR-012）與 rollout 模擬（ADR-013，`RolloutRequest.existing_vms`）涵蓋；跨 cluster 的 C4/C6 規則見 ADR-011/016。
 
 ---
 
@@ -600,8 +619,8 @@ elif self.config.allow_partial_placement:
 else:
     self.model.add(sum(vm_vars) == 1)            # 原有
 
-# _add_objective：waste penalty
-waste_terms = getattr(self, "_splitter_waste_terms", [])
+# _add_objective：waste penalty（public attribute，__init__ 預設 []，由 split_solver.py 注入）
+waste_terms = self.splitter_waste_terms
 if waste_terms and self.config.w_resource_waste > 0:
     terms.append(self.config.w_resource_waste * sum(waste_terms))
 
@@ -610,20 +629,20 @@ active_var = self.active_vars.get(vm.id)
 if active_var is not None and solver.value(active_var) == 0:
     continue
 
-# _resolve_anti_affinity_rules：synthetic VM 群組標記為動態
-has_synthetic = any(vid in self.active_vars for vid in vm_ids)
-if has_synthetic:
-    rules.append(AntiAffinityRule(..., max_per_ag=0))  # sentinel
-else:
-    max_per_ag = math.ceil(len(vm_ids) / num_ags)
-    rules.append(AntiAffinityRule(..., max_per_ag=max_per_ag))
+# _resolve_anti_affinity_rules：auto rule 只帶 spread_on（= config.target_spread 的 keys），
+# 不設 cap_per_bucket；synthetic 與否不在 rule 上做記號
+rules.append(AntiAffinityRule(group_id="auto/...", vm_ids=vm_ids, spread_on=auto_spread_dims))
 
-# _add_anti_affinity_constraints：動態約束取代固定 max_per_ag
-if use_dynamic:  # auto rule 含 synthetic VM
+# _add_anti_affinity_constraints：對每個 dim in spread_on、每個 bucket
+is_auto = rule.group_id.startswith("auto/")
+synthetic_ids = [vid for vid in vm_ids if vid in self.active_vars] if is_auto else []
+use_dynamic = is_auto and len(synthetic_ids) > 0
+if use_dynamic and dim not in (rule.cap_per_bucket or {}):
     total_active = sum(active_vars[synthetic]) + count(explicit)
-    model.add(sum(vars_in_ag) * num_ags <= total_active + (num_ags - 1))
+    model.add(sum(vars_in_bucket) * num_buckets <= total_active + (num_buckets - 1))
 else:
-    model.add(sum(vars_in_ag) <= rule.max_per_ag)
+    cap = (rule.cap_per_bucket or {}).get(dim, math.ceil(len(vm_ids) / num_buckets))
+    model.add(sum(vars_in_bucket) <= cap)   # 有 pinned VM 時 cap 取 max(cap, pinned_in_bucket)
 ```
 
 ---
@@ -668,7 +687,7 @@ Go scheduler 嘗試所有 (spec, count) 組合，逐一呼叫 `/v1/placement/sol
 | 風險 | 嚴重度 | 機率 | 緩解策略 |
 |------|:------:|:----:|---------|
 | 大量 specs × 高 upper bound 導致搜尋空間膨脹 | 中 | 低 | Symmetry breaking + `w_resource_waste` 促進收斂；可降低 `max_solve_time_seconds` 接受 FEASIBLE 解 |
-| `config.vm_specs` breaking change 導致 Go scheduler 錯誤 | 高 | 中 | 明確標記 breaking change；Go 端同步更新 `slot_tshirt_sizes` → `vm_specs` |
+| `config.vm_specs` breaking change 導致 Go scheduler 錯誤 | 高 | 中 | 明確標記 breaking change；Go 端同步更新 `slot_tshirt_sizes` → `vm_specs`（solver 端已完成改名） |
 | `_last_cp_solver` side-channel 在未來重構時被遺忘 | 低 | 低 | 有明確 docstring + 測試覆蓋 |
 | Synthetic VM ID 格式被 scheduler parse 導致耦合 | 中 | 低 | 文件明確標注不可依賴；日後可加 opaque prefix |
 
@@ -692,7 +711,7 @@ Go scheduler 嘗試所有 (spec, count) 組合，逐一呼叫 `/v1/placement/sol
    - 新 endpoint `/v1/placement/split-and-solve` 就緒但 scheduler 尚未呼叫
 
 2. **Phase 2 — Go scheduler 遷移**
-   - `config.slot_tshirt_sizes` → `config.vm_specs`
+   - `config.slot_tshirt_sizes` → `config.vm_specs`（solver 端已只接受 `vm_specs`）
    - 新流程呼叫 `/v1/placement/split-and-solve`，舊流程保留為 fallback
    - 逐步切換 cluster
 
@@ -709,26 +728,81 @@ Go scheduler 嘗試所有 (spec, count) 組合，逐一呼叫 `/v1/placement/sol
 
 ## Testing
 
-`tests/test_splitter.py` 共 21 個測試，涵蓋 8 個場景類別：
+測試見 `tests/test_splitter.py`（測試數量隨功能持續增加，不在此固定列出），涵蓋的場景類別：
 
-| 類別 | 測試數 | 驗證重點 |
-|------|:------:|---------|
-| `TestBasicSplit` | 4 | 整除、非整除、min_vms、max_vms infeasible |
-| `TestMultiSpecSplit` | 2 | Waste minimization、混合 spec |
-| `TestBMCapacityConstraint` | 2 | 過大 spec 被過濾、容量不足 infeasible |
-| `TestPerRoleRequirements` | 1 | Worker + master 分開 split |
-| `TestSplitWithAntiAffinity` | 3 | Fixed count spreading、動態 count spreading、mixed explicit+synthetic group |
-| `TestMixedMode` | 1 | Explicit VM + synthetic VM 共存 |
-| `TestConfigSpecsFallback` | 2 | config.vm_specs fallback、無 spec → infeasible |
-| `TestSplitEndpoint` | 1 | HTTP endpoint smoke test |
+| 類別 | 驗證重點 |
+|------|---------|
+| `TestBasicSplit` | 整除、非整除、min_vms、max_vms infeasible |
+| `TestMultiSpecSplit` | Waste minimization、混合 spec |
+| `TestBMCapacityConstraint` | 過大 spec 被過濾、容量不足 infeasible |
+| `TestPerRoleRequirements` | Worker + master 分開 split |
+| `TestSplitWithAntiAffinity` | Fixed count spreading、動態 count spreading、mixed explicit+synthetic group |
+| `TestMixedMode` | Explicit VM + synthetic VM 共存 |
+| `TestConfigSpecsFallback` | config.vm_specs fallback、無 spec → infeasible |
+| `TestSplitEndpoint` | HTTP endpoint smoke test |
+| `TestGpuSplit`、`TestCandidateBaremetals`、`TestSplitWithMaxPerBaremetal`、`TestPodDimension`、`TestPinnedWithSplitter`、`TestSplitWithFailover`、`TestSplitWithExclusiveBm`、`TestSplitWithSynthetics` 等 | 後續加入：GPU 維度、candidate_baremetals、C4/C5/C6 與 splitter 共存、pod 維度、pinned VM、`solve_split_placement_with_synthetics` |
 
 執行：
 ```bash
 pytest tests/test_splitter.py -v         # splitter 測試
-pytest tests/ -v                         # 全部測試（含既有 47 個，共 68 個）
+pytest tests/ -v                         # 全部測試
 ```
 
 ---
+
+## 使用範例（curl）
+
+### curl 範例：32 CPU worker 需求，自動選 8 CPU VM
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "requirements": [{
+      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800},
+      "node_role": "worker",
+      "cluster_id": "cluster-1",
+      "ip_type": "routable",
+      "vm_specs": [
+        {"cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200}
+      ]
+    }],
+    "baremetals": [
+      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-0"}},
+      {"id": "bm-1", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-1"}}
+    ],
+    "config": {"auto_generate_anti_affinity": false}
+  }' | python -m json.tool
+```
+
+預期回應：`split_decisions: [{count: 4, vm_spec: {cpu_cores: 8, ...}}]`，`assignments` 4 筆。
+
+### curl 範例：使用 config.vm_specs 讓 solver 自選規格
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "requirements": [{
+      "total_resources": {"cpu_cores": 32, "memory_mib": 128000, "storage_gb": 800},
+      "node_role": "worker"
+    }],
+    "baremetals": [
+      {"id": "bm-0", "total_capacity": {"cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000}, "topology": {"ag": "ag-0"}}
+    ],
+    "config": {
+      "vm_specs": [
+        {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100},
+        {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
+        {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
+      ],
+      "w_resource_waste": 10,
+      "auto_generate_anti_affinity": false
+    }
+  }' | python -m json.tool
+```
+
+Solver 會在 3 種規格中選出 waste 最小的組合。
 
 ## Extending the Splitter
 

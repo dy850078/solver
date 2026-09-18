@@ -807,10 +807,13 @@ class VMPlacementSolver:
         """Fallback group_id when caller didn't provide one for a selector rule."""
         if sel is None:
             return "anonymous"
+        roles = sel.role_set()
         parts = [
             sel.cluster_id or "*",
             sel.ip_type or "*",
-            sel.node_role if sel.node_role else "*",
+            # List form joins with "+" so the id stays a single path segment
+            # (role charset ^[\w.-]+$ never contains "+", so it's unambiguous).
+            "+".join(sorted(roles)) if roles else "*",
         ]
         return "selector/" + "/".join(parts)
 

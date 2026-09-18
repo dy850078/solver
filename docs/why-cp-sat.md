@@ -301,7 +301,7 @@ over[j, r] = max(0,  after_util[j, r] × 100  −  headroom_upper_bound_pct)
            = 0      若利用率在安全範圍內（≤ 90%）
            = 正整數  若超過（例：96% → over = 6）
 
-bm_penalty[j] = max(over[j, cpu], over[j, mem], over[j, disk], over[j, gpu])
+bm_penalty[j] = max(over[j, d] for d in dims)   # dims 由請求推導：cpu/mem/storage + 每個 gpu:<model>（ADR-015，models.py::resource_dims）
               ← 跨維度取最壞情況
 ```
 
@@ -355,6 +355,8 @@ BM-B 已有 VM，利用率 85% → 再放入後 92% → over=2 → headroom 成�
 
 ### 解法 A：跨批次約束 — 外部狀態注入
 
+> ⚠️ 本節為概念性提案，未實作。實際請求契約以 `docs/go-scheduler-guide.md` 與 `app/models.py` 為準：沒有 `existing_vms`/`topology_rules`（既有 VM 以 `VM.pinned_to` 表達，ADR-012）、沒有 `max_vm_count`（每 BM 上限是 C4 `max_per_bm_rules`）、沒有 soft affinity、單一 `minimize`（無 `maximize`、無兩階段求解）。
+
 Go 排程器在呼叫 Solver 前，主動查詢並組裝「跨批次的全域狀態」，
 注入 `PlacementRequest` 中：
 
@@ -405,6 +407,8 @@ Solver 從 `existing_vms` 建立拓撲佔用索引，配合 `topology_rules` 加
 
 ### 解法 B：柔性約束 — 目標函數建模
 
+> ⚠️ 本節為概念性提案，未實作。實際請求契約以 `docs/go-scheduler-guide.md` 與 `app/models.py` 為準：沒有 `existing_vms`/`topology_rules`（既有 VM 以 `VM.pinned_to` 表達，ADR-012）、沒有 `max_vm_count`（每 BM 上限是 C4 `max_per_bm_rules`）、沒有 soft affinity、單一 `minimize`（無 `maximize`、無兩階段求解）。
+
 CP-SAT 的目標函數天生支援「加權偏好」：
 
 ```
@@ -443,7 +447,7 @@ Phase 2: Maximize 柔性規則總分（在不犧牲放置數的前提下）
 | **跨批次拓撲親和（Soft）** | ❌ 無法最優化 | ✅ 目標函數獎勵項 | **Solver 解決** |
 | **多柔性規則 Trade-off** | ❌ 手寫邏輯爆炸 | ✅ 加權目標函數 | **Solver 解決** |
 | **Consolidation（最小化使用 BM 數）** | ❌ 貪心不保證全局最優 | ✅ `bm_used` 變數 + 最小化目標 | **Solver 解決** |
-| **Headroom（避免多維資源過載）** | ❌ 無法同時考慮四個維度 | ✅ per-BM per-dimension 懲罰項 | **Solver 解決** |
+| **Headroom（避免多維資源過載）** | ❌ 無法同時考慮多個維度 | ✅ per-BM per-dimension 懲罰項（維度由請求推導：cpu/mem/storage + 每個 GPU 型號，ADR-015） | **Solver 解決** |
 | **Consolidation + Headroom 自動平衡** | ❌ 需要手寫 trade-off 邏輯 | ✅ 係數縮放自動平衡 | **Solver 解決** |
 
 ---
@@ -455,6 +459,8 @@ Phase 2: Maximize 柔性規則總分（在不犧牲放置數的前提下）
 ---
 
 ### 效益 1：宣告式（Declarative）約束 — 描述「要什麼」而非「怎麼找」
+
+> ⚠️ 效益 1–4 的程式片段為示意（`max_vm_count`/`current_vm_count`、soft affinity、`model.Maximize` 均不存在於現行程式碼）；實際每 BM 上限是 C4 `max_per_bm_rules`，目標函數是單一 `minimize`（`app/solver.py::_add_objective`）。
 
 純 Go 實作排程邏輯時，開發者需要同時思考：
 - **業務規則**（VM 不能超出容量）
@@ -560,6 +566,8 @@ Solver 用成熟的數學工具處理組合最優化。
 
 ### 效益 6：自帶診斷能力，降低排程失敗的 Debug 成本
 
+> ⚠️ 下方 JSON 為概念性示意，`error` / `warnings` 這兩個 key 並不存在。實際 `diagnostics` 的 key 見 `app/diagnostics.py::build` 與 `app/solver.py`：`input_errors`（INPUT_ERROR 時）、`advisories`（type 為 `spread_below_target`、`pinned_legacy_bucket_in_spread_denominator`、`max_per_bm_rule_empty`、`exclusive_bm_rule_empty`）、`vms_with_no_eligible_bm`、`infeasible_anti_affinity_rules` / `infeasible_max_per_bm_rules` / `infeasible_exclusive_rules` / `infeasible_failover_rules`、`constraint_check`、`counts`。
+
 Solver 回傳結構化的診斷資訊，讓排程失敗不再是黑盒：
 
 ```json
@@ -582,6 +590,8 @@ Solver 回傳結構化的診斷資訊，讓排程失敗不再是黑盒：
 
 ## 六、完整求解流程
 
+> ⚠️ 本節為概念性提案，未實作。實際請求契約以 `docs/go-scheduler-guide.md` 與 `app/models.py` 為準：沒有 `existing_vms`/`topology_rules`（既有 VM 以 `VM.pinned_to` 表達，ADR-012）、沒有 `max_vm_count`（每 BM 上限是 C4 `max_per_bm_rules`）、沒有 soft affinity、單一 `minimize`（無 `maximize`、無兩階段求解）。 下圖中的 Phase 0（規則降級/衝突/冗餘）、Phase 2 的 soft 親和項與 Phase 3 的兩階段求解皆未實作；實際流程是 `app/solver.py` 的 Step A（eligibility）→ B（規則驗證 + selector 展開 + 自動生成）→ C（建模 + 目標）→ D（求解 + 診斷）。
+
 ```
 Go Scheduler
   │  1. 查 Inventory API：BM 容量、角色、歷史 VM 數
@@ -600,14 +610,14 @@ Go Scheduler
 │                                                        │
 │  Phase 1：建立 CP-SAT 硬約束                            │
 │    ├─ 每個 VM 恰好分配一台 BM（or ≤ 1 if 部分排程）     │
-│    ├─ BM 資源容量不超量（CPU/Mem/Disk/GPU）              │
+│    ├─ BM 資源容量不超量（cpu/mem/storage + 各 GPU 型號） │
 │    ├─ AG 反親和分散（per-AG 計數上限）                  │
 │    ├─ BM VM 數量上限（歷史 + 新增 ≤ max_vm_count）      │
 │    └─ 跨批次拓撲反親和 Hard（直接封鎖對應變數）          │
 │                                                        │
 │  Phase 2：建立目標函數                                   │
 │    ├─ Consolidation（minimize 被使用 BM 數）            │
-│    ├─ Headroom（minimize 四維資源超載 penalty）          │
+│    ├─ Headroom（minimize 各維度資源超載 penalty）        │
 │    ├─ Soft 反親和懲罰項（-weight per 違反）             │
 │    └─ Soft 親和獎勵項（+weight per 滿足）               │
 │                                                        │
@@ -637,7 +647,7 @@ Go Scheduler 依據 assignments 執行 VM 創建
 | **柔性規則** | ❌ 啟發式，非最優 | ✅ 全域最優加權目標函數 |
 | **多規則 Trade-off** | ❌ 手寫邏輯複雜度爆炸 | ✅ 自動 weight 平衡 |
 | **Consolidation（減少使用 BM 數）** | ❌ 貪心，非全局最優 | ✅ `bm_used` 最小化目標 |
-| **Headroom（四維資源過載防護）** | ❌ 無法跨維度評分 | ✅ per-dimension penalty + 跨維度 max |
+| **Headroom（多維資源過載防護，維度由請求推導 ADR-015）** | ❌ 無法跨維度評分 | ✅ per-dimension penalty + 跨維度 max |
 | **Consolidation × Headroom 平衡** | ❌ 需手寫 if/else trade-off | ✅ 係數縮放，求解器自動平衡 |
 | **新增約束成本** | 高（可能動多個子系統） | 低（新增 `model.Add()` 呼叫） |
 | **測試可讀性** | 需了解演算法細節 | 直接描述業務場景 |

@@ -37,20 +37,25 @@ assign[(vm_id, bm_id)] ∈ {0, 1}
 ### 篩選邏輯
 
 ```
-if vm.candidate_baremetals 不為空:
+if vm.pinned_to 不為 None:
+    eligible = [vm.pinned_to]          # 已在機上的 VM：只能是原 host，略過容量檢查
+else:
     eligible = [bm for bm in candidate_baremetals
                 if bm 存在 且 vm.demand fits_in bm.available_capacity]
-else:
-    eligible = [bm for bm in all_baremetals
-                if vm.demand fits_in bm.available_capacity]
 ```
 
 兩條路徑：
 
 | 情境 | 行為 |
 |------|------|
-| Go scheduler 提供了 `candidate_baremetals` | 只考慮候選清單中容量夠的 BM |
-| 未提供 `candidate_baremetals` | 考慮所有容量夠的 BM |
+| 一般 VM（Go scheduler 提供 `candidate_baremetals`） | 只考慮候選清單中容量夠的 BM |
+| Pinned VM（`pinned_to` 已設定） | 唯一 eligible BM 就是 `pinned_to`，不做 fit check |
+
+`candidate_baremetals` 是必填的契約欄位（scheduler step 3 的篩選結果）：**空清單視為契約違反，直接回 INPUT_ERROR**，沒有「考慮所有 BM」的 fallback（見 `app/models.py::VM` docstring、`app/solver.py::get_eligible_baremetals`）。
+
+### Pinned VMs（既有 VM 帶入，ADR-012）
+
+`VM.pinned_to` 表示這個 VM **已經**住在某台 BM 上（add-node / rollout 帶入的事實，不是放置請求）。Pinned VM 的 `assign[vm, pinned_to]` 被強制為 1（即使 `allow_partial_placement=true`），`used_capacity` 維持 inventory 真值（含 pinned 消耗），solver 內部自行正規化。C3 / C4 / C5 對 pinned VM 採 **grandfathered cap**：每個 bucket 的上限變成 `max(cap, 該 bucket 內 pinned 數)`（`app/solver.py::_pinned_count_in_bucket`）— 既有違規被凍結（不再惡化）但不會導致 INFEASIBLE；C6 若被 pinned 佈局違反則回 INPUT_ERROR。結果中 pinned VM 會以 `PlacementAssignment.pinned=True` 回傳。
 
 ### 為什麼有效
 
@@ -286,11 +291,19 @@ cluster-B / non-routable / infra → 一組
 
 | Selector | 命中範圍 |
 |---|---|
-| `{cluster_id="A", ip_type="non-routable", node_role=MASTER}` | cluster A 的 non-routable masters |
-| `{cluster_id="A", node_role=MASTER}` | cluster A 的所有 masters |
-| `{node_role=MASTER}` | 所有 cluster 的所有 masters |
+| `{cluster_id="A", ip_type="non-routable", node_role="master"}` | cluster A 的 non-routable masters |
+| `{cluster_id="A", node_role="master"}` | cluster A 的所有 masters |
+| `{node_role="master"}` | 所有 cluster 的所有 masters |
+| `{cluster_id="A", node_role=["control-plane", "control-plane-learner"]}` | cluster A 中角色為兩者之一的 VM（list = role ∈ set） |
 | `{cluster_id="A"}` | cluster A 的全部 VMs |
 | 全欄位為 `null` | **拒絕**（會 INPUT_ERROR） |
+
+`node_role` 是開放字串（`^[\w.-]+$`，`NodeRole` enum 只是建議清單，ADR-010）。
+`selector.node_role` 也接受 **list**（成員即命中，空 list 拒絕；ADR-016，`app/models.py::GroupSelector`）。
+典型用法是跨角色的 C4 union：一條 `max_per_bm_rules` 以
+`node_role=["control-plane", "control-plane-learner"]`、`max_per_bm=1`
+讓 master 與 learner 不同機，而自動 C3 / C5 仍把它們視為兩個獨立角色
+（可執行範例：`examples/control_plane_learner_separate.json`）。
 
 ### 計算範例
 

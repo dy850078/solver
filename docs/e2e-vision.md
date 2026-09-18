@@ -4,9 +4,10 @@
 > **日期**: 2026-07-27（末次更新 2026-07-29）
 > **狀態**: 設計已 review；**solver 端 S1–S6 全數實作完成**（ADR-002～006），
 > Go 端 G1–G7 待實作（交接文件：`docs/go-e2e-contracts.md`，harness：
-> `docs/go-harness/`）
+> `docs/go-harness/`）；後續 ADR-012～016（pinned、rollout、sizing、per-GPU gpu dict、
+> multi-role selector）未反映在本圖
 > **前置文件**: `docs/capacity-planning.md`（Phase 1–3 已實作、43 條決議）、
-> `docs/design-review-scheduler-solver.md`、`docs/go-scheduler-guide.md`
+> `docs/design-review-solver-scheduler.md`、`docs/go-scheduler-guide.md`
 > **本文 Decision Log 從 #1 起新編**，與 capacity-planning.md 的 #1–#43 互不衝突
 > （關係見文末〈與既有決議的關係〉）。
 
@@ -72,7 +73,7 @@ ownership 在 Go Scheduler Service 與上游（Capacity 負責人、H/W team）�
 | S6 | 打 OS | 各廠 owner 走另一內部系統 | 無；BM 生命週期狀態影響候選池 | **狀態機已存在**；OS 未 ready 由 Go filter 排除（執行期）| **已有**（執行期）；規劃期納入規則見一致性設計 |
 | S7 | Cluster 建置 | UI 點選 → template → VM 規格/數量 | `/v1/placement/solve`、`/split-and-solve` ✅ | 既有 placement 契約 | **已有** |
 | S8 | Day1 執行 | Go scheduler 真實放置 | 無；計畫 vs 實際的落差在此誕生 | 缺 demand_id 透傳與執行落帳 | **缺** |
-| S9 | Day2 維運 | add-node、換修、除役 | add-node ✅；fleet events `release` 設計已定（既有決議 #40）| `ExistingDistribution` / `ExistingBmOccupancy` 已定義 | **部分** |
+| S9 | Day2 維運 | add-node、換修、除役 | add-node ✅；fleet events `release` 設計已定（既有決議 #40）| 現有 VM 以 `VM.pinned_to` / `RolloutRequest.existing_vms` 帶入（ADR-012/013；`ExistingDistribution` / `ExistingBmOccupancy` 未實作）| **部分** |
 | S10 | 用量回饋 | 無系統化迴路 | reconcile（本文新設計）| 缺 plan-vs-actual 契約 | **缺** |
 
 ### 缺口收斂：三條結締組織
@@ -83,7 +84,7 @@ ownership 在 Go Scheduler Service 與上游（Capacity 負責人、H/W team）�
 - **A. 需求帳本管道（S1→S2）**：Excel/口頭 → 結構化 `DemandEntry` 帳本 +
   upsert API + demand_id 發號。沒有它，E2E 的起點永遠是手工。
 - **B. 現況快照管道（S2、S7 共用）**：Inventory → 一鍵聚合出 `in_stock` +
-  `existing_distributions` + `existing_bm_occupancy` + `committed_stock`
+  現有 VM（帶 `pinned_to`，ADR-012）+ `committed_stock`
   （`procurement_caps` 暫不送，見決議 #26）。**規劃與執行共用同一快照來源**
   是一致性保證的地基。
 - **C. 事件與回饋管道（S3→S10）**：採購確認（→committed_stock）、到貨
@@ -261,6 +262,10 @@ reconcile（純函式，隨時可跑）
 說「這期沒中是因為誰」。
 
 ### `/v1/capacity/reconcile`（solver 端 S3）
+
+> 草案；實際契約見 `app/models.py::ReconcilePlan`（`plan_id, created_at, report: CapacityReport,
+> demand_snapshot`）/ `ActualSnapshot`（`as_of, in_stock, committed_stock, executions, machine_adds`）
+> 與 `docs/go-e2e-contracts.md`。
 
 ```
 POST /v1/capacity/reconcile          # 純函式：進什麼算什麼，不存任何東西

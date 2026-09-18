@@ -48,6 +48,11 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
     `Σ assign[vm∈group, bm∈b] ≤ cap_d`, default cap `⌈|VMs|/|buckets(d)|⌉`.
     Dimensions are AND'd, never the Cartesian product.
   - **C4** — max-per-BM: no single BM hosts more than `max_per_bm` VMs of a group.
+    Rule selectors (`GroupSelector`) take `node_role` as a string or a list
+    (role ∈ set, ADR-016): a C4 rule over a role *union* (e.g. control-plane ∪
+    control-plane-learner, cap 1) keeps those roles off each other's BMs while
+    auto C3/C5 still treat them as separate roles. Identity (which role string a
+    VM carries) is the scheduler's; policy (co-locate or not) is a rule.
   - **C5** — failover N-1: per bucket b of `fault_domain`:
     `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
   - **C6** — exclusive occupancy: members of an `exclusive_bm_rules` group
