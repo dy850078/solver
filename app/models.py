@@ -272,29 +272,72 @@ class GroupSelector(BaseModel):
     """
     Declarative VM matcher. None on a field means "wildcard".
 
-    Used by AntiAffinityRule and MaxPerBaremetalRule so the scheduler can
-    describe a group by attributes instead of enumerating VM IDs.
+    Used by AntiAffinityRule, MaxPerBaremetalRule, ExclusiveBaremetalRule and
+    FailoverRule so the scheduler can describe a group by attributes instead
+    of enumerating VM IDs.
 
-    Example:
+    node_role accepts either a single role (exact match) or a list of roles
+    (membership: the VM's role must be one of them). The list form is how a
+    rule spans several roles that must stay distinct elsewhere — e.g. a C4
+    cap over control-plane ∪ control-plane-learner keeps masters and learners
+    off each other's BMs while auto C3/C5 still see them as two roles.
+
+    Examples:
       GroupSelector(cluster_id="A", ip_type="non-routable", node_role=MASTER)
-      → matches every VM in cluster A whose ip_type is non-routable and
-        whose role is master.
+      → every VM in cluster A whose ip_type is non-routable and role is master.
+      GroupSelector(cluster_id="A", node_role=["control-plane", "control-plane-learner"])
+      → every VM in cluster A whose role is either of the two.
     """
     cluster_id: str | None = None
     ip_type: str | None = None
-    node_role: str | None = None
+    node_role: str | list[str] | None = None
+
+    @field_validator("node_role")
+    @classmethod
+    def _role_format(cls, v: str | list[str] | None) -> str | list[str] | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return validate_role(v)
+        if not v:
+            raise ValueError("node_role list must not be empty (omit the field for wildcard)")
+        seen: set[str] = set()
+        out: list[str] = []
+        for role in v:
+            validate_role(role)
+            if role not in seen:
+                seen.add(role)
+                out.append(role)
+        return out
 
     def is_empty(self) -> bool:
         return self.cluster_id is None and self.ip_type is None and self.node_role is None
 
-    def matches(self, vm: VM) -> bool:
-        if self.cluster_id is not None and vm.cluster_id != self.cluster_id:
+    def role_set(self) -> frozenset[str] | None:
+        """Roles this selector accepts, or None for wildcard. Single source of
+        truth for the str-vs-list distinction — callers compare against this
+        instead of inspecting node_role's type."""
+        if self.node_role is None:
+            return None
+        if isinstance(self.node_role, str):
+            return frozenset((self.node_role,))
+        return frozenset(self.node_role)
+
+    def matches_attrs(self, cluster_id: str, ip_type: str, node_role: str) -> bool:
+        """Match against bare (cluster_id, ip_type, node_role) scalars. Used by
+        matches() for VMs and by the capacity planner for requirements, so both
+        paths share one definition of selector semantics."""
+        if self.cluster_id is not None and cluster_id != self.cluster_id:
             return False
-        if self.ip_type is not None and vm.ip_type != self.ip_type:
+        if self.ip_type is not None and ip_type != self.ip_type:
             return False
-        if self.node_role is not None and vm.node_role != self.node_role:
+        roles = self.role_set()
+        if roles is not None and node_role not in roles:
             return False
         return True
+
+    def matches(self, vm: VM) -> bool:
+        return self.matches_attrs(vm.cluster_id, vm.ip_type, vm.node_role)
 
 
 class AntiAffinityRule(BaseModel):

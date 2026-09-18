@@ -7,6 +7,8 @@ Run: pytest tests/test_solver.py -v
 
 import json
 
+import pytest
+
 from app.models import (
     Resources, NodeRole,
     AntiAffinityRule,
@@ -1395,6 +1397,146 @@ class TestAntiAffinitySelector:
         assert r.success
         ags = {a.ag for a in r.assignments}
         assert len(ags) == 3
+
+
+# ===========================================================================
+# GroupSelector list-of-roles form (control-plane / learner co-location policy)
+# ===========================================================================
+
+def _control_plane_fleet():
+    """3 control-plane + 3 control-plane-learner in cluster A; 6 BMs across 3 AGs
+    (2 BMs per AG) so both "spread per role across AGs" and "all 6 on distinct
+    BMs" are satisfiable at once."""
+    bms = [make_bm(f"bm-{ag}-{slot}", ag=f"ag-{ag}", rack=f"rack-{ag}-{slot}")
+           for ag in range(3) for slot in range(2)]
+    vms = (
+        [make_vm(f"m-{i}", role="control-plane", cluster="A", ip_type="routable")
+         for i in range(3)]
+        + [make_vm(f"l-{i}", role="control-plane-learner", cluster="A", ip_type="routable")
+           for i in range(3)]
+    )
+    return vms, bms
+
+
+def _control_plane_solver(vms, bms, max_per_bm_rules=None, **cfg):
+    """Like _solve_with_bm_rules but returns the solver so tests can inspect
+    the resolved rule lists (effective_rules / max_per_bm_rules)."""
+    all_bm_ids = [bm.id for bm in bms]
+    request = PlacementRequest(
+        vms=[vm.model_copy(update={"candidate_baremetals": all_bm_ids}) for vm in vms],
+        baremetals=bms,
+        max_per_bm_rules=max_per_bm_rules or [],
+        config=SolverConfig(max_solve_time_seconds=10, **cfg),
+    )
+    return VMPlacementSolver(request)
+
+
+class TestMultiRoleSelector:
+
+    def test_string_form_unchanged(self):
+        sel = GroupSelector(cluster_id="A", node_role="control-plane")
+        assert sel.node_role == "control-plane"
+        assert sel.matches(make_vm("m", role="control-plane", cluster="A"))
+        assert not sel.matches(make_vm("l", role="control-plane-learner", cluster="A"))
+
+    def test_list_form_matches_any_listed_role(self):
+        sel = GroupSelector(cluster_id="A", node_role=["control-plane", "control-plane-learner"])
+        assert sel.matches(make_vm("m", role="control-plane", cluster="A"))
+        assert sel.matches(make_vm("l", role="control-plane-learner", cluster="A"))
+        assert not sel.matches(make_vm("w", role="worker", cluster="A"))
+        assert not sel.matches(make_vm("m-B", role="control-plane", cluster="B"))
+        assert not sel.is_empty()
+
+    def test_list_form_dedupes_and_validates(self):
+        sel = GroupSelector(node_role=["a", "b", "a"])
+        assert sel.node_role == ["a", "b"]
+        with pytest.raises(ValueError, match="must not be empty"):
+            GroupSelector(node_role=[])
+        with pytest.raises(ValueError, match="node_role"):
+            GroupSelector(node_role=["ok", "bad role!"])
+
+    def test_json_contract_accepts_both_forms(self):
+        a = GroupSelector.model_validate({"cluster_id": "A", "node_role": "x"})
+        b = GroupSelector.model_validate({"cluster_id": "A", "node_role": ["x", "y"]})
+        assert a.role_set() == frozenset({"x"})
+        assert b.role_set() == frozenset({"x", "y"})
+        assert GroupSelector().role_set() is None
+
+    def test_fallback_group_id_for_list_selector(self):
+        sel = GroupSelector(cluster_id="A", node_role=["cp-learner", "cp"])
+        gid = VMPlacementSolver._auto_group_id_for_selector(sel)
+        assert gid == "selector/A/*/cp+cp-learner"
+
+    def test_no_colocate_policy_union_c4_keeps_per_role_c3(self):
+        """Scenario 1: one explicit C4 over control-plane ∪ learner (cap 1)
+        forces all 6 onto distinct BMs, while auto C3 (still keyed per role)
+        keeps each role spread across all 3 AGs."""
+        vms, bms = _control_plane_fleet()
+        rule = MaxPerBaremetalRule(
+            group_id="A-control-plane-no-colocate",
+            selector=GroupSelector(
+                cluster_id="A", node_role=["control-plane", "control-plane-learner"],
+            ),
+            max_per_bm=1,
+        )
+        s = _control_plane_solver(
+            vms, bms, max_per_bm_rules=[rule],
+            auto_generate_anti_affinity=True, target_spread={"ag": 3},
+        )
+        r = s.solve()
+        assert r.success, r.solver_status
+        a = amap(r)
+        assert len(set(a.values())) == 6, a
+        bm_ag = {bm.id: bm.topology.ag for bm in bms}
+        assert len({bm_ag[a[f"m-{i}"]] for i in range(3)}) == 3, a
+        assert len({bm_ag[a[f"l-{i}"]] for i in range(3)}) == 3, a
+        # The union rule replaces (subsumes) the per-role auto C4 rules,
+        # while auto C3 still produced one group per role.
+        assert [x.group_id for x in s.max_per_bm_rules] == ["A-control-plane-no-colocate"]
+        assert sorted(x.group_id for x in s.effective_rules) == [
+            "auto/A/routable/control-plane", "auto/A/routable/control-plane-learner"]
+
+    def test_colocate_allowed_policy_needs_no_rule(self):
+        """Scenario 2: no explicit rule; per-role auto C4 (cap 1) forbids two
+        of the same role on a BM but lets a master and a learner share one."""
+        vms, bms = _control_plane_fleet()
+        s = _control_plane_solver(
+            vms, bms,
+            auto_generate_anti_affinity=True, target_spread={"ag": 3},
+            auto_generate_max_per_bm=True, default_max_per_bm=1,
+        )
+        r = s.solve()
+        assert r.success, r.solver_status
+        a = amap(r)
+        assert len({a[f"m-{i}"] for i in range(3)}) == 3
+        assert len({a[f"l-{i}"] for i in range(3)}) == 3
+        ids = sorted(x.group_id for x in s.max_per_bm_rules)
+        assert ids == ["auto-bm/A/routable/control-plane",
+                       "auto-bm/A/routable/control-plane-learner"], ids
+
+    def test_failover_selectors_accept_list_form(self):
+        """C5 primary/backup may each name several roles."""
+        bms = [make_bm(f"bm-{i}", room=f"room-{i % 2}", ag=f"ag-{i}") for i in range(6)]
+        vms = (
+            [make_vm(f"m-{i}", role="control-plane", cluster="A") for i in range(2)]
+            + [make_vm(f"l-{i}", role="control-plane-learner", cluster="A") for i in range(2)]
+            + [make_vm(f"s-{i}", role="standby", cluster="A") for i in range(1)]
+        )
+        f = FailoverRule(
+            rule_id="cp-by-room",
+            primary=GroupSelector(cluster_id="A", node_role="control-plane"),
+            backup=GroupSelector(cluster_id="A", node_role=["control-plane-learner", "standby"]),
+            fault_domain="room",
+        )
+        r = solve(vms, bms, failover_rules=[f])
+        assert r.success, r.solver_status
+        a = amap(r)
+        room = {bm.id: bm.topology.room for bm in bms}
+        backups = ["l-0", "l-1", "s-0"]
+        for rm in ("room-0", "room-1"):
+            primaries_in = sum(room[a[f"m-{i}"]] == rm for i in range(2))
+            backups_out = sum(room[a[b]] != rm for b in backups)
+            assert backups_out >= primaries_in, a
 
 
 # ===========================================================================

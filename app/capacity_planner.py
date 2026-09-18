@@ -567,14 +567,12 @@ def _group_per_bm_cap(request: ProcurementRequest,
 
 
 def _selector_matches_req(selector, req) -> bool:
-    """GroupSelector match against a requirement's (cluster, ip_type, role)."""
+    """GroupSelector match against a requirement's (cluster, ip_type, role).
+    Delegates to GroupSelector.matches_attrs so selector semantics (including
+    the list-of-roles form) have exactly one definition."""
     if selector is None:
         return False
-    return (
-        (selector.cluster_id is None or selector.cluster_id == req.cluster_id)
-        and (selector.ip_type is None or selector.ip_type == req.ip_type)
-        and (selector.node_role is None or selector.node_role == req.node_role)
-    )
+    return selector.matches_attrs(req.cluster_id, req.ip_type, req.node_role)
 
 
 def _classify(result) -> str:
