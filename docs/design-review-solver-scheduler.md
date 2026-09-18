@@ -2,7 +2,7 @@
 
 > **作者**: dysiang
 > **日期**: 2026-05-21
-> **適用版本**: branch `zs/implement-splitter` / Solver 0.1.0
+> **適用版本**: `main`（2026-09）/ Solver 0.1.0
 > **受眾**: K8s Infra 團隊（老闆 + 同事）
 > **時長**: ~35 分鐘簡報 + 10 分鐘 Open Discussion
 
@@ -236,15 +236,16 @@ A：兩個原因——
 Splitter（決定 spec/count）與 Placement（決定 VM→BM）建構在**同一個 `CpModel`** 上，一次 solve 同時決定兩者。
 這避免了「先 split 後 place、結果 anti-affinity 過不去就重來」的 retry 循環。
 
-#### Hard Constraints（C1~C5）
+#### Hard Constraints（C1~C6）
 
 | 代號 | 名稱 | 公式直覺 | 用途 |
 |------|------|---------|------|
 | **C1** | One-BM-per-VM | `Σ_j assign[i,j] = 1`（partial 模式下 `≤ 1`） | 每台 VM 恰好擺在一台 BM |
-| **C2** | Capacity | `Σ demand × assign ≤ available`（per BM × 四維） | CPU / Memory / Storage / GPU 不超量 |
+| **C2** | Capacity | `Σ demand × assign ≤ available`（per BM × 每個資源維度） | CPU / Memory / Storage 三個純量 + 每個 GPU 機型一個 `gpu:<model>` 維度（機型間不可互換，ADR-015） |
 | **C3** | Anti-Affinity | 對 `spread_on` 每個維度，每個桶上限 `cap_per_bucket` 或 `⌈N/\|B\|⌉` | 跨 AG / Room / Rack… 分散，避免同 fault domain 集中 |
 | **C4** | Max-per-BM | 同 group 的 VM 在單台 BM 上限 N | 避免單台 BM 故障影響過多 node |
 | **C5** | Failover Redundancy | 對任一 fault domain bucket：`P_in + B_in ≤ \|B\|` | N-1 redundancy（master / learner 跨 fault domain 互補） |
+| **C6** | Exclusive Occupancy | `exclusive_bm_rules` 群組成員獨佔整台 BM（無外人、無同組同居） | Appliance 語意（F5 / Bastion 等），ADR-011 |
 
 **白話 anti-affinity**：「同 cluster 的 master 不要擠在同一機架，這樣一台壞掉時其他還在」。
 **白話 failover**：「就算整個 room 掉電，活下來的 learner 數量足夠補上倒下的 master」。
@@ -252,6 +253,7 @@ Splitter（決定 spec/count）與 Placement（決定 VM→BM）建構在**同�
 **設計亮點**：
 - C3 / C4 可由 solver 依 `(cluster_id, ip_type, node_role)` 自動生成，scheduler 不必為每個 role 手寫規則
 - C5 用 `GroupSelector(cluster_id, node_role)` 配對 primary/backup，不必 enumerate VM id
+- `node_role` 是開放字串（ADR-010）；selector 的 `node_role` 可為 list（role ∈ set，ADR-016），例如一條 C4 規則涵蓋 control-plane ∪ control-plane-learner
 - 新增約束 = 多寫一個 `model.Add(...)`，**不會破壞**現有 constraint
 
 #### Objective Function（多權重最佳化）
@@ -262,8 +264,13 @@ Minimize:
  +         10 × Σ bm_used[j]          (P1: Consolidation — 少用 BM)
  +          8 × Σ headroom_penalty[j] (P2: Headroom — 避免單台 BM 爆 90%)
  -          0 × Σ slot_score[j]       (P3: Slot Score — 保留可用空間，預設關)
- +          5 × splitter_waste        (Splitter 模式：懲罰 over-allocation)
+ +          5 × splitter_waste        (w_resource_waste，Splitter 模式：懲罰 over-allocation)
+ +     10,000 × Σ bm_used[buyable]    (w_procurement，capacity planning：少買機器)
+ +        100 × Σ bm_used[committed]  (w_committed_stock：in-stock → committed → buy 的順序)
+ +          0 × procurement_balance   (w_procurement_balance：平衡各 bucket 剩餘容量，預設關)
 ```
+
+完整項目見 `app/solver.py::_add_objective`；權重全部在 `SolverConfig`。
 
 **直白翻譯**：
 > 「能放下優先；其次少用機器；再來別塞太滿；剩下的空間越能再放標準 VM 越好。」
@@ -289,16 +296,19 @@ BM-B 已 85% 滿   → 再塞 +16（headroom penalty over=2 × w_headroom=8）
 |------|---------|---------|
 | **INPUT_ERROR** | request 本身違反 schema / 重複 ID 等 | `input_errors: [...]` + advisories；不嘗試 solve |
 | **OPTIMAL / FEASIBLE** | 找到（或在 timeout 內找到次優）解 | `assignments` + `advisories`（policy 落差警示） |
-| **INFEASIBLE / UNKNOWN** | 確認無解或超時 | `constraint_check.failed_at`（指出哪一層卡住）+ `vms_with_no_eligible_bm` + `infeasible_anti_affinity_rules` + `counts` |
+| **INFEASIBLE / UNKNOWN** | 確認無解或超時 | `constraint_check.failed_at`（指出哪一層卡住）+ `vms_with_no_eligible_bm` + `infeasible_anti_affinity_rules` / `infeasible_max_per_bm_rules` / `infeasible_exclusive_rules` / `infeasible_failover_rules` + `counts` |
 | **Exception** | Solver 內部 bug | `solver_status="ERROR: ..."` |
 
 **分層 constraint check**（INFEASIBLE 時）：
-重建 3 個獨立小模型，5 秒 timeout，由淺入深逐層加 constraint，找出**第一個**讓問題變 INFEASIBLE 的層級：
+重建 6 個獨立小模型，各 5 秒 timeout，由淺入深逐層加 constraint，找出**第一個**讓問題變 INFEASIBLE 的層級（`app/diagnostics.py::_constraint_layer_check`）：
 
 ```
 Layer 1: one_bm_per_vm     → 失敗 = 某台 VM 沒有任何 eligible BM（最常見）
 Layer 2: + capacity        → 失敗 = VMs 個別可放，但總和裝不下
-Layer 3: + anti_affinity   → 失敗 = 容量夠，但 AG / fault domain 分散規則衝突
+Layer 3: + anti_affinity   → 失敗 = 容量夠，但 AG / Room 分散規則衝突
+Layer 4: + failover        → 失敗 = C5 N-1 互補規則衝突
+Layer 5: + max_per_bm      → 失敗 = C4 單台 BM 上限衝突
+Layer 6: + exclusive       → 失敗 = C6 獨佔規則衝突
 ```
 
 **Advisory（成功但要警示）**：
@@ -366,6 +376,14 @@ solver 成功擺好，但發現 policy 落差時加註，例如「想 spread 3 �
 4. **責任界線模糊**：splitter 邏輯在 scheduler 端，新增 constraint 兩邊都要改
 
 **結論**：保留兩個 endpoint，讓 caller 依場景選擇；長期 split-and-solve 應為主流路徑。
+
+**其他端點**（本文不展開，見 `app/server.py`）：
+- `POST /v1/placement/rollout` — 依建置順序逐步模擬，前一步的擺放以 pinned 帶入下一步（ADR-013）
+- `POST /v1/placement/rollout/size` — 估算讓整個建置順序都放得下的最小機隊（ADR-014）
+- `POST /v1/capacity/procure` — 單次採購 sizing：需求 + 庫存 → 各機型該買幾台
+- `POST /v1/capacity/plan` — 多期容量規劃：需求帳本 → 每 fab 每月 roll-forward 報表
+- `POST /v1/capacity/reconcile` — plan vs actual 對帳報表（純函式）
+- `GET /health`；`POST /api/mock/generate`（mock 請求產生器）；`/ui`（需 `ENABLE_UI=enable`）
 
 ---
 
@@ -445,8 +463,8 @@ solver 成功擺好，但發現 policy 落差時加註，例如「想 spread 3 �
 
 - 完整 Request / Response schema → `docs/go-scheduler-guide.md`
 - Constraint 詳細數學模型 → `docs/constraints.md`
-- Objective Function 公式與 tuning → `docs/objective-function.md`、`docs/objective-function-guide.md`
+- Objective Function 公式與 tuning → `docs/objective-function.md`
 - 為何選 CP-SAT → `docs/why-cp-sat.md`
 - Master/Learner N-1 設計 → `docs/master-learner-redundancy.md`
 - Diagnostics 完整流程 → `docs/explainability.md`
-- Splitter 設計 → `docs/requirement-splitter.md`、`docs/requirement-splitter-v2.md`
+- Splitter 設計 → `docs/requirement-splitter-v2.md`

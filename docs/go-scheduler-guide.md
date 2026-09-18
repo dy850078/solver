@@ -1,7 +1,7 @@
 # Go Scheduler 實作指南：VM Placement Solver API
 
-> **適用版本**: branch `zs/implement-splitter`
-> **最後更新**: 2026-03-30
+> **適用版本**: `main`（含 ADR-010～016）
+> **最後更新**: 2026-09-18
 
 ---
 
@@ -97,7 +97,6 @@ Scheduler                                  Solver
 | `AntiAffinityRule.cap_per_bucket` | 新增、選填 | `dict[str, int]`，鍵必須是 `spread_on` 子集，value ≥ 1；未列出的維度走 `⌈N / \|buckets\|⌉` 自動均分 |
 | `SolverConfig.target_ag_spread` | **移除** | 改用 `target_spread: dict[str, int]`，預設 `{"ag": 3}` |
 | `Baremetal.topology.room` | 新增、選填 | 預設 `""` |
-| `NodeRole` enum | 新增 `"learner"` | scheduler 端 enum / parser 需要識別此值 |
 | `PlacementRequest.failover_rules` | 新增、選填 | `list[FailoverRule]`（見下文） |
 | `PlacementRequest.exclusive_bm_rules` | 新增、選填 | `list[ExclusiveBaremetalRule]`（C6 獨占：群成員獨居整台 BM；`{group_id, vm_ids\|selector}`，無 auto-gen，見 ADR-011） |
 | `VM.node_role` / `GroupSelector.node_role` | **型別放寬** | enum → 開放字串（`^[\w.-]+$`）；既有值原樣相容，scheduler 可直接送新 role（ceph-mon、f5…），見 ADR-010 |
@@ -140,7 +139,7 @@ Scheduler                                  Solver
 | `primary` | GroupSelector | ✅ | primary 群（例如 master） |
 | `backup` | GroupSelector | ✅ | backup 群（例如 learner） |
 | `fault_domain` | string | ✅ | 任一 topology 維度（單一字串） |
-| `policy` | string | — | 預設 `"n_minus_1"`；目前僅支援此值 |
+| `policy` | `Literal["n_minus_1"]` | — | 預設 `"n_minus_1"`；目前僅支援此值，其他值在 Pydantic 解析階段即回 HTTP 422（不會進到 INPUT_ERROR） |
 
 範例：
 
@@ -160,6 +159,33 @@ Scheduler                                  Solver
 - `|primary| > |backup|` 且 `policy="n_minus_1"`
 - `fault_domain` 不在合法維度集合
 
+### `GroupSelector.node_role` 的清單形式（ADR-016）
+
+`GroupSelector.node_role` 接受**單一字串**（精確比對）或**字串清單**（VM 的 role ∈ 清單即命中）。
+清單形式讓一條規則跨越多個 role，而 auto C3 / C5 仍把它們視為不同 role。
+
+典型用途：control-plane 與 control-plane-learner **不可同機**，但各自仍要跨 AG 分散、failover 仍要分 primary/backup：
+
+```json
+{
+  "max_per_bm_rules": [
+    {
+      "group_id": "A-control-plane-no-colocate",
+      "selector": {"cluster_id": "A", "node_role": ["control-plane", "control-plane-learner"]},
+      "max_per_bm": 1
+    }
+  ]
+}
+```
+
+**Scheduler 契約**：
+- **role 字串是身分**（identity）：每台 VM 的 `node_role` 固定，master 永遠送 `control-plane`、learner 永遠送 `control-plane-learner`，不因政策改變。
+- **是否同機是政策**（policy），用規則表達：
+  - 不允許同機 → 送上面這條 C4 清單規則（`max_per_bm=1`）。
+  - 允許同機 → **不送**這條規則，改用 `config.auto_generate_max_per_bm=true` + `default_max_per_bm=1`（auto C4 以 `(cluster_id, ip_type, node_role)` 分組，兩個 role 各自限一台/BM，彼此可共居）。
+
+完整可跑範例：`examples/control_plane_learner_separate.json`；設計理由見 `docs/decisions/ADR-016-multi-role-group-selector.md`。
+
 ---
 
 ## 3. 新 endpoint 的 Request 格式
@@ -172,6 +198,8 @@ Scheduler                                  Solver
 | `baremetals` | list[Baremetal] | ✅ | 同 `/solve`，需填 `used_capacity` |
 | `vms` | list[VM] | — | 可混入既有 explicit VM（例如已存在不需重排的 VM） |
 | `anti_affinity_rules` | list[AntiAffinityRule] | — | 明確指定的分散規則（`spread_on` 必填、選填 `cap_per_bucket`） |
+| `max_per_bm_rules` | list[MaxPerBaremetalRule] | — | C4 單機上限規則（`{group_id, vm_ids\|selector, max_per_bm}`） |
+| `exclusive_bm_rules` | list[ExclusiveBaremetalRule] | — | C6 獨占規則（`{group_id, vm_ids\|selector}`，見 ADR-011） |
 | `failover_rules` | list[FailoverRule] | — | 跨群組 N-1 互補規則（master / learner 等） |
 | `config` | SolverConfig | — | solver 調參，見下表 |
 
@@ -180,15 +208,19 @@ Scheduler                                  Solver
 | 欄位 | 型別 | 必填 | 說明 |
 |------|------|:----:|------|
 | `total_resources` | Resources | ✅ | 這個 role 的**總**資源預算（非單台 VM） |
-| `node_role` | string | ✅ | `master` / `learner` / `worker` / `infra` / `l4lb-storage` |
-| `cluster_id` | string | — | 同原本 `VM.cluster_id` |
-| `ip_type` | string | — | 同原本 `VM.ip_type`（`auto_generate_anti_affinity` 用） |
+| `node_role` | string | — | 預設 `"worker"`。開放字串（`^[\w.-]+$`，ADR-010）；`master` / `learner` / `worker` 等只是已知值，非封閉清單 |
+| `cluster_id` | string | — | 同原本 `VM.cluster_id`（預設 `""`） |
+| `ip_type` | string | — | 同原本 `VM.ip_type`（`auto_generate_anti_affinity` 用，預設 `""`） |
 | `vm_specs` | list[Resources] \| null | — | 候選 spec；`null` 時 fallback 到 `config.vm_specs` |
 | `min_total_vms` | int \| null | — | 強制最少幾台（例如 master 固定 3 台：填 `3`） |
 | `max_total_vms` | int \| null | — | 強制最多幾台 |
-| `candidate_baremetals` | list[string] | — | 限制此 role 只能放在哪些 BM 上（空 = 不限制）。Go scheduler 依 BM/VM role 篩選後填入，例如 master 只能住 control-plane BM |
+| `total_pods` | int | — | 預設 `0`。pod 數下限：搭配 `config.max_pods_per_node` 保證 `node_count ≥ ceil(total_pods / max_pods_per_node)`；0 = 無 pod 需求 |
+| `network` | string | — | 預設 `""`。網路網域（BGP zone）：非空時 `candidate_baremetals` 會先被縮到 `Baremetal.network` 相符的 BM |
+| `allowed_bm_types` | list[string] \| null | — | 預設 `null`。採購用的機型白名單，僅 capacity planner 使用 |
+| `pool` | string | — | 預設 `""`。專用池標籤，僅 capacity planner 使用（`""` = 共用池，是獨立網域而非萬用字元） |
+| `candidate_baremetals` | list[string] | ✅（實務上） | 此 role 可放的 BM 清單，由 Go scheduler 依 BM/VM role 篩選後填入（例如 master 只能住 control-plane BM）。**空清單不是「不限制」**：該 requirement 會被 splitter 丟棄（`splitter.py::_drop_requirement`），只要它有實際需求，整個 model 就變 INFEASIBLE |
 
-### `SolverConfig` 完整欄位（含新增）
+### `SolverConfig` 欄位（完整清單以 `app/models.py::SolverConfig` 為準）
 
 | 欄位 | 型別 | 預設值 | 說明 |
 |------|------|:------:|------|
@@ -202,7 +234,17 @@ Scheduler                                  Solver
 | `headroom_upper_bound_pct` | int | 90 | BM 使用率安全上限（%） |
 | `w_slot_score` | int | 0 | 剩餘空間可用性獎勵權重 |
 | `vm_specs` | list[Resources] | [] | 全局 spec pool（原 `slot_tshirt_sizes`） |
-| `w_resource_waste` | int | 5 | **新增**：懲罰 over-allocation（split 盡量選 zero-waste spec） |
+| `w_resource_waste` | int | 5 | 懲罰 over-allocation（split 盡量選 zero-waste spec） |
+| `auto_generate_max_per_bm` | bool | false | 自動為同 `(cluster_id, ip_type, node_role)` 的 VM 生成 C4 規則；為 true 時 `default_max_per_bm` 必填，否則 INPUT_ERROR |
+| `default_max_per_bm` | int \| null | null | 自動 C4 規則的每 BM 上限 |
+| `max_pods_per_node` | int | 0 | 每台 VM（K8s node）可承載的 pod 數上限；搭配 `ResourceRequirement.total_pods` 形成節點數下限。0 = 停用 |
+| `w_procurement` | int | 10000 | 採購（capacity planning）：使用可購買 BM 的權重，設高以先填滿 in-stock |
+| `procurement_spread_dimension` | string | `"ag"` | 可購買 BM 分桶的 topology 維度 |
+| `w_committed_stock` | int | 100 | 已採購未到貨（committed）BM 的成本，介於 in-stock 與新購之間 |
+| `w_procurement_balance` | int | 0 | 平衡各桶採購後剩餘 CPU 的軟權重；0 = 停用 |
+| `reference_vm_spec` | Resources \| null | null | 健康度量尺：「還能放幾台參考 VM」 |
+| `min_useful_spec` | Resources \| null | null | 健康度量尺：放不下此 spec 的剩餘空間視為 stranded |
+| `fab_topology_dimension` | string | `"site"` | 多期規劃時用來分 fab 的 topology 維度 |
 
 ---
 
@@ -409,8 +451,9 @@ POST /v1/placement/split-and-solve
 ```
 
 > **重點**：
-> - `candidate_baremetals` 為**可選欄位**，空陣列或不填表示不限制（所有 BM 都可用）
-> - Solver 內部會將此清單傳遞給每個 synthetic VM，與原本 `/v1/placement/solve` 的 `VM.candidate_baremetals` 行為一致
+> - `candidate_baremetals` **實務上必填**：空陣列或不填**不是**「不限制」——該 requirement 會被 splitter 丟棄（`splitter.py::_resolve_specs` / `_drop_requirement`），只要它有實際需求，整個 model 就變 INFEASIBLE（若因此沒有任何 VM 則回 `NO_VMS`）。CPU 池被過濾到剩零台時，scheduler 應在送出前就報錯
+> - 若 requirement 有設 `network`，清單會先被縮到 `Baremetal.network` 相符的 BM（`splitter.py::_eligible_candidate_ids`），縮到空同樣視為空清單
+> - Solver 內部會將（縮小後的）清單傳遞給每個 synthetic VM，與原本 `/v1/placement/solve` 的 `VM.candidate_baremetals` 行為一致
 > - 若 `candidate_baremetals` 中的 BM ID 不在 `baremetals` 陣列中，該 ID 會被靜默忽略
 > - Splitter 在篩選 spec 時只會考慮 candidate BMs 的容量（避免選到只能放在非候選 BM 上的 spec）
 
@@ -444,7 +487,8 @@ GPU VM 那一側其實可以多列（solver 的 fits_in 會自動剔除型號不
 >   這就是「硬」的定義——若想要「能避就避、必要時可借用」的軟偏好，那是
 >   solver-side objective 的範疇，目前尚未實作。
 > - `/v1/placement/solve` 路徑：VM 層的 `candidate_baremetals` **不可為空**
->   （空清單 = INPUT_ERROR）；split 路徑的 requirement 層空清單才是「不限制」。
+>   （空清單 = INPUT_ERROR）；split 路徑的 requirement 層空清單則會讓該
+>   requirement 被丟棄而 INFEASIBLE（見情境 C 的重點）。兩條路徑都一樣：
 >   CPU 池被過濾到剩零台時，scheduler 應在送出前就報錯，而不是送空清單。
 > - 完整可跑的範例：`examples/gpu_dedicated_pool.json`
 >   （`make cli INPUT=examples/gpu_dedicated_pool.json`）。
@@ -478,6 +522,9 @@ GPU VM 那一側其實可以多列（solver 的 fits_in 會自動剔除型號不
   "solver_status": "OPTIMAL",
   "solve_time_seconds": 0.23,
   "unplaced_vms": [],
+  "bm_used_count": 3,
+  "bm_total_count": 3,
+  "config_fingerprint": "3f9a1c2b7d4e",
   "diagnostics": {}
 }
 ```
@@ -491,6 +538,8 @@ GPU VM 那一側其實可以多列（solver 的 fits_in 會自動剔除型號不
 | `vm_id` 格式 | `split-r{req_idx}-s{spec_idx}-{k}`，為 internal ID，**不應在 scheduler 端 parse 格式** |
 | `solver_status` | `OPTIMAL` / `FEASIBLE` / `INFEASIBLE` / `UNKNOWN` |
 | `unplaced_vms` | 放置失敗的 vm_id 列表（通常為空；`allow_partial_placement=true` 時可能有值） |
+| `bm_used_count` / `bm_total_count` | 本次實際放到的 BM 數 / request 提供的 BM 總數 |
+| `config_fingerprint` | 有效 config + engine/ortools 版本的 sha256 前 12 碼；用來把結果對回產生它的 solver 設定 |
 
 ---
 

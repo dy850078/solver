@@ -45,6 +45,8 @@
 | `POST /v1/capacity/procure` | 單次採買 sizing（無月概念） | 臨時 what-if；正式流程走 /plan |
 | `POST /v1/capacity/reconcile` | plan vs actual 對帳（純函式） | 週 cron / 月底正式 / 手動（G6） |
 | `POST /v1/placement/solve`、`/v1/placement/split-and-solve` | 執行期放置（既有，契約未變） | Cluster 建置 / add-node（S7） |
+| `POST /v1/placement/rollout` | 依建置順序逐步模擬，每步擺放以 pinned 帶入下一步（ADR-013） | 建置前 dry-run / 演練 |
+| `POST /v1/placement/rollout/size` | 估算讓整個建置順序放得下的最小機隊（ADR-014） | 新 fab / greenfield sizing |
 | `GET /openapi.json`、`GET /health` | schema / 健康檢查 | 部署與 codegen |
 
 **placement 契約沒有 demand_id 欄位**——demand_id 是 Go 內部 metadata
@@ -55,7 +57,9 @@
 ## 2. 共用資料模型（JSON 契約速查）
 
 以下是 Go 端需要組裝/解讀的模型（權威版本在 `app/models.py`，出入以彼為準）。
-省略的欄位（anti_affinity_rules 等）沿用既有 placement 契約。所有 `period`
+省略的欄位（anti_affinity_rules 等）沿用既有 placement 契約；規則的 `selector`
+（`GroupSelector`）中 `node_role` 可為單一字串或**字串 list**（list = role ∈ set，
+ADR-016）。所有 `period`
 一律 `"YYYY-MM"`（格式錯 → 422）。
 
 ### Resources / Topology / Baremetal
@@ -83,7 +87,7 @@
 ```jsonc
 {
   "cluster_id": "cluster-a",        // 必填
-  "node_role": "worker",            // master|learner|worker|infra|l4lb-storage|bastion
+  "node_role": "worker",            // 開放字串，格式 ^[\w.-]+$（ADR-010）；NodeRole enum 僅為建議清單
   "period": "2026-09",              // 必填
   "cpu_cores": 0, "memory_mib": 0, "storage_gb": 0, "pod_count": 0,  // 增量需求；0=該維度不設下限
   "vm_specs": [Resources] | null,   // null = 用 config.vm_specs 目錄

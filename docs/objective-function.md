@@ -10,8 +10,14 @@ Minimize(
   + w_consolidation × Σ bm_used[j]
   + w_headroom      × Σ headroom_penalty[j]
   - w_slot_score    × Σ slot_score[j]
+  + w_resource_waste × Σ waste_terms      # (僅 split-and-solve，由 splitter 注入)
+  + w_procurement   × Σ bm_used[buyable]  # (僅 capacity planning 有 procurement BM)
+  + w_committed_stock × Σ bm_used[committed]
+  + procurement_balance 項                 # (w_procurement_balance，預設 0 = 關閉)
 )
 ```
+
+> 只有這一個 `minimize`，沒有 `maximize`；「越高越好」的項目以負號進入。實作見 `app/solver.py::_add_objective`。
 
 ## 優先級
 
@@ -23,8 +29,12 @@ Minimize(
 | P1 | Consolidation | `w_consolidation` (預設 10) | 越少越好 | 最小化使用的 BM 數量 |
 | P2 | Headroom | `w_headroom` (預設 8) | penalty 越小越好 | 避免單台 BM 利用率過高 |
 | P3 | Slot score | `w_slot_score` (預設 0) | 越高越好 | 偏好剩餘空間仍可用的 BM |
+| P1–P3 之間 | Resource waste | `w_resource_waste` (預設 5) | 越少越好 | 僅 split-and-solve：splitter 過度配置的懲罰（與 P1/P2 同量級，一起拉鋸） |
+| P0.5 | Procurement | `w_procurement` (預設 10,000) | 越少越好 | 僅 capacity planning：每用一台「要買的」BM 的懲罰，壓過 P1–P3 所有項、只輸給 P0 |
+| P0.7 | Committed stock | `w_committed_stock` (預設 100) | 越少越好 | 僅 capacity planning：已下單未到貨的 BM，比買新便宜、比 in-stock 貴 → in-stock → committed → buy |
+| — | Procurement balance | `w_procurement_balance` (預設 0) | 越平均越好 | 僅 capacity planning：soft-minimize 各 bucket 放置後剩餘 CPU 的 max−min；預設關閉 |
 
-> P0 的權重 1,000,000 遠大於其他項，確保「多放一個 VM」永遠優先於「少用一台 BM」。
+> P0 的權重 1,000,000 遠大於其他項，確保「多放一個 VM」永遠優先於「少用一台 BM」。純 placement 請求（`/v1/placement/solve`）沒有 procurement/committed BM，也沒有 waste terms，實際只剩 P0–P3 四項。
 
 ---
 
@@ -93,7 +103,7 @@ Step E: bm_penalty = max(over_cpu, over_mem, ...)    # 跨維度取最大值
 
 #### 計算範例
 
-BM 總量 64 CPU，已用 16，新放入 VM 需 40 CPU：
+BM 總量 64 CPU，已用 16，新放入 VM 需 40 CPU（以下只示範 CPU 一個維度；實際維度由 `models.py::resource_dims` 依請求推導 — cpu/mem/storage 加上每個 `gpu:<model>`，BM 在該維度 total 為 0 時跳過不計）：
 
 ```
 util_pct = (16 + 40) × 100 ÷ 64 = 87%
@@ -115,7 +125,7 @@ over = max(0, 10) = 10    → penalty = 10
 terms.append(-w_slot_score * Σ effective_slot_score[j])
 ```
 
-- **觸發條件**：`w_slot_score > 0` 且 `slot_tshirt_sizes` 非空
+- **觸發條件**：`w_slot_score > 0` 且 `config.vm_specs` 非空（`vm_specs` 同時是 splitter 的候選規格，兩功能共用同一欄位）
 - **語義**：偏好放置後剩餘空間仍能容納標準 VM（t-shirt size）的 BM
 - **為什麼需要**：consolidation 只管「少用 BM」，但可能把 VM 塞進大機器，導致剩餘空間碎片化（例如每台都剩 3 CPU，無法再放任何 VM）
 
@@ -124,7 +134,7 @@ terms.append(-w_slot_score * Σ effective_slot_score[j])
 由 Go scheduler 在 request 中提供，例如：
 
 ```json
-"slot_tshirt_sizes": [
+"vm_specs": [
   {"cpu_cores": 4,  "memory_mib": 16000, "storage_gb": 100},
   {"cpu_cores": 8,  "memory_mib": 32000, "storage_gb": 200},
   {"cpu_cores": 16, "memory_mib": 64000, "storage_gb": 400}
@@ -152,7 +162,7 @@ effective = bm_used[j] × bm_score[j]
 
 #### 計算範例
 
-BM 總量 64 CPU / 256,000 MiB，已用 0，放入 1 個 VM (8 CPU / 32,000 MiB) 後：
+BM 總量 64 CPU / 256,000 MiB，已用 0，放入 1 個 VM (8 CPU / 32,000 MiB) 後（維度同樣由 `resource_dims` 推導；t-shirt 在某維度需求為 0 時該維度不當瓶頸）：
 
 ```
 剩餘: 56 CPU / 224,000 MiB
@@ -202,5 +212,10 @@ Slot score 作為 tiebreaker，通常 `w_slot_score` 應遠小於 `w_consolidati
 | `w_headroom` | int | 8 | 超過利用率上限的懲罰倍數 |
 | `headroom_upper_bound_pct` | int | 90 | 利用率安全上限（百分比） |
 | `w_slot_score` | int | 0 | slot score 獎勵倍數（0=停用） |
-| `slot_tshirt_sizes` | list[Resources] | [] | 標準 VM 規格，需明確提供 |
+| `vm_specs` | list[Resources] | [] | 標準 VM 規格（slot score 的 t-shirt sizes；也是 splitter 的候選規格），需明確提供 |
+| `w_resource_waste` | int | 5 | splitter 過度配置的懲罰倍數（僅 split-and-solve） |
+| `w_procurement` | int | 10000 | 每用一台要採購的 BM 的懲罰（僅 capacity planning） |
+| `procurement_spread_dimension` | str | "ag" | 採購 BM 分桶的 topology 維度 |
+| `w_committed_stock` | int | 100 | 每用一台 committed（已下單）BM 的懲罰（僅 capacity planning） |
+| `w_procurement_balance` | int | 0 | 各 bucket 剩餘 CPU 的 max−min 懲罰（0=停用） |
 | `allow_partial_placement` | bool | false | 是否允許只放部分 VM |

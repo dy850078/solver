@@ -46,7 +46,7 @@ if status == INFEASIBLE:
 
 | 面向 | Assumptions 方案 | 我們的方案 |
 |------|-----------------|-----------|
-| **失敗診斷** | `SufficientAssumptionsForInfeasibility()` — 自動 MUS | `_constraint_layer_check()` — 重建 3 個小模型，逐層測試 |
+| **失敗診斷** | `SufficientAssumptionsForInfeasibility()` — 自動 MUS | `_constraint_layer_check()` — 重建 6 個小模型，逐層累加測試 |
 | **效能** | 單執行緒，無法使用 objective | 多執行緒，與主求解獨立 |
 | **成功解釋** | 無法幫助（僅適用於 INFEASIBLE） | Post-solve 指標擷取，使用 `solver.value()` |
 | **相容性** | 與 `minimize()` 衝突 | 完全相容 |
@@ -63,12 +63,12 @@ if status == INFEASIBLE:
 
 | 路徑 | 目前回傳內容 | 缺口 |
 |------|------------|------|
-| **INPUT_ERROR** | ✅ `input_errors: [...]`（重複 BM 偵測，`solver.py:99-116`） + ✅ `advisories`（若有） | 目前僅偵測重複 BM 與重複 candidate，未涵蓋其他靜態驗證 |
+| **INPUT_ERROR** | ✅ `input_errors: [...]`（靜態驗證，`solver.py::VMPlacementSolver.__init__` 內所有 `_input_errors.append` 呼叫） + ✅ `advisories`（若有） | 涵蓋重複 BM/VM、空 `candidate_baremetals`、pinned 驗證、rule 驗證、pinned 佈局違反 C6 等；完整清單以 `solver.py` 的 `_input_errors` 為準 |
 | **成功** | ✅ `advisories`（若有） + `assignments`, `solver_status`, `solve_time_seconds` | ⏳ 無 objective 拆解、⏳ 無 per-BM 利用率指標 |
-| **失敗** | ✅ `constraint_check.failed_at`, `vms_with_no_eligible_bm`, `infeasible_anti_affinity_rules`, `counts` + ✅ `advisories`（若有） | ⏳ 無 capacity gap 分析（VM 差多少放不下？） |
+| **失敗** | ✅ `constraint_check.failed_at`, `vms_with_no_eligible_bm`, `infeasible_anti_affinity_rules`, `infeasible_max_per_bm_rules`, `infeasible_exclusive_rules`, `infeasible_failover_rules`, `counts` + ✅ `advisories`（若有） | ⏳ 無 capacity gap 分析（VM 差多少放不下？） |
 | **Exception** | ✅ `advisories`（若有），`solver_status="ERROR: ..."` | 例外路徑刻意保持極簡 |
 
-`advisories` 透過 `_with_advisories()`（`solver.py:777-782`）注入**所有**回傳路徑，是橫切關注點，與其他 diagnostics 區段獨立。
+`advisories` 透過 `_with_advisories()`（`solver.py::VMPlacementSolver._with_advisories`）注入**所有**回傳路徑，是橫切關注點，與其他 diagnostics 區段獨立。
 
 ---
 
@@ -76,13 +76,13 @@ if status == INFEASIBLE:
 
 #### 四條回傳路徑與決定點
 
-`VMPlacementSolver.solve()`（`solver.py:701-775`）依序檢查以下 gate，第一個命中決定路徑：
+`VMPlacementSolver.solve()`（`solver.py::VMPlacementSolver.solve`）依序檢查以下 gate，第一個命中決定路徑：
 
 ```
 solve() 進入點
   │
   ├─ self._input_errors 非空？ ──── YES ──→ INPUT_ERROR
-  │   （duplicate BM/candidate            ├─ diagnostics: input_errors + advisories
+  │   （所有靜態驗證                      ├─ diagnostics: input_errors + advisories
   │    在 __init__ 階段就已偵測）          └─ unplaced_vms = 全部 VM
   │   NO
   │
@@ -99,7 +99,7 @@ solve() 進入點
   │
   ├─ status == INFEASIBLE/UNKNOWN？ ─ YES ──→ 失敗
   │                                        ├─ DiagnosticsBuilder.build()
-  │                                        ├─ diagnostics: constraint_check + 4 區段 + advisories
+  │                                        ├─ diagnostics: 最多 7 個 key（見 DiagnosticsBuilder.build）+ advisories
   │                                        └─ unplaced_vms = 全部 VM
   │
   └─ except Exception: ─────────────────→ Exception
@@ -134,28 +134,31 @@ solve() 進入點
 
 #### Helper A：`_constraint_layer_check()` — 為什麼是 layered？
 
-位置：`diagnostics.py:113-189`
+位置：`diagnostics.py::DiagnosticsBuilder._constraint_layer_check`
 
 **問題**：CP-SAT 回 INFEASIBLE 時不會告訴你「哪個約束導致衝突」。MUS（minimal unsatisfiable subset）需要 assumptions，但前面 Part 1 已說明那條路不通。
 
-**解法**：拆成 3 個獨立小模型，依約束複雜度由淺入深逐層加入，找出**第一個**讓問題變 INFEASIBLE 的層級：
+**解法**：拆成 6 個獨立小模型，依約束複雜度由淺入深逐層加入，找出**第一個**讓問題變 INFEASIBLE 的層級：
 
 | 層級 | 加入的約束 | 若這層 fail 表示 |
 |------|-----------|----------------|
 | `one_bm_per_vm` | 每個 VM 必須放在恰好 1 台 BM 上 | 至少有一個 VM 沒有 eligible BM（最常見根因） |
 | `capacity` | + 每台 BM 各維度容量上限 | VMs 個別可放，但總和裝不下 |
-| `anti_affinity` | + AG 散佈規則 | 容量夠，但 anti-affinity policy 衝突 |
+| `anti_affinity` | + 多維度散佈規則（C3） | 容量夠，但 anti-affinity policy 衝突 |
+| `failover` | + N-1 failover 規則（C5） | 前三層可行，但 primary/backup 的 fault-domain 冗餘不足 |
+| `max_per_bm` | + max-per-BM 規則（C4） | 前層可行，但單機上限過嚴 |
+| `exclusive` | + 獨占 BM 規則（C6） | 前層可行，但獨占群成員找不到夠多可獨居的 BM |
 
 **設計選擇與理由**：
 
-1. **由淺入深的順序**：對應「結構必要 → 資源限制 → policy 限制」三層。第一層失敗不可能解，第二層失敗可能加機器解決，第三層失敗通常需要調 policy。錯一層只能在那層之後修，所以第一個 fail 點就是根因。
+1. **由淺入深的順序**：對應「結構必要 → 資源限制 → policy 限制」三段（policy 段再依 C3 → C5 → C4 → C6 累加）。第一層失敗不可能解，第二層失敗可能加機器解決，第三層失敗通常需要調 policy。錯一層只能在那層之後修，所以第一個 fail 點就是根因。
 
 2. **獨立小模型而非重用 self.model**：
    - 主 model 帶 objective 與 splitter waste terms — 加入這些反而干擾診斷
    - 重用會強制把 build 邏輯切細，破壞 `_add_*_constraints` 的可讀性
    - 獨立模型可以在診斷階段任意加減層而不影響主路徑
 
-3. **5 秒 timeout（`diagnostics.py:167`）**：診斷模型比主模型簡單，正常 < 1 秒。設 5 秒是保險上限 — 若超過就回 UNKNOWN，避免診斷本身變成新的延遲源。
+3. **5 秒 timeout（`_constraint_layer_check` 內的 `quick_solve`）**：診斷模型比主模型簡單，正常 < 1 秒。設 5 秒是保險上限 — 若超過就回 UNKNOWN，避免診斷本身變成新的延遲源。
 
 4. **`failed_at` 取「第一個」非 OK 的層**：後層可能因前層仍 fail 而 fail，但根因就在第一層。
 
@@ -165,14 +168,17 @@ solve() 進入點
 
 #### Helper B：`_check_anti_affinity_feasibility()` — Pigeonhole 的必要不充分性
 
-位置：`diagnostics.py:93-111`
+位置：`diagnostics.py::DiagnosticsBuilder._check_anti_affinity_feasibility`
 
 **程式邏輯**：
 ```python
-min_ags_needed = ceil(vm_count / max_per_ag)
-reachable_ags = 該 group 的 VM 至少能放上的 BM 所在的 AG 集合
-if len(reachable_ags) < min_ags_needed: → infeasible
+for dim in rule.spread_on:                       # 每個維度獨立檢查
+    cap = cap_per_bucket.get(dim, ceil(vm_count / num_buckets_global))
+    min_buckets_needed = ceil(vm_count / cap)
+    reachable_buckets = 該 group 的 VM 至少能放上的 BM 在此維度的桶集合
+    if len(reachable_buckets) < min_buckets_needed: → failed_dimensions.append(...)
 ```
+（以 AG 維度為例，下文的 `max_per_ag` / `reachable_ags` 即 `cap` / `reachable_buckets`；pinned 成員另走 grandfathered 座位數的變體。）
 
 **為什麼這是必要不充分（重要！）**：
 
@@ -184,7 +190,7 @@ if len(reachable_ags) < min_ags_needed: → infeasible
 
 #### Helper C：`get_eligible_baremetals()` — 為什麼是 module-level
 
-位置：`solver.py:54-76`，`diagnostics.py:62-63` 透過薄 wrapper 呼叫
+位置：`solver.py::get_eligible_baremetals`，`diagnostics.py::DiagnosticsBuilder._eligible` 透過薄 wrapper 呼叫
 
 **設計原則：Single source of truth**。
 
@@ -209,17 +215,17 @@ eligibility 邏輯（candidate list 過濾 + capacity fits_in 檢查）若在 so
 ├─ 不需要 solve 就能判斷的靜態錯誤（如 schema 違反、互斥欄位、重複 ID）？
 │   → INPUT_ERROR 路徑
 │   → 在 __init__ 加偵測 → self._input_errors.append(...)
-│   → 範例：duplicate BM 偵測（solver.py:99-116）
+│   → 範例：duplicate BM 偵測（solver.py::VMPlacementSolver.__init__）
 │
 ├─ Solve 成功但與 policy/最佳實務有落差？
 │   → Advisory 路徑
 │   → 在 model build 階段（rule resolution 或 constraint add）self.advisories.append({...})
 │   → 必須非阻斷（不可改變 success）
-│   → 範例：ag_spread_below_target（solver.py:248-274）
+│   → 範例：spread_below_target（solver.py::_resolve_anti_affinity_rules）
 │
 ├─ Solve 失敗的根因解釋？
 │   ├─ 純資料分析（不需要 solve）→ 加在 DiagnosticsBuilder.build()，新增方法
-│   │   範例：vms_with_no_eligible_bm（diagnostics.py:70-72）
+│   │   範例：vms_with_no_eligible_bm（diagnostics.py::DiagnosticsBuilder.build）
 │   │   未來範例：capacity_gaps（已設計，待實作）
 │   │
 │   └─ 需要重建小模型（如新約束類型的根因定位）→ 加新 layer 到 _constraint_layer_check
@@ -283,17 +289,17 @@ Advisory 用於回報「solver 求解成功（OPTIMAL/FEASIBLE），但與 polic
   "diagnostics": {
     "advisories": [
       {
-        "type": "ag_spread_below_target",
+        "type": "spread_below_target",
         "severity": "warning",
-        "group_id": "auto/routable/master",
-        "message": "Anti-affinity for routable/master below policy target: actual spread=2, target=3 (2 AG(s), 5 VMs).",
+        "group_id": "auto/cluster-a/routable/master",
+        "message": "Anti-affinity for cluster-a/routable/master below policy target on ag: actual spread=2, target=3 (2 bucket(s), 5 VMs).",
         "details": {
+          "dimension": "ag",
           "vm_count": 5,
-          "num_ags": 2,
+          "num_buckets": 2,
           "effective_spread": 2,
-          "target_ag_spread": 3,
-          "max_per_ag": 3,
-          "ag_names": ["ag-a", "ag-b"]
+          "target_spread": 3,
+          "bucket_names": ["ag-a", "ag-b"]
         }
       }
     ]
@@ -303,7 +309,7 @@ Advisory 用於回報「solver 求解成功（OPTIMAL/FEASIBLE），但與 polic
 
 | 欄位 | 說明 |
 |------|------|
-| `type` | Advisory 類型字串（machine-readable，目前只有 `ag_spread_below_target`） |
+| `type` | Advisory 類型字串（machine-readable）。目前有四種：`spread_below_target`、`pinned_legacy_bucket_in_spread_denominator`、`max_per_bm_rule_empty`、`exclusive_bm_rule_empty`（grep `"type":` in `solver.py`） |
 | `severity` | 嚴重度（目前固定 `warning`；保留 `info` / `error` 給未來類型） |
 | `group_id` | 觸發來源（例如 anti-affinity rule id） |
 | `message` | 人類可讀的單行訊息（已含關鍵數字） |
@@ -311,15 +317,17 @@ Advisory 用於回報「solver 求解成功（OPTIMAL/FEASIBLE），但與 polic
 
 #### 2.0.1 Advisory type 清單
 
-**`ag_spread_below_target`** — 由 `_resolve_anti_affinity_rules()`（`solver.py:248-274`）觸發。
+**`spread_below_target`** — 由 `_resolve_anti_affinity_rules()`（`solver.py::_resolve_anti_affinity_rules`）觸發。
 
-當 auto-generated anti-affinity rule 的「最大可能 AG 散佈」低於 `SolverConfig.target_ag_spread`（預設 3）時觸發。`effective_spread = min(num_ags, len(vm_ids))` — 即 infra AG 數與 group VM 數的較小值。
+當 auto-generated anti-affinity rule 在某維度 `d` 的「最大可能散佈」低於 `SolverConfig.target_spread[d]`（`dict[str, int]`，預設 `{"ag": 3}`）時觸發，**每個未達標的維度各發一條**。`effective_spread = min(num_buckets, len(vm_ids))` — 即 infra 在該維度的桶數與 group VM 數的較小值。
+
+其餘三種 type（`pinned_legacy_bucket_in_spread_denominator`、`max_per_bm_rule_empty`、`exclusive_bm_rule_empty`）的 `details` 結構請直接看 `solver.py` 中對應的 `self.advisories.append`。
 
 兩種典型成因：
 - **Infra 不足**：群組有 5 個 VM 但只有 2 個 AG → effective_spread=2 < target=3
 - **Group 太小**：有 5 個 AG 但群組只有 2 個 VM → effective_spread=2 < target=3
 
-對於含 synthetic VM（splitter slot）的 rule，`details.max_per_ag` 為字串 `"dynamic"`（因實際 VM 數是決策變數）。
+對於含 synthetic VM（splitter slot）的 rule，`effective_spread` 以 slot 上限數估算（保守的上界）；per-bucket cap 的動態化發生在 `_add_anti_affinity_constraints` 的 `use_dynamic` 路徑，advisory 本身不帶任何標記。
 
 #### 2.0.2 注入路徑
 
@@ -327,10 +335,10 @@ Advisory 用於回報「solver 求解成功（OPTIMAL/FEASIBLE），但與 polic
 
 | 路徑 | 注入點 |
 |------|--------|
-| INPUT_ERROR | `solver.py:719` |
-| 失敗（INFEASIBLE/UNKNOWN） | `solver.py:755` |
-| Exception | `solver.py:774` |
-| 成功（OPTIMAL/FEASIBLE） | `solver.py:833`（在 `_extract_solution()` 末端） |
+| INPUT_ERROR | `solve()` 的 INPUT_ERROR 分支 |
+| 失敗（INFEASIBLE/UNKNOWN） | `solve()` 的失敗分支（包住 `_build_failure_diagnostics()`） |
+| Exception | `solve()` 的 `except` 分支 |
+| 成功（OPTIMAL/FEASIBLE） | `_extract_solution()` 末端 |
 
 設計意圖：advisory 與「成功/失敗」正交，scheduler 不需要在不同回傳結構間 switch。
 
@@ -345,7 +353,7 @@ Advisory 用於回報「solver 求解成功（OPTIMAL/FEASIBLE），但與 polic
 
 ### 設計：成功路徑 — Objective Breakdown + 利用率指標 ⏳ 尚未實作
 
-> **狀態**：設計完成，尚未進入程式碼。`_extract_solution()`（`solver.py:798-834`）目前回傳 `diagnostics=self._with_advisories({})`，僅包含 advisory（若有）。
+> **狀態**：設計完成，尚未進入程式碼。`_extract_solution()`（`solver.py::VMPlacementSolver._extract_solution`）目前回傳 `diagnostics=self._with_advisories({})`，僅包含 advisory（若有）。
 
 OPTIMAL/FEASIBLE 時，透過 `solver.value()` 讀取 CP-SAT 變數值計算 post-solve 指標。不需要修改模型 — 純粹讀取已有的變數。
 
@@ -478,7 +486,7 @@ return PlacementResult(
 
 ### 設計：失敗路徑 — Capacity Gap 分析 ⏳ 尚未實作
 
-> **狀態**：設計完成，尚未進入程式碼。`DiagnosticsBuilder.build()`（`diagnostics.py:65-91`）目前在偵測到 `vms_with_no_eligible_bm` 時只列出 VM id 清單，未計算 shortfall。
+> **狀態**：設計完成，尚未進入程式碼。`DiagnosticsBuilder.build()`（`diagnostics.py::DiagnosticsBuilder.build`）目前在偵測到 `vms_with_no_eligible_bm` 時只列出 VM id 清單，未計算 shortfall。
 
 INFEASIBLE 時，對無 eligible BM 的 VM 顯示差距有多大。
 
@@ -572,7 +580,7 @@ def test_my_advisory(self):
     assert a["type"] == "my_new_type"
     assert a["details"]["my_field"] == expected_value   # 結構穩定
 ```
-反例請看 `tests/test_solver.py:230-321` 的 `TestAGSpreadAdvisory`。
+反例請看 `tests/test_solver.py::TestAGSpreadAdvisory`。
 
 **2. INPUT_ERROR**：要驗證**完全不嘗試 solve**
 ```python
@@ -598,7 +606,7 @@ def test_my_failure_diagnostic(self):
 
 #### 「不該觸發」也要測
 
-Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory / 失敗區段都應有對應的「正常情境不觸發」測試。看 `TestAGSpreadAdvisory` 中 `test_no_advisory_when_*` 系列 — 4 個觸發測試對 3 個不觸發測試。
+Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory / 失敗區段都應有對應的「正常情境不觸發」測試。看 `tests/test_solver.py::TestAGSpreadAdvisory` 中 `test_no_advisory_when_*` 系列（觸發與不觸發成對存在）。
 
 ---
 
@@ -606,7 +614,7 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 
 #### 與 Go Scheduler 的契約面
 
-`PlacementResult.diagnostics: dict[str, Any]`（`models.py:201`）對 Go 端是 free-form JSON。但**雖然 untyped，仍是契約**。
+`PlacementResult.diagnostics: dict[str, Any]`（`models.py::PlacementResult.diagnostics`）對 Go 端是 free-form JSON。但**雖然 untyped，仍是契約**。
 
 | 契約等級 | 包含 | 修改規則 |
 |---------|------|---------|
@@ -623,7 +631,7 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 - ❌ 移除既有欄位
 - ⚠️ 拆/合欄位：等同移除 + 新增，需要兩階段發版
 
-**版本演進策略**：若需要破壞性變更，新增 `type=ag_spread_below_target_v2` 並讓兩者並存一個 release，再移除舊版。
+**版本演進策略**：若需要破壞性變更，新增 `type=spread_below_target_v2` 並讓兩者並存一個 release，再移除舊版。
 
 #### Splitter 整合 Checklist
 
@@ -632,7 +640,7 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 | Diagnostic 類型 | 要對 active_vars 做的事 | 為什麼 |
 |---------------|-----------------------|-------|
 | Eligibility 計算 | **不變** — `get_eligible_baremetals` 不看 active_var | Eligibility 是靜態事實，與 slot 是否啟用無關 |
-| Anti-affinity rule（含 synthetic） | `max_per_ag` 要動態化（`solver.py:411-438`），advisory `details.max_per_ag` 字串為 `"dynamic"` | VM 數量是決策變數，固定 max 算錯 |
+| Anti-affinity rule（含 synthetic） | per-bucket cap 要動態化（`solver.py::_add_anti_affinity_constraints` 的 `use_dynamic` 路徑）；advisory `details` 不留任何標記 | VM 數量是決策變數，固定 cap 算錯 |
 | `_extract_solution` | 跳過 `solver.value(active_var) == 0` 的 slot | 那是 splitter 決定不用的 slot |
 | 未來 `_build_success_diagnostics` | `per_bm.vms_placed` 只列 active_var==1 的 VM；utilization 也只算這些 | 否則回報的「已放置」與 assignments 不一致 |
 | 未來 `capacity_gaps` | 排除 `active_vars` 中尚未啟用的 slot | 「solver 自願放棄」不算 shortfall |
@@ -668,9 +676,9 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 
 | Level | 使用時機 | 範例 |
 |-------|---------|------|
-| `error` | INPUT_ERROR / Exception / VM 無 eligible BM 強制 INFEASIBLE | `solver.py:712, 768, 328` |
-| `warning` | Advisory 觸發、INFEASIBLE 帶 diagnostics | `solver.py:274, 756` |
-| `info` | Auto rule 解析、solve 開始/結束、status | `solver.py:215-224, 234-241, 737-748` |
+| `error` | INPUT_ERROR / Exception / VM 無 eligible BM 強制 INFEASIBLE | `solve()` 的 INPUT_ERROR 與 `except` 分支、`_build_variables()` |
+| `warning` | Advisory 觸發、INFEASIBLE 帶 diagnostics | `_resolve_anti_affinity_rules()`、`solve()` 的失敗分支 |
+| `info` | Auto rule 解析、solve 開始/結束、status | `_resolve_anti_affinity_rules()`、`solve()` |
 
 **原則**：
 1. **Diagnostic 內容會雙寫** — log 給 ops、diagnostics 給 scheduler，是不同消費者
@@ -694,13 +702,14 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 
 | 功能 | 路徑 | 程式位置 |
 |------|------|---------|
-| `vms_with_no_eligible_bm`（無候選 BM 的 VM 清單） | 失敗 | `diagnostics.py:70-72` |
-| `infeasible_anti_affinity_rules`（spread 不可能達成的規則） | 失敗 | `diagnostics.py:75-77`, `_check_anti_affinity_feasibility` |
-| `constraint_check`（逐層測試找出第一個 infeasible 的約束層） | 失敗 | `diagnostics.py:79-80`, `_constraint_layer_check` |
-| `counts`（vms / bms / ags / variables / rules 摘要） | 失敗 | `diagnostics.py:82-89` |
-| `input_errors`（重複 BM、重複 candidate） | INPUT_ERROR | `solver.py:99-116`, `solver.py:719` |
-| `advisories`（橫切：注入所有路徑） | 全部 | `solver.py:777-782` |
-| `advisories[].type=ag_spread_below_target`（policy 散佈不足） | 成功/失敗皆可能 | `solver.py:248-274` |
+| `vms_with_no_eligible_bm`（無候選 BM 的 VM 清單） | 失敗 | `diagnostics.py::DiagnosticsBuilder.build` |
+| `infeasible_anti_affinity_rules`（spread 不可能達成的規則） | 失敗 | `DiagnosticsBuilder.build`, `_check_anti_affinity_feasibility` |
+| `infeasible_max_per_bm_rules` / `infeasible_exclusive_rules` / `infeasible_failover_rules`（C4 / C6 / C5 counting pre-check） | 失敗 | `_check_max_per_bm_feasibility`, `_check_exclusive_feasibility`, `_check_failover_feasibility` |
+| `constraint_check`（逐層測試找出第一個 infeasible 的約束層） | 失敗 | `DiagnosticsBuilder.build`, `_constraint_layer_check` |
+| `counts`（vms / bms / ags / variables / rules 摘要） | 失敗 | `DiagnosticsBuilder.build` |
+| `input_errors`（靜態驗證：重複 ID、空 candidate、pinned / rule 驗證等） | INPUT_ERROR | `solver.py::VMPlacementSolver.__init__`（`_input_errors`）, `solve()` |
+| `advisories`（橫切：注入所有路徑） | 全部 | `solver.py::VMPlacementSolver._with_advisories` |
+| `advisories[].type=spread_below_target`（policy 散佈不足，每維度一條） | 成功/失敗皆可能 | `solver.py::_resolve_anti_affinity_rules` |
 
 ### 未實作（設計已定）
 
@@ -731,7 +740,7 @@ Diagnostic 最容易出的 bug 是**過度敏感**（誤報）。每個 advisory
 
 ### Splitter 互動
 
-詳見前節「Splitter 整合 Checklist」。摘要：synthetic VM（`active_vars`）會影響 anti-affinity advisory 的 `max_per_ag`（顯示為 `"dynamic"`），並要求未來的 `capacity_gaps` / `_build_success_diagnostics` 在計算時排除 `active_var == 0` 的 slot。
+詳見前節「Splitter 整合 Checklist」。摘要：synthetic VM（`active_vars`）讓 anti-affinity 的 per-bucket cap 走動態路徑（`use_dynamic`），並要求未來的 `capacity_gaps` / `_build_success_diagnostics` 在計算時排除 `active_var == 0` 的 slot。
 
 ### 驗證方式
 
@@ -741,7 +750,7 @@ python -m pytest tests/ -x -q
 
 # Advisory 已實作 — 觸發後在 diagnostics 中可見
 python -m pytest tests/test_solver.py::TestAGSpreadAdvisory -v
-# → 6 個測試覆蓋 advisory 觸發 / 不觸發條件
+# → 測試覆蓋 advisory 觸發 / 不觸發條件
 
 # 成功路徑包含 diagnostics（待實作後）
 python -m app.server --cli --input examples/success_basic.json
@@ -763,9 +772,9 @@ python -m app.server --cli --input examples/error_duplicate_bm.json
 | 主題 | 文件 | 與本文的關係 |
 |------|------|-------------|
 | 為什麼選 CP-SAT | [`why-cp-sat.md`](./why-cp-sat.md) | 補充 Part 1 為何不用 assumptions 的上層決策 |
-| Objective function 細節 | [`objective-function.md`](./objective-function.md), [`objective-function-guide.md`](./objective-function-guide.md) | 解釋 `_compute_headroom_penalties` / `_compute_slot_score_bonus` 的數學模型 — 開發 success diagnostic（objective breakdown）時必讀 |
+| Objective function 細節 | [`objective-function.md`](./objective-function.md) | 解釋 `_compute_headroom_penalties` / `_compute_slot_score_bonus` 的數學模型 — 開發 success diagnostic（objective breakdown）時必讀 |
 | Constraint 完整列表 | [`constraints.md`](./constraints.md) | 列出所有 hard/soft constraint — 新增 `_constraint_layer_check` 層級時需對齊 |
-| Splitter 設計 | [`requirement-splitter.md`](./requirement-splitter.md), [`requirement-splitter-v2.md`](./requirement-splitter-v2.md), [`reading-guide-splitter.md`](./reading-guide-splitter.md) | `active_vars` / synthetic VM 的來源與語意 — 寫對 splitter 互動的 diagnostic 時必讀 |
+| Splitter 設計 | [`requirement-splitter-v2.md`](./requirement-splitter-v2.md), [`reading-guide-splitter.md`](./reading-guide-splitter.md) | `active_vars` / synthetic VM 的來源與語意 — 寫對 splitter 互動的 diagnostic 時必讀 |
 | Go scheduler 整合 | [`go-scheduler-guide.md`](./go-scheduler-guide.md) | Schema 契約的另一端（消費者視角） |
 | 提案新 diagnostic 功能 | [`enhancement-proposal-template.md`](./enhancement-proposal-template.md) | 大型 diagnostic 變更應走 enhancement proposal 流程 |
 

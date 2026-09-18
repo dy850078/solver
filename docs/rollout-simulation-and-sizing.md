@@ -45,7 +45,8 @@
 - **混合機型的採購最佳化**:sizing v1 限單一機型;要買哪幾種機型各幾台是
   capacity planner(`/v1/capacity/procure`)的職責。
 - **Brownfield sizing**:「已有 N 台再估增購」不在 v1(rollout 模擬本身支援
-  brownfield `existing_vms`,但 sizing 端點拒收)。
+  brownfield `existing_vms`;`RolloutSizingRequest` 沒有此欄位,request 若帶
+  `existing_vms` 會被 pydantic 靜默忽略,帶 `pinned_to` 的 VM 則是 INPUT_ERROR)。
 - **需求飄移的自動校正**:飄移是 rollout 模擬存在的理由(建置當下重新模擬),
   不是要被消除的東西。
 - **Per-spec landable 預警**:已討論、刻意降優先權,列在 Open Questions。
@@ -120,7 +121,7 @@ cluster 分開下單。既有系統有三個缺口:
   ⇒ `N*` 是精確最小值。
 - **Pre-flight** 把「加幾台都沒救」的輸入(VM 大於機型、requirement 的
   network 與模板不符、failover/AA 落在被塌縮成單一 bucket 的維度、預設
-  candidates、pinned、existing_vms)擋成 INPUT_ERROR — 否則建模錯誤會燒光
+  candidates、pinned;`existing_vms` 非 sizing 欄位,會被靜默忽略)擋成 INPUT_ERROR — 否則建模錯誤會燒光
   探測預算,偽裝成「多買機器就好」的採購建議。
 
 ### 關鍵設計決策(與被否決的替代方案)
@@ -285,7 +286,7 @@ master-1/2/3 同群 — C3 看得見 pinned 的兩台各佔一個 AG,於是 mast
   `baremetals` 給生成好的機隊清單(id 依序號固定,可直接拿去當
   rollout / 採購的輸入),`rollout` 附上勝出那次探測的完整逐步報告。
 - `analytic_floor` / `floor_breakdown` = 下界與拆解(capacity / headcount /
-  pack / solo / ags);`probes` = 探測足跡(哪個 N、什麼狀態、哪步失敗)—
+  pack / solo / ags / total);`probes` = 探測足跡(哪個 N、什麼狀態、哪步失敗)—
   信任答案的依據,探測輪數經常 >3 表示下界該補強,值得回報。
 - **預算用盡**:`success: false`、`solver_status: "BUDGET_EXHAUSTED"`,
   `lower_bound` / `upper_bound` 夾出答案區間(不給裸失敗)。放大
@@ -294,7 +295,8 @@ master-1/2/3 同群 — C3 看得見 pinned 的兩台各佔一個 AG,於是 mast
   `config.max_solve_time_seconds` 或 `deadline_seconds` 再試。
 - **INPUT_ERROR = 這個輸入加幾台都沒救**,修輸入而不是加預算:VM/spec 塞
   不進機型、requirement 的 network 與模板不符、failover 或 AA 的維度被模板
-  塌縮成單一 bucket、步驟預填了 candidates、帶 pinned、帶 existing_vms。
+  塌縮成單一 bucket、步驟預填了 candidates、帶 pinned。(`existing_vms` 非
+  `RolloutSizingRequest` 欄位,會被靜默忽略而非拒收。)
 
 **注意**:答案是「**在你指定的拓撲形狀下**(K 個 AG、R 個 rack)」的最小值,
 不是全域最小 — K 是提問的一部分,`ags < target_spread.ag` 只發 advisory
@@ -344,7 +346,7 @@ bounds 回報);rollout 模擬與真實建置之間仍有需求飄移(建置前�
 | Scheduler 端誤解 used 合約(自行預扣 pinned)→ 幽靈容量 | 正規化扣到負值即 INPUT_ERROR(「used 必含 pinned 消耗」的訊息);合約寫進 `VM.pinned_to` docstring 與本文件 |
 | 有人「優化」回二分搜尋 | `tests/test_rollout_sizing.py::TestSizingNonMonotonic` 以暴力核對釘死非單調反例,改回二分即紅 |
 | 下界被改成高估(如分組相加)→「最小」不再最小 | 性質測試 `test_floor_never_exceeds_the_real_answer`(floor ≤ 暴力線性掃描的真值) |
-| 建模錯誤燒光探測預算,偽裝成「多買機器」 | `rollout_sizing._validate` pre-flight 六類 INPUT_ERROR |
+| 建模錯誤燒光探測預算,偽裝成「多買機器」 | `rollout_sizing._validate` pre-flight INPUT_ERROR(類別見 `rollout_sizing.py::_validate()`)|
 | UI 反推(loadIntoForm)悄悄改寫使用者拓撲/pool | 生成器 replay 核對,不能精確重現就退回 JSON mode(原樣送出) |
 | 狀態字串是 Go 端分支依據 | 本文件與 CLAUDE.md 均標注「勿改字串」;新增狀態走新字串 |
 

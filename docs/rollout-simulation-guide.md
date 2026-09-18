@@ -114,7 +114,8 @@ step k 求解成功
 
 **capacity planner(採購近似)≤ 聯合求解(mockgen elastic)≤ rollout
 sizing(循序)** — 循序建置會碎片化,拿聯合解的台數去建廠可能建到一半
-不夠。細節(下界拆解、探測足跡、預算語意、六類 pre-flight INPUT_ERROR)見
+不夠。細節(下界拆解、探測足跡、預算語意、pre-flight INPUT_ERROR 類別見
+`rollout_sizing.py::_validate()`)見
 [EP §情境 3](rollout-simulation-and-sizing.md#情境-3建廠估算rollout-sizing)
 與 ADR-014。
 

@@ -69,9 +69,9 @@ solver 保留在延伸場景（spare 跨 cluster 分配、master/infra fault-dom
 
 | 需求會用到的概念 | 現況 |
 |---|---|
-| 既有 VM placement（哪台 VM 在哪台 BM） | 不存在；既有負載只以 `used_capacity` 聚合數字表達（`app/models.py:101`） |
+| 既有 VM placement（哪台 VM 在哪台 BM） | 已存在：`VM.pinned_to` 可把既有 VM 逐台帶入請求作為事實（ADR-012，`app/models.py::VM`）；未帶入的既有負載仍以 `used_capacity` 聚合數字表達（`app/models.py::Baremetal.used_capacity`） |
 | Per-cluster max node 上限 | 不存在；只有 per-requirement `min/max_total_vms` |
-| 70% 水位 hard gate | 不存在；只有 `headroom_upper_bound_pct`（預設 90）的 soft penalty（`app/models.py:316`） |
+| 70% 水位 hard gate | 不存在；只有 `headroom_upper_bound_pct`（預設 90）的 soft penalty（`app/models.py::SolverConfig`） |
 | PDB / drain / node lifecycle / BM 退場排序 | 完全不存在 |
 | 長時間流程編排（等待、重試、人工介入） | Scheduler 是 request/response API，無狀態追蹤能力 |
 
@@ -428,6 +428,7 @@ Queue 的 consumer crash 一樣要 visibility timeout / ack / 重投遞，重投
 | Master/infra role 驗證 | 一台 BM 載 2 個 node 的 fault-domain 集中風險 → 既有 C4/C5 constraint 驗證 |
 | Recipe 離線生成 | 機型變多時用 `/v1/placement/split-and-solve` 生成候選配方、人工審核入表 |
 | 遷移波次規劃（Phase 3+） | 全 cluster 最優轉換順序/分批 → 延伸既有 `/v1/capacity/plan` 的 multi-period 骨架 |
+| 多輪遷移的逐步演練 | 每輪產生的 VM 以 pinned 帶入下一輪 → 既有 `/v1/placement/rollout`（rollout simulation，ADR-013） |
 
 ---
 

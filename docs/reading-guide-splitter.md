@@ -12,7 +12,7 @@
 
 ## 第一層：Why（動機與背景）—— 10 分鐘
 
-### 1. `docs/requirement-splitter.md` §1–§2
+### 1. `docs/requirement-splitter-v2.md` §「具體失敗情境」與 §「High-level 架構」
 
 先讀這兩節，建立直覺：
 - §1 的「具體失敗情境」圖解說明了 sequential split → 放置失敗的問題
@@ -24,11 +24,12 @@
 
 ## 第二層：What（資料結構）—— 20 分鐘
 
-### 2. `app/models.py`（全部，約 200 行）
+### 2. `app/models.py`（檔案很長，含 capacity planning 的 model；第一次只讀下列這些）
 
 **閱讀順序**：
 ```
-Resources → Baremetal → VM → AntiAffinityRule → SolverConfig
+Resources（含 resource_dims / res_get）→ Baremetal → VM → GroupSelector
+→ AntiAffinityRule → MaxPerBaremetalRule → ExclusiveBaremetalRule → FailoverRule → SolverConfig
 → PlacementRequest → PlacementResult
 → ResourceRequirement → SplitPlacementRequest → SplitDecision → SplitPlacementResult
 ```
@@ -39,7 +40,7 @@ Resources → Baremetal → VM → AntiAffinityRule → SolverConfig
 - `ResourceRequirement` ── caller 送進來的「我需要多少資源」描述，`vm_specs=None` 時 fallback 到 config
 - `SplitPlacementResult.split_decisions` ── solver 輸出「要建幾台哪種 VM」的決策
 
-**可以先跳過**：`Topology`、`AntiAffinityRule` 的細節（只要知道它存在就好）
+**可以先跳過**：`Topology`、各 rule（C3–C6）的細節（只要知道它們存在、selector 用 `GroupSelector` 選 VM 就好）；`Procurement*` / `CapacityPlan*` 系列 model 屬 capacity planning，與 splitter 無關
 
 ---
 
@@ -64,11 +65,12 @@ _add_capacity_constraints()
   → 理解 Σ demand × assign_var <= capacity 的語意
 
 _add_anti_affinity_constraints()
-  → 快速瀏覽即可，重點是「同一 AG 裡的 VM 數量有上限」
+  → 快速瀏覽即可，重點是「對 rule.spread_on 的每個維度、每個 bucket，群組 VM 數量有上限」
+    （cap 來自 cap_per_bucket 或 ⌈N/|buckets|⌉；有 pinned VM 時 cap 取 max(cap, pinned 數) — grandfathered）
 
 _add_objective()
   → 重點看 w_consolidation（少用 BM）和 w_headroom（不超載）的 terms
-  → 注意最後的 getattr(self, "_splitter_waste_terms", [])  ← 這是 splitter 注入的鉤子
+  → 注意 waste_terms = self.splitter_waste_terms（__init__ 預設 []）  ← 這是 splitter 注入的鉤子
 
 solve()
   → 看整個 pipeline：build vars → add constraints → add objective → solve → extract
@@ -122,7 +124,7 @@ get_split_decisions()
 
 ### 5. `app/split_solver.py`：兩者如何被串在一起
 
-這個檔案只有 89 行，是整個 feature 的「裝配廠」。
+這個檔案很短，是整個 feature 的「裝配廠」。入口有兩個：`solve_split_placement()`（HTTP 用）與 `solve_split_placement_with_synthetics()`（同時回傳 synthetic VM 物件，給 rollout 模擬 carry-forward 用），後者也負責填 `config_fingerprint`。
 
 **逐行閱讀，特別注意**：
 
@@ -138,7 +140,7 @@ solver_instance = VMPlacementSolver(
     active_vars=splitter.active_vars,  # ← 把 active_var 傳進去
 )
 
-solver_instance._splitter_waste_terms = ...   # 注入 waste penalty
+solver_instance.splitter_waste_terms = ...    # 注入 waste penalty
 result = solver_instance.solve()              # 一次 solve，兩組 constraints 同時在 model 裡
 ```
 
@@ -199,7 +201,7 @@ solve_split_placement() (split_solver.py)
 | 新的 split constraint（例如某個 spec 至少 2 台）| `splitter.py::_build_requirement` | 在 `_build_requirement` 末尾加 `self.model.add(...)` |
 | 新的 split objective term | `splitter.py::build_waste_objective_terms` | 回傳更多 expression |
 | 讓 solver 知道 anti-affinity 的 AG 分布再 split | `splitter.py::_build_requirement` + `solver.py::_resolve_anti_affinity_rules` | splitter 目前不感知 AG，需要傳入 ag_to_bms |
-| 為不同 requirement 設定不同 anti-affinity group | `split_solver.py` | 在組合 PlacementRequest 時自動生成 AntiAffinityRule，vm_ids 設為同 role 的 synthetic VM ids |
+| 為不同 requirement 設定不同 anti-affinity group | `split_solver.py` | 在組合 PlacementRequest 時自動生成 AntiAffinityRule，vm_ids 設為同 role 的 synthetic VM ids（或用 `selector: GroupSelector` 依 cluster_id / ip_type / node_role 選；`node_role` 可為 str 或 list[str]，ADR-016） |
 | 回傳每個 requirement 的 waste 數量 | `models.py::SplitPlacementResult` + `splitter.py::get_split_decisions` | 在 SplitDecision 加 `waste` 欄位 |
 
 ---

@@ -3,7 +3,6 @@
 > **作者**: Claude (claude-opus-4-8)
 > **日期**: 2026-06-22
 > **狀態**: v1 Implemented
-> **相關分支**: `claude/admiring-hypatia-1dfi16`
 
 ---
 
@@ -97,7 +96,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 
 - **profile 省略 `count`（彈性）**：語意是「**這些需求最少需要幾台**」。生成器取四個
   必要條件下限的 max 作為起點：
-  1. **容量界**：複製該機型直到 `Σ capacity ≥ Σ demand / tightness`（四維皆滿足）
+  1. **容量界**：複製該機型直到 `Σ capacity ≥ Σ demand / tightness`（各資源維度皆滿足：cpu/mem/storage + 每個 `gpu:<model>`，維度由 `models.py::resource_dims` 推導）。複製張數有硬上限 `_MAX_ELASTIC_BMS = 5_000`（`app/mockgen.py`），超過即回 **400**（profile 容量相對需求太小）
   2. **spread 界**：每個 AG 至少一台（`anti_affinity` 時為 `max(target_spread)`）
   3. **張數界**：max-per-BM 規則下，n 台 VM、每 BM 上限 m 的群組需要 `ceil(n/m)` 台
      **不同的** BM（跨群組取 max、不是 sum——不同群組可共用 BM；跨 cluster 不相乘）
@@ -153,7 +152,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 - `anti_affinity=true` 時，任何 `count ≥ 2` 的 role 必須在 `ip_type_by_role` 有非空值，否則回 **400**（因為空 `ip_type` 會被 solver 自動分組靜默略過，導致規則失效）。
 - role 為開放字串（格式 `^[\w.-]+$`，ADR-010）；不在已知目錄的 role 以 diagnostics `unknown_roles` 提示、不阻擋。
 - `exclusive` 群組必須有專屬 bm_profile pool（與一般 role 混用同一 profile → **400**）；同一 role 不得同時出現在 exclusive 與非 exclusive 群組（→ **400**）。
-- `bm_profiles` 至少一項；`capacity` 四維非負。
+- `bm_profiles` 至少一項；`capacity` 各欄位（cpu/mem/storage 與每個 GPU 型號）非負。
 - `target_spread`/`config_overrides` 交由現有 `SolverConfig` validator 把關。
 
 ---
