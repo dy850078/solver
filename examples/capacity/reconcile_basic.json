@@ -126,7 +126,7 @@
         }
       },
       "solve_time_seconds": 0.015409469604492188,
-      "config_fingerprint": "4aca1d66cdd4"
+      "config_fingerprint": "<12-hex sha256 prefix>"
     },
     "demand_snapshot": [
       {

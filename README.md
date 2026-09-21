@@ -231,7 +231,7 @@ curl -s -X POST http://localhost:50051/v1/placement/split-and-solve \
   "unplaced_vms": [],
   "bm_used_count": 1,
   "bm_total_count": 1,
-  "config_fingerprint": "3f2a9c1b7d0e",
+  "config_fingerprint": "<12-hex sha256 prefix>",
   "diagnostics": {}
 }
 ```

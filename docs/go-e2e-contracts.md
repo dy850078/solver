@@ -163,7 +163,7 @@ ADR-016）。所有 `period`
      "period": "2026-02", "type_id": "big-64c", "bm_count": 1}
   ],
   "totals": {...}, "solve_time_seconds": 0.1,
-  "config_fingerprint": "4aca1d66cdd4"
+  "config_fingerprint": "<12-hex sha256 prefix>"
 }
 
 "BucketMonthCell": {                 // 規劃粒度 = (fab, bucket, network, pool, month)

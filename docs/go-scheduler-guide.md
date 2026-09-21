@@ -524,7 +524,7 @@ GPU VM 那一側其實可以多列（solver 的 fits_in 會自動剔除型號不
   "unplaced_vms": [],
   "bm_used_count": 3,
   "bm_total_count": 3,
-  "config_fingerprint": "3f9a1c2b7d4e",
+  "config_fingerprint": "<12-hex sha256 prefix>",
   "diagnostics": {}
 }
 ```
