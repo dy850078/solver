@@ -185,6 +185,7 @@ Scheduler                                  Solver
   - 允許同機 → **不送**這條規則，改用 `config.auto_generate_max_per_bm=true` + `default_max_per_bm=1`（auto C4 以 `(cluster_id, ip_type, node_role)` 分組，兩個 role 各自限一台/BM，彼此可共居）。
 
 完整可跑範例：`examples/control_plane_learner_separate.json`；設計理由見 `docs/decisions/ADR-016-multi-role-group-selector.md`。
+scheduler 端完整需求（身分映射、rule 產生、C5 前置條件、DB 表示法選項、驗收清單）見 `docs/scheduler-control-plane-learner-requirements.md`。
 
 ---
 
