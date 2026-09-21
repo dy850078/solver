@@ -128,6 +128,66 @@ UNTRACKED=$(git status --porcelain --untracked-files=normal | grep -c '^??')
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 [ "$CURRENT_BRANCH" = "HEAD" ] && CURRENT_BRANCH=$(git rev-parse --short HEAD)
 
+# `make install` picks uv whenever it is on PATH, and uv reads only its own
+# configuration (UV_INDEX_URL / UV_DEFAULT_INDEX / UV_INDEX, or a uv.toml).
+# It never reads PIP_INDEX_URL or pip.conf. On a closed network that means a
+# perfectly good pip setup still sends uv to public PyPI, and the failure
+# only shows up as "failed to fetch pypi.org/…" after fetch+merge are already
+# done. Checked here, before any of that work, and against the config files
+# too — an index that lives only in pip.conf is the case an env-var-only
+# check misses.
+pip_index_source() {
+  if [ -n "${PIP_INDEX_URL:-}" ]; then
+    printf '%s PIP_INDEX_URL' "$PIP_INDEX_URL"; return 0
+  fi
+  local f url
+  for f in "${PIP_CONFIG_FILE:-}" \
+           "${XDG_CONFIG_HOME:-$HOME/.config}/pip/pip.conf" "$HOME/.pip/pip.conf" \
+           /etc/pip.conf /etc/xdg/pip/pip.conf; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    url=$(sed -nE 's/^[[:space:]]*index-url[[:space:]]*=[[:space:]]*//p' "$f" | head -1)
+    [ -n "$url" ] && { printf '%s %s' "$url" "$f"; return 0; }
+  done
+  return 1
+}
+
+uv_index_source() {
+  local v f
+  for v in UV_INDEX_URL UV_DEFAULT_INDEX UV_INDEX; do
+    [ -n "${!v:-}" ] && { printf '%s' "$v"; return 0; }
+  done
+  for f in "${UV_CONFIG_FILE:-}" uv.toml pyproject.toml \
+           "${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml" /etc/uv/uv.toml; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    grep -qE '^[[:space:]]*(index-url[[:space:]]*=|\[\[(tool\.uv\.)?index\]\])' "$f" \
+      && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
+check_package_index() {
+  local src url origin
+  if ! command -v uv >/dev/null 2>&1; then
+    ok "installer: pip (uv not on PATH) — honours pip.conf / PIP_INDEX_URL"
+    return 0
+  fi
+  if src=$(uv_index_source); then
+    ok "installer: uv — package index set via $src"
+    return 0
+  fi
+  if src=$(pip_index_source); then
+    read -r url origin <<< "$src"
+    warn "installer: uv, but only pip has an index configured ($origin):"
+    warn "  $url"
+    warn "uv does not read pip.conf or PIP_INDEX_URL — make install would resolve against public PyPI."
+    warn "Fix before continuing:  export UV_INDEX_URL=$url"
+    warn "  or persist it in ~/.config/uv/uv.toml — see docs/prod-sync-runbook.md §2.4"
+    return 0
+  fi
+  ok "installer: uv — no index override anywhere (resolves against public PyPI)"
+}
+check_package_index
+
 if [ "$VERIFY_ONLY" = 1 ]; then
   : "${SYNC_BRANCH:=$CURRENT_BRANCH}"
   [ "$SYNC_BRANCH" = "$CURRENT_BRANCH" ] \
@@ -262,9 +322,6 @@ guard
 
 # ------------------------------------------------------------------ verify
 step "Install dependencies"
-if [ -n "${PIP_INDEX_URL:-}" ] && [ -z "${UV_INDEX_URL:-}" ] && [ -z "${UV_DEFAULT_INDEX:-}" ]; then
-  warn "PIP_INDEX_URL set without UV_INDEX_URL — uv would resolve against public PyPI"
-fi
 if make install >"$WORK/install.log" 2>&1; then
   ok "make install"
 else
