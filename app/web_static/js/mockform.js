@@ -94,6 +94,14 @@ function ensureRoleDatalist() {
   document.body.appendChild(dl);
 }
 
+// Wraps any control (input or select) in the same label-above-field shell
+// miniField() uses, so node-group cards share the VM-spec / BM-profile look.
+function miniWrap(label, control, extra = "mini--num", title = "") {
+  const wrap = el("label", { class: `mini ${extra}` }, [el("span", { class: "mini__label", text: label }), control]);
+  if (title) wrap.title = title;
+  return wrap;
+}
+
 function groupRow(p = {}) {
   // Roles are open strings (ADR-010): free text with the known catalog as
   // datalist suggestions, so ceph-mon / f5 / lb… need no frontend release.
@@ -105,36 +113,42 @@ function groupRow(p = {}) {
   // `input.list` is a read-only property, so the el() helper's property path
   // can't set it — the association must go through the attribute.
   role.setAttribute("list", "role-suggestions");
-  // The column is narrow; long roles (control-plane-learner) truncate, so
-  // hovering shows the full value.
-  const syncRoleTitle = () => { role.title = role.value; };
-  syncRoleTitle();
-  role.addEventListener("input", syncRoleTitle);
   const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
   const ip = el("select", { class: "select group-ip" },
     IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));
   const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
   const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
   if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
-  // No-colocate tag (ADR-016/017): rows sharing a tag merge into ONE
+  // No-colocate tag (ADR-016/017): groups sharing a tag merge into ONE
   // max-per-BM rule whose selector lists every member role, so e.g.
   // control-plane + control-plane-learner at max/BM=1 never share a BM.
   // Members must agree on max/BM and scope; the backend rejects otherwise.
   const tag = el("input", {
     class: "input group-tag", type: "text", placeholder: "tag", spellcheck: "false",
-    title: "No-colocate tag: rows with the same tag share ONE max/BM cap across their roles (same max/BM + scope required)",
     value: p.no_colocate_group || "",
   });
   const shared = el("label", { class: "group-flag", title: "Shared across all clusters (one pool, cluster_id=shared)" }, [
     el("input", { type: "checkbox", class: "group-shared", checked: p.scope === "shared" }),
-    el("span", { text: "sh" }),
+    el("span", { text: "shared" }),
   ]);
   const excl = el("label", { class: "group-flag", title: "Exclusive: each VM owns its BM outright (C6)" }, [
     el("input", { type: "checkbox", class: "group-excl", checked: !!p.exclusive }),
-    el("span", { text: "ex" }),
+    el("span", { text: "exclusive" }),
   ]);
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
-  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, tag, shared, excl, remove]);
+  // Same card shell as spec/profile rows: fields wrap by width, so the role
+  // keeps its full name and every field carries its own label.
+  const row = el("div", { class: "cap-row group-row" }, [
+    miniWrap("role", role, "mini--name"),
+    miniWrap("count", count),
+    miniWrap("ip_type", ip, "mini--sel"),
+    miniWrap("spec", spec, "mini--sel"),
+    miniWrap("max/BM", maxbm),
+    miniWrap("no-colocate tag", tag, "mini--num",
+      "Groups with the same tag share ONE max/BM cap across their roles (same max/BM + scope required)"),
+    el("div", { class: "mini--flags" }, [shared, excl]),
+    remove,
+  ]);
   remove.addEventListener("click", () => {
     if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
   });
@@ -210,10 +224,7 @@ export function renderMockForm(container) {
   const addGroup = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add node group" });
   addGroup.addEventListener("click", () => groupRowsEl.appendChild(groupRow()));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Node groups (role · count · ip_type · spec · max/BM · no-colocate tag per cluster)" }),
-    el("div", { class: "role-row role-row--group role-row--head muted" },
-      [el("span", { text: "role" }), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" }),
-       el("span", { text: "apart", title: "No-colocate tag: same tag ⇒ one max/BM cap shared across those roles" }), el("span", {})]),
+    el("label", { class: "field-label", text: "Node groups (per cluster · same no-colocate tag = one max/BM cap across those roles)" }),
     groupRowsEl,
     addGroup,
   ]));

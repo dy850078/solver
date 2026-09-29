@@ -271,27 +271,19 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 .mock-grid .input::placeholder { color: var(--text-muted); opacity: 0.55; }
 .mock-grid .input:placeholder-shown { background: var(--bg-subtle); }
 
-.role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 4px; align-items: center; }
-/* Node-group rows add a role select up front and a remove button at the end. */
-.role-row--group { grid-template-columns: 2fr 36px 0.7fr 0.7fr 36px 40px 26px 26px 24px; }
 .group-flag {
-  display: inline-flex; align-items: center; gap: 2px;
+  display: inline-flex; align-items: center; gap: 3px;
   font-size: var(--font-micro); color: var(--text-subtle); cursor: pointer;
-  user-select: none;
+  user-select: none; white-space: nowrap;
 }
 .group-flag input { accent-color: var(--accent); margin: 0; width: 11px; height: 11px; }
 .group-flag:hover { color: var(--text-base); }
-.group-rows { display: flex; flex-direction: column; gap: 6px; }
-.role-row--group .cap-remove { height: 26px; padding: 0; font-size: 11px; }
-.role-row + .role-row { margin-top: 6px; }
-.group-rows .role-row + .role-row { margin-top: 0; }
-.role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.role-row--head { margin-bottom: 2px; font-size: 11px; }
-.role-row--head span { padding-left: 2px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.role-row .input, .role-row .select { height: 30px; font-size: 12px; min-width: 0; }
-/* Smaller dropdown chevron for the narrow Roles-table selects */
-.role-row .select { background-size: 9px; background-position: right 6px center; padding-right: 18px; }
-/* …and for the preset picker */
+/* Node-group cards reuse .cap-row (below); the flag pair sits on the field
+   baseline like a 30px control. */
+.group-rows { display: flex; flex-direction: column; gap: 10px; }
+.mini--flags { flex: 0 0 auto; display: flex; gap: 10px; align-items: center; height: 30px; }
+.group-row .cap-remove { margin-left: auto; }
+/* Smaller dropdown chevron for the preset picker */
 #mock-preset { background-size: 9px; background-position: right 10px center; padding-right: 24px; }
 
 /* Capacity rows (VM specs, baremetal profiles): self-labeling fields that wrap
@@ -302,10 +294,13 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 .mini { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .mini__label { font-size: var(--font-micro); color: var(--text-muted); padding-left: 1px; white-space: nowrap; }
 .cap-row .input { height: 30px; font-size: 12px; padding: 0 8px; width: 100%; }
+.cap-row .select { height: 30px; font-size: 12px; width: 100%; min-width: 0;
+  background-size: 9px; background-position: right 6px center; padding-right: 18px; }
 /* name shares the first line with the remove button; numeric fields wrap below */
 .mini--name { flex: 1 1 140px; }
 .mini--roles { flex: 1 1 100%; }
 .mini--num { flex: 1 1 64px; }
+.mini--sel { flex: 1 1 96px; }
 .mini--mem { flex: 1 1 92px; }
 .cap-remove { height: 30px; padding: 0 10px; align-self: flex-end; }
 
