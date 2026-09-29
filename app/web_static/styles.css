@@ -273,7 +273,7 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 
 .role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 4px; align-items: center; }
 /* Node-group rows add a role select up front and a remove button at the end. */
-.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 40px 30px 30px 26px; }
+.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 40px 56px 30px 30px 26px; }
 .group-flag {
   display: inline-flex; align-items: center; gap: 2px;
   font-size: var(--font-micro); color: var(--text-subtle); cursor: pointer;
@@ -1197,7 +1197,7 @@ details.diagnostics pre {
 #builder .frow { display: grid; gap: 8px; }
 #builder .frow--spec { grid-template-columns: 1.4fr 0.85fr 0.9fr 0.85fr auto; align-items: end; }
 #builder .frow--group-top { grid-template-columns: 1.25fr 1.25fr 0.75fr auto auto; align-items: end; }
-#builder .frow--group-bot { grid-template-columns: 1.6fr 0.7fr auto auto; align-items: end; }
+#builder .frow--group-bot { grid-template-columns: 1.6fr 0.7fr 0.9fr auto auto; align-items: end; }
 #builder .frow--group-bot .mini--check { padding-bottom: 8px; }
 #builder .group-row {
   display: flex; flex-direction: column; gap: 6px;

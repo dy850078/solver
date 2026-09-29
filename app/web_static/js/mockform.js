@@ -20,9 +20,9 @@ const DEFAULTS = {
   // Node groups: role is free text (known roles suggested); the same role may
   // appear in several groups (e.g. two worker specs / ip_types).
   node_groups: [
-    { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
-    { role: "worker", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
-    { role: "infra", count: 2, ip_type: "non-routable", spec: "", max_per_bm: "" },
+    { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "", no_colocate_group: "" },
+    { role: "worker", count: 3, ip_type: "routable", spec: "", max_per_bm: "", no_colocate_group: "" },
+    { role: "infra", count: 2, ip_type: "non-routable", spec: "", max_per_bm: "", no_colocate_group: "" },
   ],
   racks: 4, ags: 3,
   anti_affinity: true,
@@ -111,6 +111,15 @@ function groupRow(p = {}) {
   const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
   const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
   if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
+  // No-colocate tag (ADR-016/017): rows sharing a tag merge into ONE
+  // max-per-BM rule whose selector lists every member role, so e.g.
+  // control-plane + control-plane-learner at max/BM=1 never share a BM.
+  // Members must agree on max/BM and scope; the backend rejects otherwise.
+  const tag = el("input", {
+    class: "input group-tag", type: "text", placeholder: "tag", spellcheck: "false",
+    title: "No-colocate tag: rows with the same tag share ONE max/BM cap across their roles (same max/BM + scope required)",
+    value: p.no_colocate_group || "",
+  });
   const shared = el("label", { class: "group-flag", title: "Shared across all clusters (one pool, cluster_id=shared)" }, [
     el("input", { type: "checkbox", class: "group-shared", checked: p.scope === "shared" }),
     el("span", { text: "sh" }),
@@ -120,7 +129,7 @@ function groupRow(p = {}) {
     el("span", { text: "ex" }),
   ]);
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
-  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, shared, excl, remove]);
+  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, tag, shared, excl, remove]);
   remove.addEventListener("click", () => {
     if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
   });
@@ -196,9 +205,10 @@ export function renderMockForm(container) {
   const addGroup = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add node group" });
   addGroup.addEventListener("click", () => groupRowsEl.appendChild(groupRow()));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Node groups (role · count · ip_type · spec · max/BM per cluster)" }),
+    el("label", { class: "field-label", text: "Node groups (role · count · ip_type · spec · max/BM · no-colocate tag per cluster)" }),
     el("div", { class: "role-row role-row--group role-row--head muted" },
-      [el("span", { text: "role" }), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" }), el("span", {})]),
+      [el("span", { text: "role" }), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" }),
+       el("span", { text: "apart", title: "No-colocate tag: same tag ⇒ one max/BM cap shared across those roles" }), el("span", {})]),
     groupRowsEl,
     addGroup,
   ]));
@@ -293,6 +303,8 @@ export function readMockParams() {
     };
     const mx = Number(row.querySelector(".group-maxbm").value);
     if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
+    const tag = row.querySelector(".group-tag").value.trim();
+    if (tag) g.no_colocate_group = tag;
     if (row.querySelector(".group-shared").checked) g.scope = "shared";
     if (row.querySelector(".group-excl").checked) g.exclusive = true;
     node_groups.push(g);
@@ -380,6 +392,7 @@ export function populateMockForm(preset) {
     groups = p.node_groups.map((g) => ({
       role: g.role, count: g.count, ip_type: g.ip_type ?? "",
       spec: g.spec ?? "", max_per_bm: g.max_per_bm ?? "",
+      no_colocate_group: g.no_colocate_group ?? "",
       scope: g.scope ?? "cluster", exclusive: !!g.exclusive,
     }));
   } else {

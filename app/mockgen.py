@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import math
 import random
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
@@ -75,6 +76,38 @@ _ROLE_BASELINE: dict[str, Resources] = {
 _DEFAULT_BM_CAPACITY = Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000)
 
 
+@dataclass
+class _CapUnit:
+    """One max-per-BM cap and the set of roles that share it — the unit a
+    MaxPerBaremetalRule is emitted for, and the unit the fleet sizing and the
+    greedy ground truth count against.
+
+    An untagged node group is a single-role unit keyed by (scope, role,
+    ip_type). Groups sharing a ``no_colocate_group`` tag form ONE multi-role
+    unit: the rule's selector is the union of their roles (ADR-016), so
+    ``counts`` sums every member and ``ip_type`` is None when members differ.
+    ``key`` mirrors the solver's fallback group id (roles joined with ``+``).
+    """
+    scope: Literal["cluster", "shared"]
+    roles: frozenset[str]
+    ip_type: str | None
+    cap: int
+    counts: dict[str, int] = field(default_factory=dict)  # per instance, per role
+
+    @property
+    def key(self) -> str:
+        return f"{self.ip_type or '*'}/{'+'.join(sorted(self.roles))}"
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def selector_role(self) -> str | list[str]:
+        # A single role keeps the string form so untagged output is
+        # byte-identical to before; GroupSelector rejects an empty list.
+        return next(iter(self.roles)) if len(self.roles) == 1 else sorted(self.roles)
+
+
 # ---------------------------------------------------------------------------
 # Input / output models
 # ---------------------------------------------------------------------------
@@ -123,11 +156,26 @@ class NodeGroup(BaseModel):
     # Appliance semantics (C6/ADR-011): every VM of this group owns its BM
     # outright — nothing else lands there, not even a group sibling.
     exclusive: bool = False
+    # Policy tag, orthogonal to `role` (ADR-016/ADR-017): groups of the same
+    # scope sharing a tag are merged into ONE MaxPerBaremetalRule whose
+    # selector lists all member roles, so e.g. control-plane and
+    # control-plane-learner with max_per_bm=1 never share a BM. Members must
+    # agree on max_per_bm and scope; a differing ip_type widens the selector
+    # to "any ip_type". None = the group caps itself only (today's behaviour).
+    no_colocate_group: str | None = None
 
     @field_validator("role")
     @classmethod
     def _valid_role(cls, v: str) -> str:
         return validate_role(v)
+
+    @field_validator("no_colocate_group")
+    @classmethod
+    def _valid_tag(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
 
     @field_validator("max_per_bm")
     @classmethod
@@ -247,17 +295,15 @@ class _Generator:
         self.req = req
         self.rng = random.Random(req.seed)
         self.diag: dict[str, Any] = {}
-        # Per-(role, ip_type) max-per-BM caps from node_groups, split by scope
-        # (a shared group's cap must NOT expand into per-cluster rules — its
-        # VMs live under cluster_id="shared"). Min wins on key collision.
-        # Both empty in the legacy dict path.
-        self._cluster_caps: dict[tuple[str, str], int] = {}
-        self._shared_caps: dict[tuple[str, str], int] = {}
-        for g in req.node_groups:
-            if g.max_per_bm is not None:
-                caps = self._shared_caps if g.scope == "shared" else self._cluster_caps
-                k = (g.role, g.ip_type)
-                caps[k] = min(caps.get(k, g.max_per_bm), g.max_per_bm)
+        # Max-per-BM cap units from node_groups (empty in the legacy dict
+        # path): one per (scope, role, ip_type) for untagged groups, one per
+        # (scope, tag) for no_colocate_group members. Split by scope because a
+        # shared group's cap must NOT expand into per-cluster rules — its VMs
+        # live under cluster_id="shared". `_unit_index` resolves a VM's
+        # (scope, role, ip_type) to its unit for sizing and ground truth.
+        self._units: list[_CapUnit] = []
+        self._unit_index: dict[tuple[str, str, str], _CapUnit] = {}
+        self._build_cap_units(req.node_groups)
         # Roles whose VMs occupy BMs alone (C6). Role-level is enough for the
         # generator: mixing an exclusive and a non-exclusive group of the same
         # role would be a contradiction we reject below.
@@ -270,6 +316,100 @@ class _Generator:
                 detail=f"role(s) {both} appear in both exclusive and non-exclusive "
                        f"node groups — a role is either appliance-like or not",
             )
+
+    def _build_cap_units(self, groups: list[NodeGroup]) -> None:
+        """Validate no_colocate_group tags and build `_units` / `_unit_index`.
+
+        Tag rules (each violation → 400, never a silent fix):
+        - every tagged group needs an explicit max_per_bm (the tag is a cap
+          shared across roles — with no cap there is nothing to share);
+        - members of one tag agree on max_per_bm and on scope;
+        - a role belongs to at most one tag, and once tagged, EVERY group of
+          that role (same scope) carries the tag — the selector matches by
+          role, so an untagged sibling would be swept into the union anyway.
+        """
+        # Pass 1: tag validation.
+        by_tag: dict[tuple[str, str], list[NodeGroup]] = {}
+        for g in groups:
+            if g.no_colocate_group is None:
+                continue
+            if g.max_per_bm is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"node group role={g.role!r} carries no_colocate_group="
+                           f"{g.no_colocate_group!r} but no max_per_bm; the tag is a "
+                           f"per-BM cap shared across roles, so the cap must be given",
+                )
+            by_tag.setdefault((g.scope, g.no_colocate_group), []).append(g)
+        # Scope mismatch shows up as the same tag under two scope keys.
+        tags_seen: dict[str, str] = {}
+        for (scope, tag), members in by_tag.items():
+            if tag in tags_seen and tags_seen[tag] != scope:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"no_colocate_group {tag!r} mixes scope={tags_seen[tag]!r} and "
+                           f"scope={scope!r}; one rule can only select one cluster_id",
+                )
+            tags_seen[tag] = scope
+            caps = sorted({g.max_per_bm for g in members})  # type: ignore[type-var]
+            if len(caps) > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"no_colocate_group {tag!r} members disagree on max_per_bm "
+                           f"{caps}; a merged rule has one cap — make them equal",
+                )
+        # Role ↔ tag must be a function (per scope), covering ALL groups of a role.
+        tag_of_role: dict[tuple[str, str], str | None] = {}
+        for g in groups:
+            k = (g.scope, g.role)
+            if k in tag_of_role and tag_of_role[k] != g.no_colocate_group:
+                a, b = sorted([tag_of_role[k], g.no_colocate_group], key=lambda t: t or "")
+                if a is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"role {g.role!r} is tagged no_colocate_group={b!r} in one "
+                               f"node group but untagged in another; the rule selects by "
+                               f"role, so tag every group of that role (or none)",
+                    )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role {g.role!r} appears under two no_colocate_group tags "
+                           f"{[a, b]}; a role belongs to at most one",
+                )
+            tag_of_role[k] = g.no_colocate_group
+
+        # Pass 2: build units. Untagged: min wins on (scope, role, ip) collision.
+        for g in groups:
+            if g.max_per_bm is None or g.no_colocate_group is not None:
+                continue
+            k = (g.scope, g.role, g.ip_type)
+            u = self._unit_index.get(k)
+            if u is None:
+                u = _CapUnit(scope=g.scope, roles=frozenset({g.role}),
+                             ip_type=g.ip_type or None, cap=g.max_per_bm)
+                self._units.append(u)
+                self._unit_index[k] = u
+            u.cap = min(u.cap, g.max_per_bm)
+            u.counts[g.role] = u.counts.get(g.role, 0) + g.count
+        # An uncapped group whose (scope, role, ip) is capped by a sibling is
+        # still selected by that sibling's rule — its VMs count toward the cap.
+        for g in groups:
+            if g.max_per_bm is None and g.no_colocate_group is None:
+                u = self._unit_index.get((g.scope, g.role, g.ip_type))
+                if u is not None:
+                    u.counts[g.role] = u.counts.get(g.role, 0) + g.count
+        for (scope, _tag), members in by_tag.items():
+            ips = {g.ip_type for g in members}
+            u = _CapUnit(
+                scope=scope,
+                roles=frozenset(g.role for g in members),
+                ip_type=(next(iter(ips)) or None) if len(ips) == 1 else None,
+                cap=members[0].max_per_bm,  # type: ignore[arg-type]
+            )
+            for g in members:
+                u.counts[g.role] = u.counts.get(g.role, 0) + g.count
+                self._unit_index[(scope, g.role, g.ip_type)] = u
+            self._units.append(u)
 
     # -- topology -----------------------------------------------------------
 
@@ -444,36 +584,30 @@ class _Generator:
             gpu={m: math.ceil(c / tightness) for m, c in demand.gpu.items()},
         )
 
-    def _headcount_bounds(self) -> dict[str, int]:
-        """Per-role minimum number of distinct BMs implied by max-per-BM caps:
-        a group of n VMs capped at m per BM needs ceil(n/m) BMs regardless of
-        how big each BM is (a headcount bound, not a capacity bound).
+    def _headcount_bounds(self) -> list[_CapUnit]:
+        """Cap units whose max-per-BM cap implies a minimum number of distinct
+        BMs: n VMs capped at m per BM need ceil(n/m) BMs regardless of how big
+        each BM is (a headcount bound, not a capacity bound). The caller does
+        the division per elastic profile, on the roles that profile serves.
 
-        Two deliberate non-multiplications:
-        - across ip_types of one role: max, not sum — the cap rules are keyed
-          per (cluster, ip_type, role), so two ip groups of the same role may
-          share the same BMs;
+        Counting conventions:
+        - a multi-role unit (no_colocate_group) SUMS its members — the emitted
+          rule's selector is the union, so members compete for the same slots;
+        - across ip_types of one untagged role: separate units, max not sum —
+          those rules are keyed per (cluster, ip_type, role), so two ip groups
+          of the same role may share BMs;
         - across clusters: counts are per cluster and clusters may reuse the
           same BMs (each cluster's rule counts separately).
         """
-        bounds: dict[str, int] = {}
         if self.req.node_groups:
-            agg_c: dict[tuple[str, str], int] = {}
-            agg_s: dict[tuple[str, str], int] = {}
-            for g in self.req.node_groups:
-                agg = agg_s if g.scope == "shared" else agg_c
-                agg[(g.role, g.ip_type)] = agg.get((g.role, g.ip_type), 0) + g.count
-            for caps, agg in ((self._cluster_caps, agg_c), (self._shared_caps, agg_s)):
-                for (role, ip), cap in caps.items():
-                    n = agg.get((role, ip), 0)
-                    if n:
-                        bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
-            return bounds
+            return [u for u in self._units if u.total]
+        units: list[_CapUnit] = []
         for role, cap in self.req.max_per_bm_by_role.items():
             n = self.req.roles.get(role, 0)
             if n:
-                bounds[role] = max(bounds.get(role, 0), math.ceil(n / cap))
-        return bounds
+                units.append(_CapUnit(scope="cluster", roles=frozenset({role}),
+                                      ip_type=None, cap=cap, counts={role: n}))
+        return units
 
     def _build_baremetals(self, vms: list[VM], racks: list[Topology],
                           min_copies: dict[str, int] | None = None) -> list[Baremetal]:
@@ -558,17 +692,22 @@ class _Generator:
                         f"drop the demand"
                     ),
                 )
-            # Headcount floor: for each role this profile serves, the max-per-BM
-            # bound needs ceil(n/m) distinct BMs; BMs already in `specs` that
-            # serve the role count toward it, this profile must add the
-            # worst-case remainder. Every copy added below serves all of this
-            # profile's roles, so the gap shrinks 1:1 with copies.
+            # Headcount floor: for each cap unit this profile serves, the
+            # max-per-BM bound needs ceil(n/m) distinct BMs; BMs already in
+            # `specs` that serve those roles count toward it, this profile
+            # must add the worst-case remainder. Every copy added below serves
+            # all of this profile's roles, so the gap shrinks 1:1 with copies.
+            # Only the SUBSET of a multi-role unit this pool serves is counted:
+            # with master and learner in separate pools, each pool owes its
+            # own members, not the union (the union bound would over-provision
+            # the first pool and starve the second into escalation).
             head_gap = 0
-            for role, need_bms in bounds.items():
-                if served and role not in served:
+            for unit in bounds:
+                sub = unit.roles if not served else unit.roles & served
+                if not sub:
                     continue
-                existing = sum(1 for _, roles in specs
-                               if serves(roles, frozenset({role})))
+                need_bms = math.ceil(sum(unit.counts.get(r, 0) for r in sub) / unit.cap)
+                existing = sum(1 for _, roles in specs if serves(roles, sub))
                 head_gap = max(head_gap, need_bms - existing)
             # Pairwise packing floor (bin-packing L2 bound): a VM demanding
             # more than half this profile's capacity in some dimension can
@@ -722,8 +861,12 @@ class _Generator:
             return True
 
         for (cluster_id, ip_type, role), members in groups.items():
-            group_key = f"{cluster_id}/{ip_type}/{role}"
-            role_cap = self._cap_for(role, ip_type, cluster_id)
+            # The cap counter is keyed per cap UNIT, not per role: members of
+            # a no_colocate_group share one counter per BM, so the ground
+            # truth honours the merged rule the same way the solver will.
+            unit = self._unit_for(role, ip_type, cluster_id)
+            group_key = f"{cluster_id}/{unit.key}" if unit else f"{cluster_id}/{ip_type}/{role}"
+            role_cap = unit.cap if unit else None
             solo = role in self._exclusive_roles
             # Candidate BMs shared by the group (VMs in a group share candidates).
             cand_ids = members[0].candidate_baremetals
@@ -828,36 +971,36 @@ class _Generator:
             ))
         return rules
 
-    def _cap_for(self, role: str, ip_type: str, cluster_id: str = "") -> int | None:
-        """Max-per-BM cap for a placement group, from node_groups (keyed on
-        (role, ip_type), scoped by whether the group is cluster-owned or
-        shared) or the legacy per-role dict."""
+    def _unit_for(self, role: str, ip_type: str, cluster_id: str) -> _CapUnit | None:
+        """Cap unit governing a VM of (role, ip_type) in `cluster_id`, or None
+        when it has no max-per-BM cap. The legacy dict path keys by role only
+        (its rules carry the role's configured ip_type, VMs may be spread over
+        a weighted distribution), so it is NOT routed through `_unit_index`."""
         if self.req.node_groups:
-            caps = self._shared_caps if cluster_id == "shared" else self._cluster_caps
-            return caps.get((role, ip_type))
-        return self.req.max_per_bm_by_role.get(role)
+            scope = "shared" if cluster_id == "shared" else "cluster"
+            return self._unit_index.get((scope, role, ip_type))
+        cap = self.req.max_per_bm_by_role.get(role)
+        if cap is None:
+            return None
+        return _CapUnit(scope="cluster", roles=frozenset({role}), ip_type=None, cap=cap)
 
     def _build_max_per_bm_rules(self) -> list[MaxPerBaremetalRule]:
-        """Per-(role[, ip_type]) cap → one MaxPerBaremetalRule per cluster,
-        scoped to the role and (when known) its ip_type."""
+        """One MaxPerBaremetalRule per cap unit per cluster instance (shared
+        units: a single rule on cluster_id="shared"). A single-role unit keeps
+        the string selector; a no_colocate_group unit lists its roles so the
+        cap spans them (ADR-016). group_id = maxbm/{cid}/{ip|*}/{role[+role]}."""
         rules: list[MaxPerBaremetalRule] = []
         if self.req.node_groups:
-            for (role, ip), cap in self._cluster_caps.items():
-                for c in range(1, self.req.clusters + 1):
-                    cid = f"cluster-{c}"
+            for u in self._units:
+                cids = (["shared"] if u.scope == "shared"
+                        else [f"cluster-{c}" for c in range(1, self.req.clusters + 1)])
+                for cid in cids:
                     rules.append(MaxPerBaremetalRule(
-                        group_id=f"maxbm/{cid}/{ip or '*'}/{role}",
-                        selector=GroupSelector(cluster_id=cid, ip_type=(ip or None),
-                                               node_role=role),
-                        max_per_bm=cap,
+                        group_id=f"maxbm/{cid}/{u.key}",
+                        selector=GroupSelector(cluster_id=cid, ip_type=u.ip_type,
+                                               node_role=u.selector_role()),
+                        max_per_bm=u.cap,
                     ))
-            for (role, ip), cap in self._shared_caps.items():
-                rules.append(MaxPerBaremetalRule(
-                    group_id=f"maxbm/shared/{ip or '*'}/{role}",
-                    selector=GroupSelector(cluster_id="shared", ip_type=(ip or None),
-                                           node_role=role),
-                    max_per_bm=cap,
-                ))
             return rules
         for role, cap in self.req.max_per_bm_by_role.items():
             if self.req.roles.get(role, 0) < 1:
@@ -884,14 +1027,16 @@ class _Generator:
 
     def _escalation_targets(self, result, vms: list[VM]) -> list[str]:
         """Elastic profile names implicated by the solver's infeasibility
-        diagnostics — via the role in a failing max-per-BM rule's group_id
-        (``maxbm/{cluster}/{ip}/{role}``) or the role of a VM with no eligible
-        BM. Empty when nothing is attributable (caller falls back to all)."""
+        diagnostics — via the role(s) in a failing max-per-BM rule's group_id
+        (``maxbm/{cluster}/{ip}/{role[+role...]}``, a no_colocate_group unit
+        names every member) or the role of a VM with no eligible BM. Empty
+        when nothing is attributable (caller falls back to all)."""
         diag = result.diagnostics or {}
         roles: set[str] = set()
         for key in ("infeasible_max_per_bm_rules", "infeasible_exclusive_rules"):
             for r in diag.get(key, []):
-                roles.add(str(r.get("group_id", "")).rsplit("/", 1)[-1])
+                tail = str(r.get("group_id", "")).rsplit("/", 1)[-1]
+                roles.update(x for x in tail.split("+") if x)
         role_by_vm = {vm.id: vm.node_role for vm in vms}
         for vm_id in diag.get("vms_with_no_eligible_bm", []):
             if vm_id in role_by_vm:

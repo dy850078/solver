@@ -53,6 +53,9 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
     control-plane-learner, cap 1) keeps those roles off each other's BMs while
     auto C3/C5 still treat them as separate roles. Identity (which role string a
     VM carries) is the scheduler's; policy (co-locate or not) is a rule.
+    The mock generator and both UI forms express that union rule via a
+    per-node-group `no_colocate_group` tag (ADR-017): same tag ⇒ one merged
+    rule; mockgen's fleet sizing and ground truth count per merged unit.
   - **C5** — failover N-1: per bucket b of `fault_domain`:
     `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
   - **C6** — exclusive occupancy: members of an `exclusive_bm_rules` group

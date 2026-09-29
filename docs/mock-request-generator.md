@@ -61,7 +61,7 @@ v1 聚焦在 **greenfield（空 BM，`used_capacity = 0`）+ 建構式可行性�
 | | `target` | `"solve"` | v1 僅支援 `solve` |
 | | `verify` | `true` | 產後用真實 solver 自我驗證 |
 | Cluster/VM | `clusters` | 1 | cluster 數 |
-| | `node_groups` | `[]` | **建議的需求來源**（設定後 roles/ip_type_by_role/spec_by_role/max_per_bm_by_role 全被忽略）：每項 `{role, count, ip_type, spec?, max_per_bm?, scope?, exclusive?}`。role 為開放字串（ADR-010）；`scope:"shared"` = 跨 cluster 共用、只生成一次（cluster_id=`"shared"`）；`exclusive:true` = appliance 獨占整機，自動產 C6 規則且該 role 需專屬 bm_profile pool（ADR-011） |
+| | `node_groups` | `[]` | **建議的需求來源**（設定後 roles/ip_type_by_role/spec_by_role/max_per_bm_by_role 全被忽略）：每項 `{role, count, ip_type, spec?, max_per_bm?, scope?, exclusive?, no_colocate_group?}`。role 為開放字串（ADR-010）；`scope:"shared"` = 跨 cluster 共用、只生成一次（cluster_id=`"shared"`）；`exclusive:true` = appliance 獨占整機，自動產 C6 規則且該 role 需專屬 bm_profile pool（ADR-011）；`no_colocate_group:"<tag>"` = 不共站標籤：同 scope、同標籤的 group 合成**一條** `MaxPerBaremetalRule`，selector 的 `node_role` 為成員 role 的 list（ADR-016/017），例如 control-plane 與 control-plane-learner 各 `max_per_bm:1` 貼同一標籤 → 六台 VM 兩兩不同 BM；成員 ip_type 不同時 selector 省略 ip_type |
 | | `roles` | `{master:3,worker:3,infra:2}` | (legacy) 每 cluster 各 role 的 VM 數 |
 | | `vm_specs` | `{}` | 具名 VM 規格目錄，如 `{"big": {...}, "small": {...}}` |
 | | `spec_by_role` | `{}` | 指派：key 為 `"<role>"` 或 `"<role>:<ip_type>"`（後者優先），value 為 `vm_specs` 的名稱 |
@@ -152,6 +152,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
 - `anti_affinity=true` 時，任何 `count ≥ 2` 的 role 必須在 `ip_type_by_role` 有非空值，否則回 **400**（因為空 `ip_type` 會被 solver 自動分組靜默略過，導致規則失效）。
 - role 為開放字串（格式 `^[\w.-]+$`，ADR-010）；不在已知目錄的 role 以 diagnostics `unknown_roles` 提示、不阻擋。
 - `exclusive` 群組必須有專屬 bm_profile pool（與一般 role 混用同一 profile → **400**）；同一 role 不得同時出現在 exclusive 與非 exclusive 群組（→ **400**）。
+- `no_colocate_group`（ADR-017）：有標籤的 group 必須給 `max_per_bm`（→ **400**）；同標籤成員的 `max_per_bm` 必須相等（不做 silent min → **400**）；同標籤成員的 `scope` 必須一致（→ **400**）；一個 role 最多屬於一個標籤，且 role 一旦被標，同 scope 內該 role 的所有 group 都要帶同一標籤（selector 以 role 選人，漏標的兄弟 group 會被默默掃進聯集 → **400**）。
 - `bm_profiles` 至少一項；`capacity` 各欄位（cpu/mem/storage 與每個 GPU 型號）非負。
 - `target_spread`/`config_overrides` 交由現有 `SolverConfig` validator 把關。
 

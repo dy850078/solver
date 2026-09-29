@@ -716,3 +716,169 @@ def test_scope_and_exclusive_are_independent_axes():
         assert len(lbs) == n_lb, label                      # scope drives count
         assert {v.cluster_id for v in lbs} == cids, label
         assert len(resp.request.exclusive_bm_rules) == n_rules, label
+
+
+# ---------------------------------------------------------------------------
+# no_colocate_group: merge node groups into ONE list-selector C4 rule (ADR-017)
+# ---------------------------------------------------------------------------
+
+_CP_SPEC = {"s1": Resources(cpu_cores=8, memory_mib=32_000, storage_gb=200)}
+_BIG_CTRL = Resources(cpu_cores=192, memory_mib=1_507_328, storage_gb=7680)
+
+
+def _cp_request(groups, **over):
+    d = dict(
+        seed=1, clusters=1, racks=6, ags=3, vm_specs=_CP_SPEC, node_groups=groups,
+        bm_profiles=[BmProfile(
+            name="ctrl", capacity=Resources(cpu_cores=64, memory_mib=256_000, storage_gb=2000))],
+    )
+    d.update(over)
+    return GenerateRequest(**d)
+
+
+def _tagged(role, count, ip="non-routable", cap=1, tag="cp", **extra):
+    return {"role": role, "count": count, "ip_type": ip, "spec": "s1",
+            "max_per_bm": cap, "no_colocate_group": tag, **extra}
+
+
+def test_no_colocate_merges_into_one_list_selector_rule():
+    """master + learner tagged together → ONE rule whose selector lists both
+    roles (sorted), keeps the common ip_type, and names both roles in the id."""
+    resp = generate_mock_request(_cp_request([_tagged("master", 3), _tagged("learner", 3)]))
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 1
+    r = rules[0]
+    assert r.selector.node_role == ["learner", "master"]
+    assert r.selector.ip_type == "non-routable"
+    assert r.selector.cluster_id == "cluster-1"
+    assert r.max_per_bm == 1
+    assert r.group_id == "maxbm/cluster-1/non-routable/learner+master"
+
+
+def test_no_colocate_ground_truth_keeps_members_on_distinct_bms():
+    """The greedy ground truth must count master and learner against the same
+    per-BM counter — no BM hosts two tagged VMs, and the solver verifies."""
+    resp = generate_mock_request(_cp_request([_tagged("master", 3), _tagged("learner", 3)]))
+    assert resp.feasibility == "verified"
+    assert "unplaced_ground_truth" not in resp.diagnostics
+    by_bm: dict[str, int] = {}
+    for a in resp.ground_truth:
+        by_bm[a.baremetal_id] = by_bm.get(a.baremetal_id, 0) + 1
+    assert max(by_bm.values()) == 1
+    assert len(resp.request.baremetals) == 6
+
+
+def test_no_colocate_expands_per_cluster():
+    resp = generate_mock_request(_cp_request(
+        [_tagged("master", 3), _tagged("learner", 3)], clusters=2))
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 2
+    assert {r.selector.cluster_id for r in rules} == {"cluster-1", "cluster-2"}
+    assert all(r.selector.node_role == ["learner", "master"] for r in rules)
+
+
+def test_no_colocate_headcount_floor_sums_members():
+    """5 masters + 5 learners under one cap-1 union need 10 distinct BMs even
+    when two huge BMs cover the raw capacity; sizing must sum the members
+    (not take the per-role max) and land there without escalation."""
+    resp = generate_mock_request(_cp_request(
+        [_tagged("master", 5), _tagged("learner", 5)],
+        bm_profiles=[BmProfile(name="ctrl", capacity=_BIG_CTRL, roles=["master", "learner"])],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 10
+    assert "auto_escalated" not in resp.diagnostics
+
+
+def test_no_colocate_headcount_floor_split_pools():
+    """Same demand, but master and learner live in SEPARATE elastic pools:
+    each pool owes only its own members (5 + 5), not the union (10 + 10)."""
+    resp = generate_mock_request(_cp_request(
+        [_tagged("master", 5), _tagged("learner", 5)],
+        bm_profiles=[
+            BmProfile(name="m-pool", capacity=_BIG_CTRL, roles=["master"]),
+            BmProfile(name="l-pool", capacity=_BIG_CTRL, roles=["learner"]),
+        ],
+    ))
+    assert resp.feasibility == "verified"
+    assert len(resp.request.baremetals) == 10
+    assert "auto_escalated" not in resp.diagnostics
+    # Pool mode: each role's candidates are its own pool — 5 and 5, disjoint.
+    pools = {role: {bm for v in resp.request.vms if v.node_role == role
+                    for bm in v.candidate_baremetals} for role in ("master", "learner")}
+    assert len(pools["master"]) == 5 and len(pools["learner"]) == 5
+    assert not (pools["master"] & pools["learner"])
+
+
+def test_no_colocate_mixed_ip_omits_ip_from_selector():
+    resp = generate_mock_request(_cp_request(
+        [_tagged("master", 3, ip="routable"), _tagged("learner", 3, ip="non-routable")]))
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 1
+    assert rules[0].selector.ip_type is None
+    assert rules[0].group_id == "maxbm/cluster-1/*/learner+master"
+    assert resp.feasibility == "verified"
+
+
+def test_no_colocate_single_member_degenerates_to_string_selector():
+    """A tag with one member is today's per-role rule, byte for byte."""
+    tagged = generate_mock_request(_cp_request([_tagged("master", 3)]))
+    plain = generate_mock_request(_cp_request(
+        [{"role": "master", "count": 3, "ip_type": "non-routable", "spec": "s1", "max_per_bm": 1}]))
+    assert tagged.request.max_per_bm_rules == plain.request.max_per_bm_rules
+    assert tagged.request.max_per_bm_rules[0].selector.node_role == "master"
+
+
+def test_no_colocate_shared_scope_emits_one_rule():
+    resp = generate_mock_request(_cp_request(
+        [_tagged("lb", 2, ip="routable", scope="shared"),
+         _tagged("lb-standby", 2, ip="routable", scope="shared")],
+        clusters=3,
+    ))
+    rules = resp.request.max_per_bm_rules
+    assert len(rules) == 1
+    assert rules[0].selector.cluster_id == "shared"
+    assert rules[0].selector.node_role == ["lb", "lb-standby"]
+
+
+@pytest.mark.parametrize("groups, needle", [
+    ([_tagged("master", 3, cap=1), _tagged("learner", 3, cap=2)], "disagree on max_per_bm"),
+    ([{"role": "master", "count": 3, "ip_type": "non-routable", "spec": "s1",
+       "no_colocate_group": "cp"}], "no max_per_bm"),
+    ([_tagged("master", 3), _tagged("lb", 2, ip="routable", scope="shared")], "mixes scope"),
+    ([_tagged("master", 3, tag="a"), _tagged("master", 1, ip="routable", tag="b")],
+     "two no_colocate_group tags"),
+    ([_tagged("master", 3),
+      {"role": "master", "count": 1, "ip_type": "routable", "spec": "s1", "max_per_bm": 1}],
+     "untagged in another"),
+], ids=["unequal_caps", "missing_cap", "mixed_scope", "role_in_two_tags", "untagged_sibling"])
+def test_no_colocate_rejects_inconsistent_tags(groups, needle):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as exc:
+        generate_mock_request(_cp_request(groups))
+    assert exc.value.status_code == 400
+    assert needle in exc.value.detail
+
+
+def test_no_colocate_blank_tag_is_none():
+    g = GenerateRequest(node_groups=[{"role": "master", "count": 1, "ip_type": "routable",
+                                      "no_colocate_group": "   "}]).node_groups[0]
+    assert g.no_colocate_group is None
+
+
+def test_escalation_targets_split_union_id():
+    """A failing union rule's id names every member role, so both pools that
+    serve a member are implicated."""
+    from types import SimpleNamespace
+    from app.mockgen import _Generator
+    gen = _Generator(_cp_request(
+        [_tagged("master", 5), _tagged("learner", 5)],
+        bm_profiles=[
+            BmProfile(name="m-pool", capacity=_BIG_CTRL, roles=["master"]),
+            BmProfile(name="l-pool", capacity=_BIG_CTRL, roles=["learner"]),
+            BmProfile(name="other", capacity=_BIG_CTRL, roles=["worker"]),
+        ],
+    ))
+    fake = SimpleNamespace(diagnostics={"infeasible_max_per_bm_rules": [
+        {"group_id": "maxbm/cluster-1/*/learner+master"}]})
+    assert sorted(gen._escalation_targets(fake, [])) == ["l-pool", "m-pool"]
