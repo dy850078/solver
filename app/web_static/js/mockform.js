@@ -105,6 +105,11 @@ function groupRow(p = {}) {
   // `input.list` is a read-only property, so the el() helper's property path
   // can't set it — the association must go through the attribute.
   role.setAttribute("list", "role-suggestions");
+  // The column is narrow; long roles (control-plane-learner) truncate, so
+  // hovering shows the full value.
+  const syncRoleTitle = () => { role.title = role.value; };
+  syncRoleTitle();
+  role.addEventListener("input", syncRoleTitle);
   const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
   const ip = el("select", { class: "select group-ip" },
     IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));

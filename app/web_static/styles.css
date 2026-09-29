@@ -273,7 +273,7 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 
 .role-row { display: grid; grid-template-columns: 78px 46px 1fr 1fr 46px; gap: 4px; align-items: center; }
 /* Node-group rows add a role select up front and a remove button at the end. */
-.role-row--group { grid-template-columns: 1.1fr 46px 1fr 1fr 40px 56px 30px 30px 26px; }
+.role-row--group { grid-template-columns: 2fr 36px 0.7fr 0.7fr 36px 40px 26px 26px 24px; }
 .group-flag {
   display: inline-flex; align-items: center; gap: 2px;
   font-size: var(--font-micro); color: var(--text-subtle); cursor: pointer;
@@ -287,7 +287,7 @@ body.sidebar-collapsed #sidebar-collapse-tab svg { transform: scaleX(-1); }
 .group-rows .role-row + .role-row { margin-top: 0; }
 .role-row__name { font-size: 11px; color: var(--text-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role-row--head { margin-bottom: 2px; font-size: 11px; }
-.role-row--head span { padding-left: 2px; }
+.role-row--head span { padding-left: 2px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .role-row .input, .role-row .select { height: 30px; font-size: 12px; min-width: 0; }
 /* Smaller dropdown chevron for the narrow Roles-table selects */
 .role-row .select { background-size: 9px; background-position: right 6px center; padding-right: 18px; }
