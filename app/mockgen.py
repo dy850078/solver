@@ -33,6 +33,7 @@ from .models import (
     NodeRole,
     PlacementAssignment,
     PlacementRequest,
+    PlacementResult,
     Resources,
     SolverConfig,
     Topology,
@@ -284,6 +285,12 @@ class GenerateResponse(BaseModel):
     ground_truth: list[PlacementAssignment] = Field(default_factory=list)
     feasibility: str = "unverified"   # "verified" | "unverified" | "infeasible"
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+    # The solver's own verification result (None when verify=False): the
+    # placement the solver actually chose, with bm_used_count and timing.
+    # `ground_truth` above is the generator's greedy layout, which only proves
+    # feasibility; consumers that report "what the solver did" (compare
+    # matrices, density/utilization) read this instead of re-solving.
+    verified: PlacementResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1120,7 @@ class _Generator:
             ground_truth=ground_truth,
             feasibility=feasibility,
             diagnostics=self.diag,
+            verified=result,
         )
 
 

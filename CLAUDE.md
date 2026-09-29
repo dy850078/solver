@@ -26,6 +26,7 @@ app/
 ├── diagnostics.py   # Advisory diagnostics (e.g. spread_below_target)
 ├── server.py        # FastAPI app + CLI mode; UI gated behind ENABLE_UI
 ├── mockgen.py       # Mock request generator for testing/demo
+├── compare.py       # Compare sets — catalogs + referenced scenarios, each sized by mockgen, tabulated (ADR-018)
 └── examples_api.py  # Serves examples/ to the UI
 tests/               # pytest suite; test files mirror app/ modules
 examples/            # Canonical request JSONs (also used by README curl examples)

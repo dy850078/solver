@@ -35,7 +35,7 @@ const DEFAULTS = {
 
 const IP_OPTIONS = ["routable", "non-routable", ""];
 
-const el = (tag, attrs = {}, children = []) => {
+export const el = (tag, attrs = {}, children = []) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
@@ -68,16 +68,18 @@ function getSpecNames() {
     .filter(Boolean);
 }
 
-function specOptions(selected) {
+function specOptions(selected, names = null) {
   return [el("option", { value: "", text: "(default)" }),
-    ...getSpecNames().map((n) => el("option", { value: n, text: n, selected: n === selected }))];
+    ...(names ?? getSpecNames()).map((n) => el("option", { value: n, text: n, selected: n === selected }))];
 }
 
 // Keep every node group's spec dropdown in sync with the spec catalog.
-function refreshSpecDropdowns() {
-  if (!groupRowsEl) return;
-  const names = getSpecNames();
-  for (const sel of groupRowsEl.querySelectorAll(".group-spec")) {
+// Exported for the Compare page, which owns several group containers and
+// its own spec catalog (passes both); the mock form uses its module state.
+export function refreshSpecDropdowns(rootEl = groupRowsEl, names = null) {
+  if (!rootEl) return;
+  names = names ?? getSpecNames();
+  for (const sel of rootEl.querySelectorAll(".group-spec")) {
     const cur = sel.value;
     sel.innerHTML = "";
     sel.appendChild(el("option", { value: "", text: "(default)" }));
@@ -102,7 +104,10 @@ function miniWrap(label, control, extra = "mini--num", title = "") {
   return wrap;
 }
 
-function groupRow(p = {}) {
+// One node-group card. `specNames` lets a caller with its own spec catalog
+// (Compare page) populate the spec dropdown; the mock form's rows read the
+// module-level catalog. The card only depends on its own parent container.
+export function groupRow(p = {}, { specNames = null } = {}) {
   // Roles are open strings (ADR-010): free text with the known catalog as
   // datalist suggestions, so ceph-mon / f5 / lb… need no frontend release.
   ensureRoleDatalist();
@@ -116,7 +121,7 @@ function groupRow(p = {}) {
   const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
   const ip = el("select", { class: "select group-ip" },
     IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));
-  const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
+  const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || "", specNames));
   const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
   if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
   // No-colocate tag (ADR-016/017): groups sharing a tag merge into ONE
@@ -150,9 +155,30 @@ function groupRow(p = {}) {
     remove,
   ]);
   remove.addEventListener("click", () => {
-    if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".group-row").length > 1) row.remove();
   });
   return row;
+}
+
+// Reads one node-group card back into a NodeGroup object, or null when the
+// row is blank (count <= 0). Shared by the mock form and the Compare page.
+export function readGroupRow(row) {
+  const count = Number(row.querySelector(".group-count").value);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const g = {
+    role: row.querySelector(".group-role").value,
+    count,
+    ip_type: row.querySelector(".group-ip").value,
+    spec: row.querySelector(".group-spec").value,
+  };
+  const mx = Number(row.querySelector(".group-maxbm").value);
+  if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
+  const tag = row.querySelector(".group-tag").value.trim();
+  if (tag) g.no_colocate_group = tag;
+  if (row.querySelector(".group-shared").checked) g.scope = "shared";
+  if (row.querySelector(".group-excl").checked) g.exclusive = true;
+  return g;
 }
 
 // A self-labeling field (label above input) that wraps within a .cap-row.
@@ -162,7 +188,9 @@ function miniField(cls, label, val, { text = false, ph = "", extra = "mini--num"
   return el("label", { class: `mini ${extra}` }, [el("span", { class: "mini__label", text: label }), input]);
 }
 
-function specRow(p = {}) {
+// One VM-spec card. `onNameInput` fires on name edits so a caller can resync
+// dependent dropdowns (the mock form resyncs its node groups).
+export function specRow(p = {}, { onNameInput = refreshSpecDropdowns } = {}) {
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
   const row = el("div", { class: "cap-row spec-row" }, [
     miniField("spec-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
@@ -172,16 +200,17 @@ function specRow(p = {}) {
     miniField("spec-gpu", "gpu (model:n)", formatGpu(p.gpu), { text: true, ph: "h200:1" }),
     remove,
   ]);
-  row.querySelector(".spec-name").addEventListener("input", refreshSpecDropdowns);
+  row.querySelector(".spec-name").addEventListener("input", () => onNameInput());
   remove.addEventListener("click", () => {
-    if (specRowsEl.querySelectorAll(".spec-row").length > 1) { row.remove(); refreshSpecDropdowns(); }
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".spec-row").length > 1) { row.remove(); onNameInput(); }
   });
   return row;
 }
 
 // ─── Baremetal profile rows ───
 
-function bmRow(p = {}) {
+export function bmRow(p = {}) {
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
   const row = el("div", { class: "cap-row bm-row" }, [
     miniField("bm-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
@@ -194,7 +223,8 @@ function bmRow(p = {}) {
     remove,
   ]);
   remove.addEventListener("click", () => {
-    if (bmRowsEl.querySelectorAll(".bm-row").length > 1) row.remove();
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".bm-row").length > 1) row.remove();
   });
   return row;
 }
@@ -269,7 +299,7 @@ const num = (id) => {
   return v === "" ? null : Number(v);
 };
 
-function readCapacityRows(rootEl, rowSel, prefix, withCount) {
+export function readCapacityRows(rootEl, rowSel, prefix, withCount) {
   const out = [];
   for (const row of rootEl.querySelectorAll(rowSel)) {
     const name = row.querySelector(`.${prefix}-name`).value.trim();
@@ -288,6 +318,18 @@ function readCapacityRows(rootEl, rowSel, prefix, withCount) {
     }
   }
   return out;
+}
+
+// Reads baremetal-profile cards into BmProfile objects ({name, capacity,
+// count?, roles?}). Shared with the Compare page's BM model catalog.
+export function readBmRows(rootEl) {
+  return readCapacityRows(rootEl, ".bm-row", "bm", true).map((b) => {
+    const p = { name: b.name, capacity: b.cap };
+    if (b.count != null) p.count = b.count;
+    const rolesStr = b.row.querySelector(".bm-roles").value.trim();
+    if (rolesStr) p.roles = rolesStr.split(",").map((s) => s.trim()).filter(Boolean);
+    return p;
+  });
 }
 
 function deepMerge(base, over) {
@@ -309,30 +351,11 @@ export function readMockParams() {
 
   const node_groups = [];
   for (const row of groupRowsEl.querySelectorAll(".group-row")) {
-    const count = Number(row.querySelector(".group-count").value);
-    if (!Number.isFinite(count) || count <= 0) continue;
-    const g = {
-      role: row.querySelector(".group-role").value,
-      count,
-      ip_type: row.querySelector(".group-ip").value,
-      spec: row.querySelector(".group-spec").value,
-    };
-    const mx = Number(row.querySelector(".group-maxbm").value);
-    if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
-    const tag = row.querySelector(".group-tag").value.trim();
-    if (tag) g.no_colocate_group = tag;
-    if (row.querySelector(".group-shared").checked) g.scope = "shared";
-    if (row.querySelector(".group-excl").checked) g.exclusive = true;
-    node_groups.push(g);
+    const g = readGroupRow(row);
+    if (g) node_groups.push(g);
   }
 
-  const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
-    const p = { name: b.name, capacity: b.cap };
-    if (b.count != null) p.count = b.count;
-    const rolesStr = b.row.querySelector(".bm-roles").value.trim();
-    if (rolesStr) p.roles = rolesStr.split(",").map((s) => s.trim()).filter(Boolean);
-    return p;
-  });
+  const bm_profiles = readBmRows(bmRowsEl);
 
   const params = {
     clusters: num("mf-clusters") ?? 1,

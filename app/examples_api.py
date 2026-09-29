@@ -30,6 +30,7 @@ _DIR_HINTS = {
     "capacity": "capacity-plan",
     "rollout": "rollout",
     "rollout_sizing": "rollout-size",
+    "compare": "compare",
 }
 
 

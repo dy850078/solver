@@ -20,7 +20,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import examples_api, mockgen
+from . import compare, examples_api, mockgen
 from .models import (
     CapacityPlanRequest,
     CapacityReport,
@@ -108,6 +108,7 @@ if _SWAGGER_STATIC_DIR is not None:
 
 api.include_router(examples_api.router)
 api.include_router(mockgen.router)
+api.include_router(compare.router)
 
 # Serve the web UI (topology visualization) from app/web_static/.
 # Gated behind ENABLE_UI so it's only deployed where explicitly enabled

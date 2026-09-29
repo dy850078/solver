@@ -882,3 +882,24 @@ def test_escalation_targets_split_union_id():
     fake = SimpleNamespace(diagnostics={"infeasible_max_per_bm_rules": [
         {"group_id": "maxbm/cluster-1/*/learner+master"}]})
     assert sorted(gen._escalation_targets(fake, [])) == ["l-pool", "m-pool"]
+
+
+# ---------------------------------------------------------------------------
+# verified: the solver's own result travels with the response (ADR-018)
+# ---------------------------------------------------------------------------
+
+
+def test_verified_carries_solver_placement():
+    resp = generate_mock_request(_cp_request([_tagged("master", 3), _tagged("learner", 3)]))
+    v = resp.verified
+    assert v is not None and v.success
+    assert v.bm_used_count == len({a.baremetal_id for a in v.assignments})
+    assert {a.vm_id for a in v.assignments} == {vm.id for vm in resp.request.vms}
+    assert v.bm_total_count == len(resp.request.baremetals)
+    assert v.solve_time_seconds >= 0
+
+
+def test_verified_is_none_without_verify():
+    resp = generate_mock_request(_cp_request([_tagged("master", 3)], verify=False))
+    assert resp.verified is None
+    assert resp.feasibility == "unverified"

@@ -144,6 +144,7 @@ BM 機隊大小由 `bm_profiles` 的 `count` 決定可行性語意：
   - `ground_truth`: `list[PlacementAssignment]`（建構式 placement）
   - `feasibility`: `"verified" | "unverified" | "infeasible"`
   - `diagnostics`: dict（自動上調、彈性補機數、solver 驗證狀態等）
+  - `verified`: `PlacementResult | null`（`verify=true` 時 solver 自己的驗證結果：實際 assignments、`bm_used_count`、`solve_time_seconds`；`ground_truth` 只是 generator 的 greedy 佈局，要看「solver 怎麼擺」讀這個，ADR-018）
 
 ---
 
