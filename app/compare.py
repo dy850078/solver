@@ -47,7 +47,10 @@ from .mockgen import (
     NodeGroup,
     generate_mock_request,
 )
-from .models import VM, Baremetal, Resources, res_get, resource_dims, validate_role
+from .models import (
+    VM, Baremetal, PlacementRequest, PlacementResult, Resources, res_get, resource_dims,
+    validate_role,
+)
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
 
@@ -201,6 +204,10 @@ class CompareRunRequest(CompareSet):
     only: list[str] | None = None
     deadline_seconds: float = Field(default=120.0, gt=0)
     max_scenarios: int = Field(default=60, ge=1)
+    # Attach the full PlacementRequest / PlacementResult per scenario (the UI
+    # needs them for the rack diagram; ~25 KB per 40-VM cell). Off by default
+    # so batch / CLI output stays the compact table.
+    include_placement: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +253,12 @@ class ScenarioResult(BaseModel):
     solve_time_seconds: float | None = None   # last verification solve only
     elapsed_seconds: float | None = None      # whole generate(), escalations included
     resolved: GenerateRequest | None = None   # the exact mock request this cell ran
+    # Only with include_placement=True: the generated PlacementRequest (BM
+    # topology, capacities, every VM) and the solver's result, i.e. what the
+    # Topology page needs to draw this cell. Re-generating from `resolved`
+    # would not reproduce them when no seed is set.
+    placement_request: PlacementRequest | None = None
+    placement_result: PlacementResult | None = None
 
 
 class CompareResult(BaseModel):
@@ -399,7 +412,8 @@ def _select(cs: CompareRunRequest) -> list[ScenarioSpec]:
     return todo
 
 
-def run_scenario(cs: CompareSet, sc: ScenarioSpec) -> ScenarioResult:
+def run_scenario(cs: CompareSet, sc: ScenarioSpec, *,
+                 include_placement: bool = False) -> ScenarioResult:
     """Size one scenario. A generator 400 or invalid knobs become an `error`
     row instead of failing the whole set — one bad model must not hide the
     other columns."""
@@ -417,6 +431,9 @@ def run_scenario(cs: CompareSet, sc: ScenarioSpec) -> ScenarioResult:
                               elapsed_seconds=round(time.monotonic() - t0, 3), **base)
     metrics = scenario_metrics(resp, gen)
     status: ScenarioStatus = "ok" if resp.feasibility == "verified" else "infeasible"
+    if include_placement:
+        metrics["placement_request"] = resp.request
+        metrics["placement_result"] = resp.verified
     return ScenarioResult(status=status, resolved=gen,
                           elapsed_seconds=round(time.monotonic() - t0, 3), **base, **metrics)
 
@@ -436,7 +453,7 @@ def run_compare(cs: CompareRunRequest) -> CompareResult:
                 error=f"deadline_seconds={cs.deadline_seconds} exhausted before this scenario",
             ))
             continue
-        results.append(run_scenario(cs, sc))
+        results.append(run_scenario(cs, sc, include_placement=cs.include_placement))
     return CompareResult(name=cs.name, scenarios=results,
                          elapsed_seconds=round(time.monotonic() - t0, 3))
 
@@ -530,8 +547,8 @@ def main(argv: list[str] | None = None) -> int:
 
     with open(args.input) as f:
         data = json.load(f)
-    data.pop("only", None)
-    data.pop("deadline_seconds", None)
+    for k in ("only", "deadline_seconds", "max_scenarios", "include_placement"):
+        data.pop(k, None)
     try:
         req = CompareRunRequest(**data, only=args.only, deadline_seconds=args.deadline,
                                 max_scenarios=max(60, len(data.get("scenarios", []))))

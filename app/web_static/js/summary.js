@@ -1,4 +1,5 @@
 import { escapeHtml } from "./util.js";
+import { legendEntries, clusterLegendEntries } from "./colors.js";
 
 function statusKind(status) {
   if (!status) return "neutral";
@@ -163,4 +164,26 @@ export function renderLegend(container, entries) {
 
 export function renderError(container, message) {
   container.innerHTML = `<div class="alert alert--error">${escapeHtml(message)}</div>`;
+}
+
+// Two legend rows sharing one palette, split by treatment: cluster = solid
+// badge (matches the chips), AG = 15% tint swatch (matches the BM pills).
+// Reads the current colour scale (colors.js), so call it after
+// rebuildColorScale(). Shared by the Topology, Rollout and Compare pages.
+export function renderTopologyLegend(el) {
+  const clusters = clusterLegendEntries();
+  const ags = legendEntries();
+  const clRow = clusters.length < 2 ? "" :
+    `<span class="legend__dim">Cluster</span>` + clusters.map((e) => `
+      <span class="legend-item">
+        <span class="legend-badge" style="background:${e.color};color:${e.ink}">${escapeHtml(e.short)}</span>
+        ${escapeHtml(e.cluster)}
+      </span>`).join("");
+  const agRow = ags.length === 0 ? "" :
+    `<span class="legend__dim">AG</span>` + ags.map((e) => `
+      <span class="legend-item">
+        <span class="legend-tint" style="--ag-color:${e.color}"></span>
+        ${escapeHtml(e.ag)}
+      </span>`).join("");
+  el.innerHTML = clRow + agRow;
 }

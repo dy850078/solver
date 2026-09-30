@@ -349,3 +349,36 @@ def test_compare_examples_validate():
         cs = CompareSet(**data)
         assert cs.scenarios
         assert _hint_for(pathlib.Path("compare") / path.name) == "compare"
+
+
+# ---------------------------------------------------------------------------
+# include_placement: full request + solver result for the rack diagram
+# ---------------------------------------------------------------------------
+
+def test_include_placement_flag(basic_result):
+    assert basic_result.scenarios[0].placement_request is None
+    assert basic_result.scenarios[0].placement_result is None
+    r = run_compare(CompareRunRequest(**_set(), include_placement=True))
+    s = r.scenarios[0]
+    assert s.placement_result is not None and s.placement_result.success
+    assert s.placement_result.bm_used_count == s.bm_used
+    assert len(s.placement_request.baremetals) == s.bm_fleet
+    assert {a.vm_id for a in s.placement_result.assignments} == {vm.id for vm in s.placement_request.vms}
+    assert all(bm.topology.ag for bm in s.placement_request.baremetals)
+
+
+def test_include_placement_error_row_is_none():
+    r = run_compare(CompareRunRequest(**_set(scenarios=[
+        {"name": "bad", "bm_model": "A", "bundle": "small", "overrides": {"tightness": 5}},
+    ]), include_placement=True))
+    s = r.scenarios[0]
+    assert s.status == "error" and s.placement_request is None and s.placement_result is None
+
+
+def test_endpoint_compare_run_include_placement(client):
+    body = {**_set(), "include_placement": True, "only": ["A-small-c1"]}
+    r = client.post("/api/compare/run", json=body)
+    assert r.status_code == 200
+    s = r.json()["scenarios"][0]
+    assert s["placement_request"]["baremetals"] and s["placement_result"]["assignments"]
+

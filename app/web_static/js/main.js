@@ -1,8 +1,8 @@
 import { listExamples, getExample, solve, splitAndSolve, generateMock } from "./api.js";
 import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
-import { rebuildColorScale, legendEntries, clusterLegendEntries } from "./colors.js";
-import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
+import { rebuildColorScale } from "./colors.js";
+import { renderResult, renderStats, renderLegend, renderError, renderTopologyLegend } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
 import { renderMockForm, readMockParams, populateMockForm } from "./mockform.js";
@@ -109,25 +109,6 @@ function rerenderViz() {
   }
 }
 
-// Two legend rows sharing one palette, split by treatment: cluster = solid
-// badge (matches the chips), AG = 15% tint swatch (matches the BM pills).
-function renderTopologyLegend(el) {
-  const clusters = clusterLegendEntries();
-  const ags = legendEntries();
-  const clRow = clusters.length < 2 ? "" :
-    `<span class="legend__dim">Cluster</span>` + clusters.map((e) => `
-      <span class="legend-item">
-        <span class="legend-badge" style="background:${e.color};color:${e.ink}">${escapeHtml(e.short)}</span>
-        ${escapeHtml(e.cluster)}
-      </span>`).join("");
-  const agRow = ags.length === 0 ? "" :
-    `<span class="legend__dim">AG</span>` + ags.map((e) => `
-      <span class="legend-item">
-        <span class="legend-tint" style="--ag-color:${e.color}"></span>
-        ${escapeHtml(e.ag)}
-      </span>`).join("");
-  el.innerHTML = clRow + agRow;
-}
 
 function mapToOptions(countMap) {
   return [...countMap.entries()]

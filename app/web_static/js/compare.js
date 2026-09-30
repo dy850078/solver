@@ -1,13 +1,20 @@
 // Compare page — run every scenario of a compare set through
 // /api/compare/run (one call per scenario so rows fill in as they finish and
 // the user can cancel), then tabulate: grouped by BM model (default) or by
-// bundle, with a per-BM placement detail and CSV / xlsx export.
+// bundle. The placement detail reuses the Topology page's rack diagram
+// (group by / filter / cluster colours) on the cell's PlacementRequest +
+// PlacementResult, and lists the exact parameters the cell ran with.
 
 import { listExamples, getExample, compareRun } from "./api.js";
 import { escapeHtml } from "./util.js";
 import { buildXlsx } from "./xlsx.js";
 import { blankSet, loadDraft, saveDraft, clearDraft, normalizeSet, modelsOf, bundleLabel } from "./compare-set.js";
 import { initForm, renderForm, readSet, setScenarioStatus, clearScenarioStatus } from "./compare-form.js";
+import { GROUP_BY_OPTIONS, buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
+import { rebuildColorScale } from "./colors.js";
+import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
+import { createMultiSelect } from "./multiselect.js";
+import { renderTopologyLegend } from "./summary.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,7 +25,17 @@ const state = {
   running: false,
   cancelled: false,
   selected: null,
+  // Placement detail (Topology-page pipeline on the selected cell)
+  detail: {
+    req: null, res: null,
+    groupBy: "rack",
+    showCapacity: (() => { try { return localStorage.getItem("solver-show-capacity") === "1"; } catch { return false; } })(),
+    filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set() },
+  },
 };
+let clusterMs = null;
+let roleMs = null;
+let ipTypeMs = null;
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 
@@ -54,14 +71,14 @@ function labelsOf(sc) {
   return { bm_model: modelsOf(sc).join("+"), bundle: sc.bundle, clusters: sc.clusters };
 }
 
+function capSummary(c = {}) {
+  const gpu = Object.entries(c.gpu || {}).map(([k, v]) => `${k}×${v}`).join(" ");
+  return `${c.cpu_cores}c / ${Math.round((c.memory_mib || 0) / 1024)} GiB / ${c.storage_gb} GB${gpu ? " / " + gpu : ""}`;
+}
+
 function modelSummary(set, name) {
   const parts = name.split("+").map((n) => set.bm_models[n]).filter(Boolean);
-  if (!parts.length) return "";
-  return parts.map((m) => {
-    const c = m.capacity || {};
-    const gpu = Object.entries(c.gpu || {}).map(([k, v]) => `${k}×${v}`).join(" ");
-    return `${c.cpu_cores}c / ${Math.round((c.memory_mib || 0) / 1024)} GiB / ${c.storage_gb} GB${gpu ? " / " + gpu : ""}`;
-  }).join(" + ");
+  return parts.map((m) => capSummary(m.capacity)).join(" + ");
 }
 
 function bundleSummary(set, name) {
@@ -92,8 +109,8 @@ function renderTable() {
   const head = `<thead><tr>
     <th>scenario</th><th>${other === "bundle" ? "bundle" : "BM model"}</th><th class="num">clusters</th>
     <th class="num" title="BMs the solver actually placed on — the procurement figure at tightness 1.0 (the generator-provisioned fleet is in the CSV / xlsx export as bm_fleet)">BMs</th>
-    <th class="num" title="used ÷ clusters">BM / cluster</th>
-    <th class="num" title="VMs on the fullest BM (avg over used BMs below)">VM density</th>
+    <th class="num" title="BMs ÷ clusters (average; a shared BM counts for every cluster on it)">BM / cluster</th>
+    <th class="num" title="max = VMs on the fullest BM · avg = VMs ÷ BMs used">VM density</th>
     <th>cpu</th><th>mem</th><th>storage</th><th>status</th><th class="num">time</th>
   </tr></thead>`;
   let body = "<tbody>";
@@ -102,7 +119,7 @@ function renderTable() {
     body += `<tr class="cmp-group"><td colspan="11">${escapeHtml(g)}<span class="muted">${escapeHtml(summary)}</span></td></tr>`;
     for (const { sc, l } of items) {
       const r = state.results.get(sc.name);
-      const status = r ? r.status : (state.running && state.order.includes(sc.name) ? "pending" : "pending");
+      const status = r ? r.status : "pending";
       const sel = state.selected === sc.name ? " cmp-row--selected" : "";
       const pend = r ? "" : " cmp-row--pending";
       const ov = sc.overrides && Object.keys(sc.overrides).length ? `<span class="ov-mark" title="${escapeHtml(JSON.stringify(sc.overrides))}">⚙</span>` : "";
@@ -113,7 +130,7 @@ function renderTable() {
         <td class="num">${l.clusters}</td>
         <td class="num">${r?.bm_used != null ? `<span class="cmp-big">${r.bm_used}</span>` : (r ? "—" : "…")}</td>
         <td class="num">${fmt(r?.bm_per_cluster_avg, 1)}</td>
-        <td class="num">${r?.vm_density_max != null ? `${r.vm_density_max} <span class="cmp-sub">avg ${fmt(r.vm_density_avg, 1)}</span>` : "—"}</td>
+        <td class="num">${r?.vm_density_max != null ? `<span class="cmp-sub">max</span> ${r.vm_density_max} <span class="cmp-sub">· avg ${fmt(r.vm_density_avg, 1)}</span>` : "—"}</td>
         <td>${ubar(u.cpu_cores)}</td><td>${ubar(u.memory_mib)}</td><td>${ubar(u.storage_gb)}</td>
         <td>${chip(status)}${r?.error ? ` <span class="cmp-sub" title="${escapeHtml(r.error)}">${escapeHtml(r.error.slice(0, 60))}${r.error.length > 60 ? "…" : ""}</span>` : ""}</td>
         <td class="num">${r?.elapsed_seconds != null ? `${fmt(r.elapsed_seconds, 2)}s` : "—"}</td>
@@ -125,8 +142,7 @@ function renderTable() {
   for (const tr of table.querySelectorAll("tr.cmp-row")) {
     tr.addEventListener("click", () => selectScenario(tr.dataset.name));
   }
-  const done = [...state.results.values()];
-  $("csv-btn").disabled = $("xlsx-btn").disabled = done.length === 0;
+  $("csv-btn").disabled = $("xlsx-btn").disabled = state.results.size === 0;
 }
 
 function renderStats() {
@@ -145,7 +161,94 @@ function renderStats() {
   c.classList.remove("hidden");
 }
 
-/* ── detail ──────────────────────────────────────────────────────── */
+/* ── detail: parameters ──────────────────────────────────────────── */
+
+// The exact knobs this cell ran with (from `resolved`), grouped; keys the
+// scenario overrode over the set's defaults carry a ⚙ marker.
+function renderParams(r, sc) {
+  const g = r.resolved;
+  const body = $("detail-params-body");
+  if (!g) { body.innerHTML = `<span class="muted">No resolved request (the scenario did not run).</span>`; return; }
+  const ov = new Set(Object.keys(sc?.overrides || {}));
+  const mark = (k) => (ov.has(k) ? `<span class="params__ov" title="overrides the set default">⚙</span>` : "");
+  const row = (k, v, key = k) => `<div class="params__row"><span class="params__key">${escapeHtml(k)}${mark(key)}</span><span class="params__val">${escapeHtml(String(v))}</span></div>`;
+  const group = (title, rows) => `<div class="params__group"><div class="params__title">${escapeHtml(title)}</div>${rows.join("")}</div>`;
+
+  const models = (g.bm_profiles || []).map((p) =>
+    row(p.name, `${capSummary(p.capacity)}${p.roles?.length ? ` · roles ${p.roles.join(",")}` : " · all roles"}`, "bm_profiles"));
+  const groupsRows = (g.node_groups || []).map((ng) => {
+    const bits = [`${ng.role} × ${ng.count}`, ng.ip_type || "no ip", ng.spec || "default spec"];
+    if (ng.max_per_bm != null) bits.push(`max/BM ${ng.max_per_bm}`);
+    if (ng.no_colocate_group) bits.push(`tag ${ng.no_colocate_group}`);
+    if (ng.scope === "shared") bits.push("shared");
+    if (ng.exclusive) bits.push("exclusive");
+    return `<div class="params__group-line">${escapeHtml(bits.join(" · "))}</div>`;
+  });
+  const topo = [];
+  for (const k of ["sites", "phases", "datacenters", "rooms"]) if (g[k] && g[k] !== 1) topo.push(row(k, g[k]));
+  topo.push(row("racks", g.racks ?? 4), row("ags", g.ags ?? 3));
+  const rules = [
+    row("anti_affinity", g.anti_affinity ? "on" : "off"),
+    row("target_spread", Object.entries(g.target_spread || {}).map(([k, v]) => `${k}:${v}`).join(" ") || "—"),
+    row("failover", g.failover ? "master→learner N-1" : "off"),
+  ];
+  if (g.max_per_bm_by_role && Object.keys(g.max_per_bm_by_role).length) {
+    rules.push(row("max_per_bm_by_role", JSON.stringify(g.max_per_bm_by_role)));
+  }
+  const misc = [row("clusters", g.clusters ?? 1), row("tightness", g.tightness ?? 0.7), row("seed", g.seed ?? "random")];
+  const co = Object.entries(g.config_overrides || {});
+  const cfg = co.length ? co.map(([k, v]) => row(k, JSON.stringify(v), "config_overrides")) : [row("config_overrides", "—")];
+  const specs = Object.entries(g.vm_specs || {}).map(([n, c]) => row(n, capSummary(c), "vm_specs"));
+
+  body.innerHTML =
+    group("BM model", models) +
+    group("Bundle (per cluster)", groupsRows) +
+    group("Scenario", misc) +
+    group("Topology", topo) +
+    group("Rules", rules) +
+    group("Solver config", cfg) +
+    (specs.length ? group("VM specs", specs) : "");
+}
+
+/* ── detail: rack diagram (Topology pipeline) ────────────────────── */
+
+function mapToOptions(countMap) {
+  return [...countMap.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([value, count]) => ({ value, count }));
+}
+
+function updateFilterControls() {
+  const d = state.detail;
+  const bar = $("cmp-filter-bar");
+  if (!d.req || !d.res) { bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  const opts = buildFilterOptions(d.req, d.res);
+  clusterMs.update({ options: mapToOptions(opts.clusters), selected: d.filter.clusters });
+  roleMs.update({ options: mapToOptions(opts.roles), selected: d.filter.roles });
+  ipTypeMs.update({ options: mapToOptions(opts.ipTypes), selected: d.filter.ipTypes });
+  $("cmp-filter-clear").classList.toggle("hidden", !isFilterActive(d.filter));
+}
+
+function clearDetailFilter() {
+  const d = state.detail;
+  d.filter.clusters.clear(); d.filter.roles.clear(); d.filter.ipTypes.clear();
+  updateFilterControls();
+  renderDetailViz();
+}
+
+function renderDetailViz() {
+  const d = state.detail;
+  const rackEl = $("cmp-rack-container");
+  const legendEl = $("cmp-ag-legend");
+  if (!d.req || !d.res) return;
+  const filtered = applyFilter(d.res, d.req, d.filter);
+  // Colours: the cell's own clusters (unfiltered), rebuilt per selection so
+  // the legend always matches the chips on screen.
+  const clusterSet = new Set([...buildFilterOptions(d.req, d.res).clusters.keys()].filter((c) => !c.startsWith("(")));
+  rebuildColorScale(collectAgSet(d.req, d.res), clusterSet);
+  const panels = buildPanels(d.req, filtered, d.groupBy, d.filter);
+  renderRackDiagram(rackEl, panels, { showCapacity: d.showCapacity });
+  renderTopologyLegend(legendEl);
+}
 
 function selectScenario(name) {
   state.selected = name;
@@ -154,6 +257,7 @@ function selectScenario(name) {
   const card = $("detail-card");
   if (!r) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  const sc = state.set?.scenarios.find((s) => s.name === name);
   const l = r.labels || {};
   $("detail-head").innerHTML = `
     <b>${escapeHtml(name)}</b> ${chip(r.status)}
@@ -161,23 +265,30 @@ function selectScenario(name) {
     ${r.bm_used != null ? ` · ${r.bm_used} BM${r.bm_used === 1 ? "" : "s"} · density max ${r.vm_density_max} / avg ${fmt(r.vm_density_avg, 1)}` : ""}
     ${r.escalation_rounds ? ` · ${r.escalation_rounds} escalation round${r.escalation_rounds === 1 ? "" : "s"}` : ""}
     ${r.solve_time_seconds != null ? ` · solve ${fmt(r.solve_time_seconds, 3)}s` : ""}</span>`;
-  const body = $("detail-body");
+  renderParams(r, sc);
+  const meta = $("detail-meta");
+  meta.innerHTML = r.bm_by_cluster
+    ? `Distinct BMs per cluster — ${Object.entries(r.bm_by_cluster).map(([c, n]) => `${escapeHtml(c)}: ${n}`).join(" · ")}`
+    : "";
+
+  const d = state.detail;
+  d.filter.clusters.clear(); d.filter.roles.clear(); d.filter.ipTypes.clear();
+  const rackEl = $("cmp-rack-container");
   if (r.error) {
-    body.innerHTML = `<div class="alert alert--error">${escapeHtml(r.error)}</div>`;
-  } else if (!r.placements) {
-    body.innerHTML = `<div class="alert alert--warn">No placement: the solver reported ${escapeHtml(r.solver_status || r.status)}.</div>`;
+    d.req = d.res = null;
+    updateFilterControls();
+    showRackEmpty(rackEl, r.error);
+    $("cmp-ag-legend").innerHTML = "";
+  } else if (!r.placement_result?.success || !r.placement_request) {
+    d.req = d.res = null;
+    updateFilterControls();
+    showRackEmpty(rackEl, `No placement: the solver reported ${r.solver_status || r.status}.`);
+    $("cmp-ag-legend").innerHTML = "";
   } else {
-    const bmByCluster = r.bm_by_cluster ? Object.entries(r.bm_by_cluster).map(([c, n]) => `${escapeHtml(c)}: ${n}`).join(" · ") : "";
-    body.innerHTML = (bmByCluster ? `<div class="detail-meta" style="margin-bottom:10px">Distinct BMs per cluster — ${bmByCluster}</div>` : "") +
-      `<div class="bm-list">` + r.placements.map((p) => `
-      <div class="bm-card">
-        <div class="bm-card__head"><span class="bm-card__id">${escapeHtml(p.bm_id)}</span><span class="bm-card__ag">${escapeHtml(p.ag || "")} · ${p.vms.length} VM${p.vms.length === 1 ? "" : "s"}</span></div>
-        <div class="bm-card__vms">${p.vms.map((v) => `<span class="vm-pill" title="${escapeHtml(v.vm_id)}">${escapeHtml(v.role)}<span class="vm-pill__cluster">${escapeHtml(v.cluster_id)}</span></span>`).join("")}</div>
-        <div class="bm-card__util">${[["cpu", "cpu_cores"], ["mem", "memory_mib"], ["storage", "storage_gb"]].map(([lab, k]) =>
-          p.util[k] == null ? "" : `<span class="ubar"><span>${lab}</span><span class="ubar__track"><span class="ubar__fill${p.util[k] > 0.9 ? " ubar__fill--hot" : ""}" style="width:${Math.min(100, Math.round(p.util[k] * 100))}%"></span></span><span>${pct(p.util[k])}</span></span>`).join("")}
-          ${Object.entries(p.util).filter(([k]) => k.startsWith("gpu:")).map(([k, v]) => `<span class="ubar"><span>${escapeHtml(k.slice(4))}</span><span class="ubar__track"><span class="ubar__fill" style="width:${Math.min(100, Math.round(v * 100))}%"></span></span><span>${pct(v)}</span></span>`).join("")}
-        </div>
-      </div>`).join("") + `</div>`;
+    d.req = r.placement_request;
+    d.res = r.placement_result;
+    updateFilterControls();
+    renderDetailViz();
   }
   $("preset-btn").disabled = !r.resolved;
   card.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -221,7 +332,7 @@ async function runAll() {
     $("run-fill").style.width = `${Math.round((i / targets.length) * 100)}%`;
     setScenarioStatus(name, chip("running"));
     try {
-      const res = await compareRun({ ...set, only: [name], deadline_seconds: 3600, max_scenarios: 1 });
+      const res = await compareRun({ ...set, only: [name], deadline_seconds: 3600, max_scenarios: 1, include_placement: true });
       const r = res.scenarios[0];
       state.results.set(name, r);
       setScenarioStatus(name, chip(r.status) + (r.bm_used != null ? ` <span>${r.bm_used} BM${r.bm_used === 1 ? "" : "s"}</span>` : ""));
@@ -327,8 +438,41 @@ async function populateExamples() {
   }
 }
 
+function initDetailControls() {
+  const d = state.detail;
+  const sel = $("cmp-group-by");
+  for (const o of GROUP_BY_OPTIONS) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    opt.selected = o.value === d.groupBy;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener("change", (e) => { d.groupBy = e.target.value; renderDetailViz(); });
+  const cap = $("cmp-show-capacity");
+  cap.checked = d.showCapacity;
+  cap.addEventListener("change", (e) => {
+    d.showCapacity = e.target.checked;
+    try { localStorage.setItem("solver-show-capacity", d.showCapacity ? "1" : "0"); } catch { /* ignore */ }
+    renderDetailViz();
+  });
+  const onFilterChange = (key) => (selected) => {
+    d.filter[key] = selected;
+    $("cmp-filter-clear").classList.toggle("hidden", !isFilterActive(d.filter));
+    renderDetailViz();
+  };
+  clusterMs = createMultiSelect({ label: "Cluster", onChange: onFilterChange("clusters") });
+  roleMs = createMultiSelect({ label: "Role", onChange: onFilterChange("roles") });
+  ipTypeMs = createMultiSelect({ label: "IP type", onChange: onFilterChange("ipTypes") });
+  $("cmp-filter-cluster").appendChild(clusterMs.element);
+  $("cmp-filter-role").appendChild(roleMs.element);
+  $("cmp-filter-iptype").appendChild(ipTypeMs.element);
+  $("cmp-filter-clear").addEventListener("click", clearDetailFilter);
+}
+
 function init() {
   initForm({ onChange: scheduleDraft });
+  initDetailControls();
   populateExamples();
   const draft = loadDraft();
   renderForm(draft || blankSet());

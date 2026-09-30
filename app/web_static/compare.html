@@ -149,6 +149,8 @@
         <div class="toolbar" style="margin-top:6px">
           <button id="scenario-add" type="button" class="btn btn--ghost btn--small">+ Add scenario</button>
           <button id="grid-toggle" type="button" class="btn btn--ghost btn--small" title="Add every combination of the ticked models × bundles × cluster counts">Generate grid…</button>
+          <span class="toolbar__spacer"></span>
+          <button id="scenario-clear" type="button" class="btn btn--ghost btn--small" title="Remove every scenario (catalogs and the results table stay)">Clear all</button>
         </div>
         <div id="grid-panel" class="grid-panel hidden" style="margin-top:8px">
           <div class="mini"><span class="mini__label">Models</span><div id="grid-models" class="grid-panel__opts"></div></div>
@@ -212,22 +214,45 @@
       </div>
     </section>
 
-    <section id="detail-card" class="card hidden">
+    <section id="detail-card" class="card viz-card hidden">
       <header class="card__header">
         <h2 class="card__title">Placement detail</h2>
-        <div class="card__header-right toolbar">
-          <button id="preset-btn" type="button" class="btn btn--ghost" title="Download this scenario as a Topology-page mock preset (GenerateRequest JSON)">Save as mock preset</button>
+        <div class="card__header-right">
+          <label class="cap-toggle" title="Show per-BM capacity bars">
+            <input type="checkbox" id="cmp-show-capacity">
+            <span>Capacity</span>
+          </label>
+          <label class="select-inline">
+            <span class="select-inline__label">Group by</span>
+            <select id="cmp-group-by" class="select select--compact"></select>
+          </label>
+          <button id="preset-btn" type="button" class="btn btn--ghost btn--small" title="Download this scenario as a Topology-page mock preset (GenerateRequest JSON)">Save as mock preset</button>
         </div>
       </header>
-      <div class="card__body">
+      <div id="cmp-filter-bar" class="filter-bar hidden">
+        <span class="filter-bar__label">Filter:</span>
+        <div id="cmp-filter-cluster"></div>
+        <div id="cmp-filter-role"></div>
+        <div id="cmp-filter-iptype"></div>
+        <button id="cmp-filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
+      </div>
+      <div class="card__body card__body--scroll">
         <div id="detail-head" class="detail-head"></div>
-        <div id="detail-body"></div>
+        <details id="detail-params" class="params" open>
+          <summary>Parameters</summary>
+          <div id="detail-params-body" class="params__body"></div>
+        </details>
+        <div id="detail-meta" class="detail-meta"></div>
+        <div id="cmp-rack-container" class="rack-area"></div>
+        <div id="cmp-ag-legend" class="legend"></div>
       </div>
     </section>
 
   </div>
 
 </main>
+
+<div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
 
 <script type="module" src="js/theme.js"></script>
 <script type="module" src="js/compare.js"></script>
