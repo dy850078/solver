@@ -134,7 +134,7 @@
         </div>
         <div class="def-grid def-grid--2">
           <label class="mini"><span class="mini__label">Spread AGs</span><input id="df-spread-ag" class="input" type="number" min="1" value="3"></label>
-          <label class="mini"><span class="mini__label">Tightness</span><input id="df-tightness" class="input" type="number" min="0.1" max="1" step="0.05" value="0.7"></label>
+          <label class="mini"><span class="mini__label">Tightness</span><input id="df-tightness" class="input" type="number" min="0.1" max="1" step="0.05" value="1"></label>
           <label class="mini"><span class="mini__label">Seed</span><input id="df-seed" class="input" type="number" placeholder="random"></label>
           <label class="mini"><span class="mini__label">Max solve seconds</span><input id="df-solve" class="input" type="number" min="1" placeholder="30"></label>
         </div>
@@ -202,8 +202,9 @@
         <div id="results-empty" class="muted" style="font-size:12.5px">
           Build a set on the left (or load an example) and press <b>Run all</b>. Each scenario is sized
           by the mock generator and verified by the solver; rows fill in as they finish.
-          <b>fleet</b> is the number of machines the generator provisioned, <b>used</b> how many the solver
-          actually placed on.
+          <b>BMs</b> is how many machines the solver actually placed on — with tightness 1.0 that is
+          the procurement figure. (The generator-provisioned fleet stays available as <code>bm_fleet</code>
+          in the CSV / xlsx export and the API.)
         </div>
         <div id="results-wrap" class="table-wrap hidden" style="overflow-x:auto">
           <table id="results-table" class="cmp-table"></table>

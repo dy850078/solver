@@ -205,7 +205,7 @@ function readDefaults() {
     anti_affinity: $("df-aa").checked,
     target_spread: { ag: num("df-spread-ag") ?? 3 },
     failover: $("df-failover").checked,
-    tightness: num("df-tightness") ?? 0.7,
+    tightness: num("df-tightness") ?? 1.0,
   };
   for (const k of ["sites", "phases", "datacenters", "rooms"]) {
     const v = num(`df-${k}`);
@@ -236,7 +236,7 @@ function renderDefaults(d = {}) {
   $("df-aa").checked = d.anti_affinity ?? true;
   $("df-failover").checked = !!d.failover;
   setVal("df-spread-ag", d.target_spread?.ag ?? 3);
-  setVal("df-tightness", d.tightness ?? 0.7);
+  setVal("df-tightness", d.tightness ?? 1.0);
   for (const k of ["sites", "phases", "datacenters", "rooms"]) setVal(`df-${k}`, d[k] && d[k] !== 1 ? d[k] : "");
   setVal("df-seed", d.seed ?? "");
   const co = { ...(d.config_overrides || {}) };

@@ -23,7 +23,9 @@ export function blankSet() {
         { role: "worker", count: 3, ip_type: "routable", spec: "standard" },
       ],
     },
-    defaults: { racks: 4, ags: 3, anti_affinity: true, target_spread: { ag: 3 }, tightness: 0.7 },
+    // tightness 1.0: procurement wants the fewest machines, so the generator
+    // provisions no headroom and the solver's BM count is the figure to buy.
+    defaults: { racks: 4, ags: 3, anti_affinity: true, target_spread: { ag: 3 }, tightness: 1.0 },
     scenarios: [
       { name: "A-64c · cp-basic · c1", bm_model: "A-64c", bundle: "cp-basic", clusters: 1 },
     ],

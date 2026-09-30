@@ -91,7 +91,7 @@ function renderTable() {
   }
   const head = `<thead><tr>
     <th>scenario</th><th>${other === "bundle" ? "bundle" : "BM model"}</th><th class="num">clusters</th>
-    <th class="num" title="BMs the solver placed on / BMs the generator provisioned">used / fleet</th>
+    <th class="num" title="BMs the solver actually placed on — the procurement figure at tightness 1.0 (the generator-provisioned fleet is in the CSV / xlsx export as bm_fleet)">BMs</th>
     <th class="num" title="used ÷ clusters">BM / cluster</th>
     <th class="num" title="VMs on the fullest BM (avg over used BMs below)">VM density</th>
     <th>cpu</th><th>mem</th><th>storage</th><th>status</th><th class="num">time</th>
@@ -111,7 +111,7 @@ function renderTable() {
         <td>${escapeHtml(sc.name)}${ov}</td>
         <td>${escapeHtml(l[other])}</td>
         <td class="num">${l.clusters}</td>
-        <td class="num">${r?.bm_used != null ? `<span class="cmp-big">${r.bm_used}</span> <span class="cmp-sub">/ ${r.bm_fleet}</span>` : (r?.bm_fleet != null ? `<span class="cmp-sub">— / ${r.bm_fleet}</span>` : "…")}</td>
+        <td class="num">${r?.bm_used != null ? `<span class="cmp-big">${r.bm_used}</span>` : (r ? "—" : "…")}</td>
         <td class="num">${fmt(r?.bm_per_cluster_avg, 1)}</td>
         <td class="num">${r?.vm_density_max != null ? `${r.vm_density_max} <span class="cmp-sub">avg ${fmt(r.vm_density_avg, 1)}</span>` : "—"}</td>
         <td>${ubar(u.cpu_cores)}</td><td>${ubar(u.memory_mib)}</td><td>${ubar(u.storage_gb)}</td>
@@ -158,7 +158,7 @@ function selectScenario(name) {
   $("detail-head").innerHTML = `
     <b>${escapeHtml(name)}</b> ${chip(r.status)}
     <span class="detail-meta">${escapeHtml(l.bm_model || "")} · ${escapeHtml(l.bundle || "")} · ${l.clusters} cluster${l.clusters === 1 ? "" : "s"}
-    ${r.bm_used != null ? ` · ${r.bm_used} BMs used of ${r.bm_fleet} · density max ${r.vm_density_max} / avg ${fmt(r.vm_density_avg, 1)}` : ""}
+    ${r.bm_used != null ? ` · ${r.bm_used} BM${r.bm_used === 1 ? "" : "s"} · density max ${r.vm_density_max} / avg ${fmt(r.vm_density_avg, 1)}` : ""}
     ${r.escalation_rounds ? ` · ${r.escalation_rounds} escalation round${r.escalation_rounds === 1 ? "" : "s"}` : ""}
     ${r.solve_time_seconds != null ? ` · solve ${fmt(r.solve_time_seconds, 3)}s` : ""}</span>`;
   const body = $("detail-body");

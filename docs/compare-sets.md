@@ -122,9 +122,11 @@ util_storage, escalation_rounds, solve_time_seconds, elapsed_seconds, error`。
 - **草稿**：編輯中的 set 自動存進 `localStorage`（`solver-compare-draft`），重新整理不丟；
   只在該瀏覽器，Save set 才是持久化。伺服器端儲存刻意不做（sidecar 維持無狀態；格式
   相同，日後只需加 API）。
-- **右側**：依 BM 機型（預設）或依套餐分組的表格：`used / fleet`、BM / cluster、VM
+- **右側**：依 BM 機型（預設）或依套餐分組的表格：BMs（= `bm_used`）、BM / cluster、VM
   density（max，avg 為副標）、cpu / mem / storage 利用率條、status chip、時間；點列展
   開 per-BM 擺放（role / cluster 標籤 + 利用率條）；CSV / xlsx 匯出；Save as mock preset。
+  表格**刻意不顯示 `bm_fleet`**：採購以 tightness 1.0 跑，solver 的 `bm_used` 就是要買的
+  台數；`bm_fleet` 仍在 API 與 CSV / xlsx 裡供查核。Compare 頁預設 tightness 亦為 1.0。
 
 ## 8. 限制
 
