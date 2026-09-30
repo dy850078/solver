@@ -79,7 +79,10 @@
 .cmp-table tr.cmp-group td .muted { font-weight: 400; font-size: 11.5px; margin-left: 8px; }
 .cmp-table tr.cmp-row { cursor: pointer; }
 .cmp-table tr.cmp-row:hover td { background: var(--bg-hover); }
-.cmp-table tr.cmp-row--selected td { box-shadow: inset 3px 0 0 var(--accent); }
+/* Selected row: a soft tint across the whole row, one marker on the left edge. */
+.cmp-table tr.cmp-row--selected td { background: var(--accent-soft); }
+.cmp-table tr.cmp-row--selected:hover td { background: var(--accent-soft); }
+.cmp-table tr.cmp-row--selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .cmp-table tr.cmp-row--pending td { color: var(--text-subtle); }
 .cmp-table .cmp-big { font-weight: 600; font-size: 13.5px; }
 .cmp-table .cmp-sub { color: var(--text-muted); font-size: 11px; }
