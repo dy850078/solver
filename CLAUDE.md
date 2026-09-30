@@ -126,9 +126,12 @@ Non-negotiable communication rules:
 
 ## Workflow
 
-- **Branching**: never push to `main`. Work on a feature branch
-  (`<topic>` or `claude/<topic>`), push with `git push -u origin <branch>`,
-  and open a PR only when the user asks. The human reviews every PR before merge.
+- **Branching**: the trunk is `release-to-gitlab` (`main` is stale — do not
+  base work on it or push to it). Work on a feature branch (`<topic>` or
+  `claude/<topic>`), push with `git push -u origin <branch>`, and open a PR
+  against `release-to-gitlab` only when the user asks. The human reviews every
+  PR before merge. Note: a fresh clone may only carry `main`; fetch the trunk
+  explicitly (`git fetch origin release-to-gitlab`) before comparing or basing.
 - **Commit** after each completed task with a descriptive message.
 - **ADR required for core changes**: any change to solver/splitter/models
   logic needs a decision record in `docs/decisions/` (use the `/adr` skill;
