@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM Placement Solver — Compare</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%233987e5%27/%3E%3Cpath d=%27M4 12V7M8 12V4M12 12V9%27 stroke=%27white%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+<script>
+/* Apply the theme before first paint: saved choice, else system preference. */
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("solver-theme"); } catch (e) {}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="compare.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="12" height="10" rx="1"/>
+        <path d="M2 7h12M6.5 3v10M10.5 3v10"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">Compare</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="./" title="Topology Visualizer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+      Topology
+    </a>
+    <a class="app-header__link" href="report.html" title="Capacity Report">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
+      </svg>
+      Capacity Report
+    </a>
+    <a class="app-header__link" href="rollout.html" title="Rollout Simulation">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 8h3.5M9 8h3.5"/>
+        <circle cx="7" cy="8" r="1.6"/>
+        <circle cx="14" cy="8" r="1.6"/>
+        <circle cx="2.2" cy="8" r="0.4" fill="currentColor"/>
+      </svg>
+      Rollout
+    </a>
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+    <button id="theme-toggle" class="app-header__link theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Light / Dark">
+      <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="8" cy="8" r="3.2"/>
+        <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/>
+      </svg>
+      <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Compare set</h2>
+        <span class="card__hint">Catalogs + scenarios · saved as one JSON</span>
+      </header>
+      <div class="card__body">
+
+        <div class="toolbar">
+          <button id="load-btn" type="button" class="btn btn--ghost" title="Load a compare set JSON">Load set…</button>
+          <input id="load-input" type="file" accept=".json" hidden>
+          <button id="save-btn" type="button" class="btn btn--ghost" title="Download this set as JSON">Save set</button>
+          <button id="new-btn" type="button" class="btn btn--ghost" title="Start from a blank set">New</button>
+        </div>
+
+        <div class="field" style="margin-top:8px">
+          <label class="field-label" for="example-select">Example set</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose an example —</option>
+          </select>
+        </div>
+
+        <div class="field" style="margin-top:8px">
+          <label class="field-label" for="set-name">Set name</label>
+          <input id="set-name" class="input" type="text" placeholder="e.g. 2026Q4 control-plane sizing">
+        </div>
+
+        <p class="subhead">VM specs <span class="muted">catalog</span></p>
+        <div id="spec-rows" class="spec-rows"></div>
+        <button id="spec-add" type="button" class="btn btn--ghost btn--small btn--add">+ Add spec</button>
+
+        <p class="subhead">BM models <span class="muted">always elastic · roles blank = all</span></p>
+        <div id="model-rows" class="bm-rows"></div>
+        <button id="model-add" type="button" class="btn btn--ghost btn--small btn--add">+ Add model</button>
+
+        <p class="subhead">Bundles <span class="muted">node groups per cluster</span></p>
+        <div id="bundle-rows" class="bundle-rows"></div>
+        <button id="bundle-add" type="button" class="btn btn--ghost btn--small btn--add">+ Add bundle</button>
+
+        <p class="subhead">Defaults <span class="muted">every scenario, unless overridden</span></p>
+        <div class="def-grid">
+          <label class="mini"><span class="mini__label">Sites</span><input id="df-sites" class="input" type="number" min="1" placeholder="1"></label>
+          <label class="mini"><span class="mini__label">Phases</span><input id="df-phases" class="input" type="number" min="1" placeholder="1"></label>
+          <label class="mini"><span class="mini__label">DCs</span><input id="df-datacenters" class="input" type="number" min="1" placeholder="1"></label>
+          <label class="mini"><span class="mini__label">Rooms</span><input id="df-rooms" class="input" type="number" min="1" placeholder="1"></label>
+          <label class="mini"><span class="mini__label">Racks</span><input id="df-racks" class="input" type="number" min="1" value="4"></label>
+          <label class="mini"><span class="mini__label">AGs</span><input id="df-ags" class="input" type="number" min="1" value="3"></label>
+        </div>
+        <div class="def-checks">
+          <label class="group-flag"><input id="df-aa" type="checkbox" checked><span>anti-affinity</span></label>
+          <label class="group-flag"><input id="df-failover" type="checkbox"><span>failover (master→learner)</span></label>
+        </div>
+        <div class="def-grid def-grid--2">
+          <label class="mini"><span class="mini__label">Spread AGs</span><input id="df-spread-ag" class="input" type="number" min="1" value="3"></label>
+          <label class="mini"><span class="mini__label">Tightness</span><input id="df-tightness" class="input" type="number" min="0.1" max="1" step="0.05" value="1"></label>
+          <label class="mini"><span class="mini__label">Seed</span><input id="df-seed" class="input" type="number" placeholder="random"></label>
+          <label class="mini"><span class="mini__label">Max solve seconds</span><input id="df-solve" class="input" type="number" min="1" placeholder="30"></label>
+        </div>
+        <details class="mock-advanced" style="margin-top:6px">
+          <summary>Advanced defaults (JSON)</summary>
+          <textarea id="df-advanced" class="editor editor--short" spellcheck="false"
+            placeholder='Deep-merged over the fields above, e.g. { "config_overrides": { "w_headroom": 0 } }'></textarea>
+        </details>
+
+        <p class="subhead">Scenarios <span class="muted">model × bundle × clusters</span></p>
+        <div id="scenario-rows" class="sc-rows"></div>
+        <div class="toolbar" style="margin-top:6px">
+          <button id="scenario-add" type="button" class="btn btn--ghost btn--small">+ Add scenario</button>
+          <button id="grid-toggle" type="button" class="btn btn--ghost btn--small" title="Add every combination of the ticked models × bundles × cluster counts">Generate grid…</button>
+        </div>
+        <div id="grid-panel" class="grid-panel hidden" style="margin-top:8px">
+          <div class="mini"><span class="mini__label">Models</span><div id="grid-models" class="grid-panel__opts"></div></div>
+          <div class="mini"><span class="mini__label">Bundles</span><div id="grid-bundles" class="grid-panel__opts"></div></div>
+          <label class="mini"><span class="mini__label">Cluster counts (comma separated)</span>
+            <input id="grid-clusters" class="input" type="text" value="1,3"></label>
+          <div class="toolbar">
+            <button id="grid-add" type="button" class="btn btn--primary btn--small">Add combinations</button>
+            <span id="grid-hint" class="sc-row__hint"></span>
+          </div>
+        </div>
+
+        <div id="form-error" class="alert alert--error hidden" style="margin-top:10px"></div>
+
+        <div class="mock-actions" style="margin-top:12px">
+          <button id="cancel-btn" type="button" class="btn btn--ghost" disabled>Cancel</button>
+          <button id="run-btn" type="button" class="btn btn--primary">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+            </svg>
+            <span class="btn__label">Run all</span>
+          </button>
+        </div>
+        <div id="run-bar" class="run-bar hidden">
+          <span id="run-text">0 / 0</span>
+          <div class="run-bar__track"><div id="run-fill" class="run-bar__fill"></div></div>
+          <span id="run-elapsed"></span>
+        </div>
+
+      </div>
+    </section>
+  </aside>
+
+  <div class="content">
+
+    <div id="stats" class="stats hidden"></div>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Results</h2>
+        <div class="card__header-right toolbar">
+          <div class="segmented" role="radiogroup" aria-label="Group by">
+            <label><input type="radio" name="group-by" value="bm_model" checked><span>By BM model</span></label>
+            <label><input type="radio" name="group-by" value="bundle"><span>By bundle</span></label>
+          </div>
+          <button id="csv-btn" type="button" class="btn btn--ghost" disabled>CSV</button>
+          <button id="xlsx-btn" type="button" class="btn btn--ghost" disabled>xlsx</button>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="results-empty" class="muted" style="font-size:12.5px">
+          Build a set on the left (or load an example) and press <b>Run all</b>. Each scenario is sized
+          by the mock generator and verified by the solver; rows fill in as they finish.
+          <b>BMs</b> is how many machines the solver actually placed on — with tightness 1.0 that is
+          the procurement figure. (The generator-provisioned fleet stays available as <code>bm_fleet</code>
+          in the CSV / xlsx export and the API.)
+        </div>
+        <div id="results-wrap" class="table-wrap hidden" style="overflow-x:auto">
+          <table id="results-table" class="cmp-table"></table>
+        </div>
+      </div>
+    </section>
+
+    <section id="detail-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Placement detail</h2>
+        <div class="card__header-right toolbar">
+          <button id="preset-btn" type="button" class="btn btn--ghost" title="Download this scenario as a Topology-page mock preset (GenerateRequest JSON)">Save as mock preset</button>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="detail-head" class="detail-head"></div>
+        <div id="detail-body"></div>
+      </div>
+    </section>
+
+  </div>
+
+</main>
+
+<script type="module" src="js/theme.js"></script>
+<script type="module" src="js/compare.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "_description": "Compare set: two BM models × two control-plane bundles × cluster counts. Catalogs (vm_specs / bm_models / bundles) are referenced by name from an explicit scenario list, so changing a model's capacity in one place re-sizes every scenario that uses it. `defaults` hold the mock-generator knobs; a scenario may override any of them. Run: python -m app.compare --input examples/compare/control_plane_sizing.json --csv output/compare.csv",
+  "name": "control-plane sizing · A-64c vs B-96c",
+  "vm_specs": {
+    "cp": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }
+  },
+  "bm_models": {
+    "A-64c": { "capacity": { "cpu_cores": 64,  "memory_mib": 256000, "storage_gb": 2000 } },
+    "B-96c": { "capacity": { "cpu_cores": 96,  "memory_mib": 512000, "storage_gb": 4000 } }
+  },
+  "bundles": {
+    "cp-large": [
+      { "role": "master",       "count": 5, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1 },
+      { "role": "infra",        "count": 5, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 2 },
+      { "role": "l4lb-storage", "count": 3, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1 }
+    ],
+    "cp-small": [
+      { "role": "master",       "count": 3, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1 },
+      { "role": "infra",        "count": 3, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 2 },
+      { "role": "l4lb-storage", "count": 2, "ip_type": "non-routable", "spec": "cp", "max_per_bm": 1 }
+    ]
+  },
+  "defaults": {
+    "seed": 1,
+    "racks": 6,
+    "ags": 3,
+    "anti_affinity": true,
+    "target_spread": { "ag": 3 },
+    "tightness": 1.0,
+    "config_overrides": { "max_solve_time_seconds": 10 }
+  },
+  "scenarios": [
+    { "name": "A-64c · cp-large · c1", "bm_model": "A-64c", "bundle": "cp-large", "clusters": 1 },
+    { "name": "A-64c · cp-large · c3", "bm_model": "A-64c", "bundle": "cp-large", "clusters": 3 },
+    { "name": "A-64c · cp-small · c3", "bm_model": "A-64c", "bundle": "cp-small", "clusters": 3 },
+    { "name": "B-96c · cp-large · c3", "bm_model": "B-96c", "bundle": "cp-large", "clusters": 3 },
+    { "name": "B-96c · cp-small · c3", "bm_model": "B-96c", "bundle": "cp-small", "clusters": 3 },
+    { "name": "B-96c · cp-large · c3 · loose", "bm_model": "B-96c", "bundle": "cp-large", "clusters": 3,
+      "overrides": { "tightness": 0.7 } }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "_description": "Compare set with a GPU dimension: an 8×H200 node vs a CPU-only node for a GPU worker bundle. The CPU-only column errors out (the generator's zero-capacity fail-fast: no amount of extra machines can supply gpu:h200) — showing that one bad model never hides the other columns. Run: python -m app.compare --input examples/compare/gpu_vs_cpu.json",
+  "name": "gpu workers · h200 node vs cpu-only",
+  "vm_specs": {
+    "gpu-worker": { "cpu_cores": 16, "memory_mib": 131072, "storage_gb": 500, "gpu": { "h200": 1 } },
+    "cp": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }
+  },
+  "bm_models": {
+    "gpu-8xh200": { "capacity": { "cpu_cores": 192, "memory_mib": 2097152, "storage_gb": 8000, "gpu": { "h200": 8 } } },
+    "cpu-only":   { "capacity": { "cpu_cores": 96, "memory_mib": 512000, "storage_gb": 4000 } }
+  },
+  "bundles": {
+    "gpu-8": [
+      { "role": "master", "count": 3, "ip_type": "routable", "spec": "cp", "max_per_bm": 1 },
+      { "role": "gpu-worker", "count": 8, "ip_type": "routable", "spec": "gpu-worker" }
+    ],
+    "gpu-16": [
+      { "role": "master", "count": 3, "ip_type": "routable", "spec": "cp", "max_per_bm": 1 },
+      { "role": "gpu-worker", "count": 16, "ip_type": "routable", "spec": "gpu-worker" }
+    ]
+  },
+  "defaults": {
+    "seed": 7, "racks": 4, "ags": 2, "anti_affinity": true, "target_spread": { "ag": 2 },
+    "tightness": 1.0, "config_overrides": { "max_solve_time_seconds": 10 }
+  },
+  "scenarios": [
+    { "name": "gpu-8xh200 · gpu-8 · c1",  "bm_model": "gpu-8xh200", "bundle": "gpu-8",  "clusters": 1 },
+    { "name": "gpu-8xh200 · gpu-16 · c1", "bm_model": "gpu-8xh200", "bundle": "gpu-16", "clusters": 1 },
+    { "name": "gpu-8xh200 · gpu-8 · c2",  "bm_model": "gpu-8xh200", "bundle": "gpu-8",  "clusters": 2 },
+    { "name": "cpu-only · gpu-8 · c1",    "bm_model": "cpu-only",   "bundle": "gpu-8",  "clusters": 1 }
+  ]
+}

@@ -43,6 +43,7 @@ solver/
 │   ├── diagnostics.py       # Advisory diagnostics + INFEASIBLE layer ladder
 │   ├── server.py            # FastAPI app + CLI mode; UI gated behind ENABLE_UI
 │   ├── mockgen.py           # Mock request generator (/api/mock/generate)
+│   ├── compare.py           # Compare sets: many mock sizing scenarios → one table (/api/compare, CLI)
 │   └── examples_api.py      # Serves examples/ to the UI
 ├── tests/                   # pytest suite; test files mirror app/ modules
 ├── examples/                # Canonical request JSONs (used by the curl examples below)
@@ -62,7 +63,11 @@ solver/
 | POST | `/v1/capacity/plan` | Multi-period capacity plan (demand book → per-fab monthly report) |
 | POST | `/v1/capacity/reconcile` | Plan-vs-actual drift report |
 | POST | `/api/mock/generate` | Generate a mock placement request |
+| POST | `/api/compare/run` | Size every scenario of a compare set (BM models × bundles × clusters) and return the comparison table |
+| POST | `/api/compare/resolve` | Expand a compare set's scenarios to the mock requests they stand for (no solving) |
 | GET  | `/ui` | Topology web UI (only when `ENABLE_UI=enable`); `/docs` serves Swagger UI |
+
+Compare sets also run without a server: `python -m app.compare --input examples/compare/control_plane_sizing.json --csv output/compare.csv` (see `docs/compare-sets.md`).
 
 ## Testing with curl
 
