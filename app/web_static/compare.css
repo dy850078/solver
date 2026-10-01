@@ -109,19 +109,38 @@
 .ubar__fill { display: block; height: 100%; background: var(--accent); }
 .ubar__fill--hot { background: var(--status-serious); }
 
-/* Detail header + parameter block (the rack diagram itself uses styles.css) */
-.detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-.detail-meta { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; }
-.params { border: 1px solid var(--border-base); border-radius: var(--radius-md); background: var(--bg-subtle); margin: 0 0 12px; }
+/* Detail: a padded top block (title, parameters, per-cluster line) above the
+   filter bar + rack diagram, which bring their own 20px gutters. */
+.detail-top { padding: 14px 20px 12px; border-bottom: 1px solid var(--border-base); }
+.detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.detail-head b { font-size: 14px; }
+.detail-sub { font-size: 12px; color: var(--text-muted); margin: 4px 0 10px; font-variant-numeric: tabular-nums; }
+.detail-meta { font-size: 12px; color: var(--text-muted); margin: 10px 0 0; }
+.params { border: 1px solid var(--border-base); border-radius: var(--radius-md); background: var(--bg-subtle); }
 .params > summary { cursor: pointer; padding: 8px 12px; font-size: 12px; font-weight: 600; color: var(--text-base); user-select: none; }
-.params__body { padding: 0 12px 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; }
+.params__hint { font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+.params__body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 12px; }
+.params__kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 20px; }
 .params__group { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .params__title { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-subtle); font-weight: 600; }
 .params__row { display: flex; gap: 8px; font-size: 12px; line-height: 1.45; align-items: baseline; }
 .params__key { color: var(--text-muted); flex: 0 0 auto; }
 .params__val { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--text-base); min-width: 0; overflow-wrap: anywhere; }
 .params__ov { color: var(--accent); font-size: 11px; margin-left: 2px; cursor: help; }
-.params__group-line { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; }
+/* Compact tables for the bundle, BM models and VM specs */
+.params__tables { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px 20px; }
+.params__tables > .params__group { min-width: 0; overflow-x: auto; }
+.ptable { border-collapse: collapse; width: 100%; font-size: 11.5px; background: var(--bg-surface); border: 1px solid var(--border-base); border-radius: var(--radius-sm); }
+.ptable th, .ptable td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border-base); white-space: nowrap; }
+.ptable th { font-size: 10.5px; letter-spacing: 0.03em; color: var(--text-muted); font-weight: 500; background: var(--bg-subtle); }
+.ptable td { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--text-base); }
+.ptable td.num, .ptable th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ptable td.dim { color: var(--text-subtle); }
+.ptable tr:last-child td { border-bottom: none; }
+.ptable tfoot td { font-weight: 600; background: var(--bg-subtle); border-top: 1px solid var(--border-strong); }
+.ptable .tag-pill { display: inline-block; padding: 0 6px; border-radius: var(--radius-full); background: var(--tag-soft, var(--accent-soft)); color: var(--accent); font-size: 10.5px; font-family: inherit; }
+@media (max-width: 1100px) { .params__tables { grid-template-columns: 1fr; } }
+
 .mini--acts { flex: 0 0 auto; display: flex; gap: 4px; }
 .mini--acts .btn { height: 30px; padding: 0 9px; }
 

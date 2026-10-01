@@ -163,27 +163,52 @@ function renderStats() {
 
 /* ── detail: parameters ──────────────────────────────────────────── */
 
-// The exact knobs this cell ran with (from `resolved`), grouped; keys the
-// scenario overrode over the set's defaults carry a ⚙ marker.
+// The exact knobs this cell ran with (from `resolved`): the bundle, BM models
+// and VM specs as compact tables, the scalar knobs as key/value groups. Keys
+// the scenario overrode over the set's defaults carry a ⚙ marker.
 function renderParams(r, sc) {
   const g = r.resolved;
   const body = $("detail-params-body");
-  if (!g) { body.innerHTML = `<span class="muted">No resolved request (the scenario did not run).</span>`; return; }
+  const hint = $("detail-params-hint");
+  if (!g) {
+    body.innerHTML = `<span class="muted">No resolved request (the scenario did not run).</span>`;
+    hint.textContent = "";
+    return;
+  }
   const ov = new Set(Object.keys(sc?.overrides || {}));
   const mark = (k) => (ov.has(k) ? `<span class="params__ov" title="overrides the set default">⚙</span>` : "");
   const row = (k, v, key = k) => `<div class="params__row"><span class="params__key">${escapeHtml(k)}${mark(key)}</span><span class="params__val">${escapeHtml(String(v))}</span></div>`;
-  const group = (title, rows) => `<div class="params__group"><div class="params__title">${escapeHtml(title)}</div>${rows.join("")}</div>`;
+  const group = (title, inner) => `<div class="params__group"><div class="params__title">${escapeHtml(title)}</div>${inner}</div>`;
+  const table = (cols, rows, foot = "") =>
+    `<table class="ptable"><thead><tr>${cols.map(([c, num]) => `<th${num ? ' class="num"' : ""}>${escapeHtml(c)}</th>`).join("")}</tr></thead>` +
+    `<tbody>${rows.join("")}</tbody>${foot}</table>`;
+  const td = (v, cls = "") => `<td${cls ? ` class="${cls}"` : ""}>${v}</td>`;
+  const gib = (mib) => `${Math.round((mib || 0) / 1024)} GiB`;
+  const gpuText = (gpu) => Object.entries(gpu || {}).map(([k, v]) => `${k}×${v}`).join(" ");
 
-  const models = (g.bm_profiles || []).map((p) =>
-    row(p.name, `${capSummary(p.capacity)}${p.roles?.length ? ` · roles ${p.roles.join(",")}` : " · all roles"}`, "bm_profiles"));
-  const groupsRows = (g.node_groups || []).map((ng) => {
-    const bits = [`${ng.role} × ${ng.count}`, ng.ip_type || "no ip", ng.spec || "default spec"];
-    if (ng.max_per_bm != null) bits.push(`max/BM ${ng.max_per_bm}`);
-    if (ng.no_colocate_group) bits.push(`tag ${ng.no_colocate_group}`);
-    if (ng.scope === "shared") bits.push("shared");
-    if (ng.exclusive) bits.push("exclusive");
-    return `<div class="params__group-line">${escapeHtml(bits.join(" · "))}</div>`;
+  // Bundle: one row per node group, total VMs per cluster in the footer.
+  const groups = g.node_groups || [];
+  const perCluster = groups.reduce((a, ng) => a + (ng.count || 0), 0);
+  const bundleRows = groups.map((ng) => {
+    const flags = [ng.scope === "shared" ? "shared" : "", ng.exclusive ? "exclusive" : ""].filter(Boolean).join(" ");
+    return `<tr>${td(escapeHtml(ng.role))}${td(ng.count, "num")}${td(escapeHtml(ng.ip_type || "—"), ng.ip_type ? "" : "dim")}` +
+      `${td(escapeHtml(ng.spec || "default"), ng.spec ? "" : "dim")}${td(ng.max_per_bm ?? "∞", ng.max_per_bm != null ? "num" : "num dim")}` +
+      `${td(ng.no_colocate_group ? `<span class="tag-pill">${escapeHtml(ng.no_colocate_group)}</span>` : "", "")}${td(escapeHtml(flags), flags ? "" : "dim")}</tr>`;
   });
+  const bundleFoot = `<tfoot><tr>${td(`${groups.length} group${groups.length === 1 ? "" : "s"}`)}${td(perCluster, "num")}<td colspan="5" class="dim">VMs per cluster · × ${g.clusters ?? 1} cluster${(g.clusters ?? 1) === 1 ? "" : "s"} = ${perCluster * (g.clusters ?? 1)}</td></tr></tfoot>`;
+  const bundleTable = table([["role"], ["count", true], ["ip_type"], ["spec"], ["max/BM", true], ["tag"], ["flags"]], bundleRows, bundleFoot);
+
+  const modelRows = (g.bm_profiles || []).map((p) => {
+    const c = p.capacity || {};
+    return `<tr>${td(escapeHtml(p.name))}${td(c.cpu_cores ?? 0, "num")}${td(gib(c.memory_mib), "num")}${td(`${c.storage_gb ?? 0} GB`, "num")}` +
+      `${td(escapeHtml(gpuText(c.gpu) || "—"), gpuText(c.gpu) ? "" : "dim")}${td(escapeHtml(p.roles?.length ? p.roles.join(", ") : "all"), p.roles?.length ? "" : "dim")}</tr>`;
+  });
+  const modelTable = table([["model"], ["cpu", true], ["mem", true], ["storage", true], ["gpu"], ["roles"]], modelRows);
+
+  const specRows = Object.entries(g.vm_specs || {}).map(([n, c]) =>
+    `<tr>${td(escapeHtml(n))}${td(c.cpu_cores ?? 0, "num")}${td(gib(c.memory_mib), "num")}${td(`${c.storage_gb ?? 0} GB`, "num")}${td(escapeHtml(gpuText(c.gpu) || "—"), gpuText(c.gpu) ? "" : "dim")}</tr>`);
+  const specTable = specRows.length ? table([["spec"], ["cpu", true], ["mem", true], ["storage", true], ["gpu"]], specRows) : "";
+
   const topo = [];
   for (const k of ["sites", "phases", "datacenters", "rooms"]) if (g[k] && g[k] !== 1) topo.push(row(k, g[k]));
   topo.push(row("racks", g.racks ?? 4), row("ags", g.ags ?? 3));
@@ -198,16 +223,13 @@ function renderParams(r, sc) {
   const misc = [row("clusters", g.clusters ?? 1), row("tightness", g.tightness ?? 0.7), row("seed", g.seed ?? "random")];
   const co = Object.entries(g.config_overrides || {});
   const cfg = co.length ? co.map(([k, v]) => row(k, JSON.stringify(v), "config_overrides")) : [row("config_overrides", "—")];
-  const specs = Object.entries(g.vm_specs || {}).map(([n, c]) => row(n, capSummary(c), "vm_specs"));
 
   body.innerHTML =
-    group("BM model", models) +
-    group("Bundle (per cluster)", groupsRows) +
-    group("Scenario", misc) +
-    group("Topology", topo) +
-    group("Rules", rules) +
-    group("Solver config", cfg) +
-    (specs.length ? group("VM specs", specs) : "");
+    `<div class="params__kv">${group("Scenario", misc.join(""))}${group("Topology", topo.join(""))}${group("Rules", rules.join(""))}${group("Solver config", cfg.join(""))}</div>` +
+    `<div class="params__tables">${group("Bundle (per cluster)", bundleTable)}` +
+    `<div class="params__group">${group("BM model", modelTable)}${specTable ? `<div style="height:8px"></div>${group("VM specs", specTable)}` : ""}</div></div>`;
+  hint.textContent = `${(g.bm_profiles || []).map((p) => p.name).join("+")} · ${groups.length} group${groups.length === 1 ? "" : "s"} · ${perCluster} VMs/cluster · ${g.clusters ?? 1} cluster${(g.clusters ?? 1) === 1 ? "" : "s"}` +
+    (ov.size ? ` · ${ov.size} override${ov.size === 1 ? "" : "s"}` : "");
 }
 
 /* ── detail: rack diagram (Topology pipeline) ────────────────────── */
@@ -259,12 +281,14 @@ function selectScenario(name) {
   card.classList.remove("hidden");
   const sc = state.set?.scenarios.find((s) => s.name === name);
   const l = r.labels || {};
-  $("detail-head").innerHTML = `
-    <b>${escapeHtml(name)}</b> ${chip(r.status)}
-    <span class="detail-meta">${escapeHtml(l.bm_model || "")} · ${escapeHtml(l.bundle || "")} · ${l.clusters} cluster${l.clusters === 1 ? "" : "s"}
-    ${r.bm_used != null ? ` · ${r.bm_used} BM${r.bm_used === 1 ? "" : "s"} · density max ${r.vm_density_max} / avg ${fmt(r.vm_density_avg, 1)}` : ""}
-    ${r.escalation_rounds ? ` · ${r.escalation_rounds} escalation round${r.escalation_rounds === 1 ? "" : "s"}` : ""}
-    ${r.solve_time_seconds != null ? ` · solve ${fmt(r.solve_time_seconds, 3)}s` : ""}</span>`;
+  $("detail-head").innerHTML = `<b>${escapeHtml(name)}</b> ${chip(r.status)}`;
+  $("detail-sub").textContent = [
+    `${l.bm_model || ""} · ${l.bundle || ""} · ${l.clusters} cluster${l.clusters === 1 ? "" : "s"}`,
+    r.bm_used != null ? `${r.bm_used} BM${r.bm_used === 1 ? "" : "s"}` : null,
+    r.vm_density_max != null ? `density max ${r.vm_density_max} / avg ${fmt(r.vm_density_avg, 1)}` : null,
+    r.escalation_rounds ? `${r.escalation_rounds} escalation round${r.escalation_rounds === 1 ? "" : "s"}` : null,
+    r.solve_time_seconds != null ? `solve ${fmt(r.solve_time_seconds, 3)}s` : null,
+  ].filter(Boolean).join(" · ");
   renderParams(r, sc);
   const meta = $("detail-meta");
   meta.innerHTML = r.bm_by_cluster

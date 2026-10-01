@@ -229,20 +229,23 @@
           <button id="preset-btn" type="button" class="btn btn--ghost btn--small" title="Download this scenario as a Topology-page mock preset (GenerateRequest JSON)">Save as mock preset</button>
         </div>
       </header>
-      <div id="cmp-filter-bar" class="filter-bar hidden">
-        <span class="filter-bar__label">Filter:</span>
-        <div id="cmp-filter-cluster"></div>
-        <div id="cmp-filter-role"></div>
-        <div id="cmp-filter-iptype"></div>
-        <button id="cmp-filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
-      </div>
       <div class="card__body card__body--scroll">
-        <div id="detail-head" class="detail-head"></div>
-        <details id="detail-params" class="params" open>
-          <summary>Parameters</summary>
-          <div id="detail-params-body" class="params__body"></div>
-        </details>
-        <div id="detail-meta" class="detail-meta"></div>
+        <div class="detail-top">
+          <div id="detail-head" class="detail-head"></div>
+          <div id="detail-sub" class="detail-sub"></div>
+          <details id="detail-params" class="params" open>
+            <summary>Parameters <span id="detail-params-hint" class="params__hint"></span></summary>
+            <div id="detail-params-body" class="params__body"></div>
+          </details>
+          <div id="detail-meta" class="detail-meta"></div>
+        </div>
+        <div id="cmp-filter-bar" class="filter-bar hidden">
+          <span class="filter-bar__label">Filter:</span>
+          <div id="cmp-filter-cluster"></div>
+          <div id="cmp-filter-role"></div>
+          <div id="cmp-filter-iptype"></div>
+          <button id="cmp-filter-clear" type="button" class="btn btn--ghost btn--small hidden">Clear all</button>
+        </div>
         <div id="cmp-rack-container" class="rack-area"></div>
         <div id="cmp-ag-legend" class="legend"></div>
       </div>
