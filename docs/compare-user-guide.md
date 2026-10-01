@@ -92,7 +92,7 @@ BM**、每個 cluster 平均幾台、每台 BM 最多塞幾台 VM、資源利用
 | 5 | max/BM | 同一台 BM 最多放幾台這個 group 的 VM。master 通常填 `1`（三台 master 不同機）。留空 = 不限。 |
 | 6 | no-colocate tag | **不共站標籤**：填同一個標籤的 group 之間、彼此也不能同一台 BM。例如 master 與 learner 都填 `cp`、max/BM 都填 1，六台就會落在六台不同的 BM。同標籤的 group 的 max/BM 必須相同。 |
 | 7 | shared | 勾選 = 這個 group 不是每個 cluster 各一份，而是**所有 cluster 共用一份**（例如 5 個 cluster 共用 6 台 F5）。 |
-| 8 | exclusive | 勾選 = 每台 VM 獨占一整台 BM（appliance 類）。需要專屬 pool 的機型。 |
+| 8 | exclusive | 勾選 = **每一台** VM 獨占一整台 BM（appliance 類，如 F5）：其他 group 不能上來，**同一 group 的其他 VM 也不能**。需要專屬 pool 的機型（roles 只填這個 role）。若只是想讓某個 role 專用某種機型但允許同 role 共住，用機型的 roles 欄位加 max/BM，不要勾 exclusive。 |
 | 9 | ⧉ | 複製這個 node group（插在下方）。 |
 | 10 | ✕ | 刪除這個 node group（套餐至少保留一列）。 |
 
