@@ -73,6 +73,10 @@ knobs，`generate()` 會用真 solver 驗證並 escalate 到可行。缺的只�
   （knob 值不合法）與 `generate_mock_request` 的 `HTTPException`（mockgen 400，例如
   超過 `_MAX_ELASTIC_BMS`）都變成 `status="error"` 的列。一個太小的機型不該讓另一個
   機型的欄位消失。
+- `app/compare.py:CompareRunRequest.include_placement` —— UI 的 detail 要畫 Topology 頁那套
+  rack diagram，需要完整的 `PlacementRequest`（BM topology、容量、空 BM）與 solver 的
+  `PlacementResult`；從 `resolved` 重新 generate 在沒有 seed 時不可重現，所以直接帶出。做成
+  開關而非永遠附帶：每格約 25 KB，60 格的批次呼叫與 CLI `--json` 不該為 UI 付這個代價。
 - `app/mockgen.py:generate` 末尾 —— 只加一行 `verified=result`。既有消費端（UI、
   測試）只讀舊欄位，payload 多一份 assignments 可接受。
 - `app/web_static/js/compare-set.js:addMockParams` —— Topology 頁「Add to compare set」

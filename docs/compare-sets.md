@@ -87,7 +87,8 @@ clusters     = scenario.clusters
 ## 5. 執行語意
 
 - `POST /api/compare/run`：body = set + `only?: [names]`、`deadline_seconds=120`、
-  `max_scenarios=60`。**循序**執行——CP-SAT 一次 solve 已用 `num_workers=8`，再開
+  `max_scenarios=60`、`include_placement=false`（true 時每格附完整 `placement_request` /
+  `placement_result`，約 25 KB / 40 VM；UI 用，批次不建議）。**循序**執行——CP-SAT 一次 solve 已用 `num_workers=8`，再開
   process 只會互搶核心。逾時後剩餘情境標 `skipped`；選到的情境數超過
   `max_scenarios` → 422。
 - **單格失敗不拖垮整組**：某機型太小觸發 mockgen 的 runaway guard（400）、某 override
@@ -127,6 +128,14 @@ util_storage, escalation_rounds, solve_time_seconds, elapsed_seconds, error`。
   開 per-BM 擺放（role / cluster 標籤 + 利用率條）；CSV / xlsx 匯出；Save as mock preset。
   表格**刻意不顯示 `bm_fleet`**：採購以 tightness 1.0 跑，solver 的 `bm_used` 就是要買的
   台數；`bm_fleet` 仍在 API 與 CSV / xlsx 裡供查核。Compare 頁預設 tightness 亦為 1.0。
+- **Placement detail** 是 Topology 頁的 rack diagram（同一套元件：Group by、Filter、cluster
+  配色與 AG 圖例、Capacity 開關），畫的是該格實際跑的 `placement_request` +
+  `placement_result`（UI 呼叫 `run` 時帶 `include_placement: true`；CLI / 批次預設不帶，
+  輸出維持精簡）。上方 **Parameters** 區塊列出該格解析後的所有 knobs（機型、bundle 各
+  node group、clusters、topology、規則、tightness、seed、config_overrides），被該情境
+  `overrides` 蓋掉的 key 以 ⚙ 標記。
+- Bundle 與 node group 卡片都有 ⧉ 複製；Scenarios 工具列的 **Clear all** 只清情境清單，
+  目錄與結果表保留。
 
 ## 8. 限制
 

@@ -9,7 +9,7 @@
 
 import { listExamples, getExample, rollout, rolloutSize } from "./api.js";
 import { escapeHtml } from "./util.js";
-import { rebuildColorScale, legendEntries, clusterLegendEntries } from "./colors.js";
+import { rebuildColorScale } from "./colors.js";
 import {
   GROUP_BY_OPTIONS,
   buildPanels,
@@ -17,7 +17,7 @@ import {
   renderRackDiagram,
   showRackEmpty,
 } from "./rackdiagram.js";
-import { renderStats, renderResult } from "./summary.js";
+import { renderStats, renderResult, renderTopologyLegend } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
 import {
@@ -208,23 +208,6 @@ function renderStepDetail() {
   }
 }
 
-function renderTopologyLegend(el) {
-  const clusters = clusterLegendEntries();
-  const ags = legendEntries();
-  const clRow = clusters.length < 2 ? "" :
-    `<span class="legend__dim">Cluster</span>` + clusters.map((e) => `
-      <span class="legend-item">
-        <span class="legend-badge" style="background:${e.color};color:${e.ink}">${escapeHtml(e.short)}</span>
-        ${escapeHtml(e.cluster)}
-      </span>`).join("");
-  const agRow = ags.length === 0 ? "" :
-    `<span class="legend__dim">AG</span>` + ags.map((e) => `
-      <span class="legend-item">
-        <span class="legend-tint" style="--ag-color:${e.color}"></span>
-        ${escapeHtml(e.ag)}
-      </span>`).join("");
-  el.innerHTML = clRow + agRow;
-}
 
 function renderRack() {
   const rep = state.result.reports[state.selected];

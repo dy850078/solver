@@ -140,6 +140,7 @@ export function groupRow(p = {}, { specNames = null } = {}) {
     el("input", { type: "checkbox", class: "group-excl", checked: !!p.exclusive }),
     el("span", { text: "exclusive" }),
   ]);
+  const dup = el("button", { type: "button", class: "btn btn--ghost btn--small cap-dup", text: "⧉", title: "Duplicate this node group" });
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
   // Same card shell as spec/profile rows: fields wrap by width, so the role
   // keeps its full name and every field carries its own label.
@@ -152,11 +153,21 @@ export function groupRow(p = {}, { specNames = null } = {}) {
     miniWrap("no-colocate tag", tag, "mini--num",
       "Groups with the same tag share ONE max/BM cap across their roles (same max/BM + scope required)"),
     el("div", { class: "mini--flags" }, [shared, excl]),
-    remove,
+    el("div", { class: "mini--acts" }, [dup, remove]),
   ]);
+  // Structural edits don't fire input events, so tell listeners (draft
+  // autosave on the Compare page) explicitly.
+  const notify = () => row.parentElement?.dispatchEvent(new Event("input", { bubbles: true }));
+  dup.addEventListener("click", () => {
+    // The card's own spec dropdown already lists the caller's catalog.
+    const names = [...spec.options].map((o) => o.value).filter(Boolean);
+    const copy = readGroupRow(row) ?? { role: role.value, count: 1, ip_type: ip.value, spec: spec.value };
+    row.after(groupRow(copy, { specNames: names }));
+    notify();
+  });
   remove.addEventListener("click", () => {
     const parent = row.parentElement;
-    if (parent && parent.querySelectorAll(".group-row").length > 1) row.remove();
+    if (parent && parent.querySelectorAll(".group-row").length > 1) { row.remove(); parent.dispatchEvent(new Event("input", { bubbles: true })); }
   });
   return row;
 }

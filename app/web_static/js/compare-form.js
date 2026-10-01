@@ -71,19 +71,35 @@ function bundleCard(name = "", groups = null) {
     (groups && groups.length ? groups : [DEFAULT_GROUP]).map((g) => groupRow(g, { specNames: specNames() })));
   const add = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ node group" });
   add.addEventListener("click", () => { rows.appendChild(groupRow(DEFAULT_GROUP, { specNames: specNames() })); onChange(); });
+  const dup = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "⧉", title: "Duplicate this bundle" });
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕", title: "Remove bundle" });
   const card = el("div", { class: "bundle-card" }, [
     el("div", { class: "bundle-card__head" }, [
       el("label", { class: "mini" }, [el("span", { class: "mini__label", text: "bundle name" }), nameInput]),
+      dup,
       remove,
     ]),
     rows,
     add,
   ]);
+  dup.addEventListener("click", () => {
+    const groups = [...rows.querySelectorAll(".group-row")].map(readGroupRow).filter(Boolean);
+    card.after(bundleCard(uniqueBundleName(`${nameInput.value.trim() || "bundle"}-copy`), groups));
+    syncRefs();
+    onChange();
+  });
   remove.addEventListener("click", () => {
     if (bundleRowsEl.querySelectorAll(".bundle-card").length > 1) { card.remove(); syncRefs(); onChange(); }
   });
   return card;
+}
+
+function uniqueBundleName(base) {
+  const taken = new Set(bundleNames());
+  let name = base;
+  let k = 2;
+  while (taken.has(name)) name = `${base}-${k++}`;
+  return name;
 }
 
 /* ── scenario row ────────────────────────────────────────────────── */
@@ -263,6 +279,8 @@ export function initForm({ onChange: cb }) {
   $("model-add").addEventListener("click", () => { modelRowsEl.appendChild(bmRow({})); syncRefs(); onChange(); });
   $("bundle-add").addEventListener("click", () => { bundleRowsEl.appendChild(bundleCard("", null)); syncRefs(); onChange(); });
   $("scenario-add").addEventListener("click", () => { scenarioRowsEl.appendChild(scenarioRow({})); onChange(); });
+  // Clears the scenario list only; catalogs and the last results stay.
+  $("scenario-clear").addEventListener("click", () => { scenarioRowsEl.innerHTML = ""; onChange(); });
   $("grid-toggle").addEventListener("click", () => { renderGridOptions(); $("grid-panel").classList.toggle("hidden"); });
   $("grid-add").addEventListener("click", addGridCombinations);
 
