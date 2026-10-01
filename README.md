@@ -67,7 +67,7 @@ solver/
 | POST | `/api/compare/resolve` | Expand a compare set's scenarios to the mock requests they stand for (no solving) |
 | GET  | `/ui` | Topology web UI (only when `ENABLE_UI=enable`); `/docs` serves Swagger UI |
 
-Compare sets also run without a server: `python -m app.compare --input examples/compare/control_plane_sizing.json --csv output/compare.csv` (see `docs/compare-sets.md`).
+Compare sets also run without a server: `python -m app.compare --input examples/compare/control_plane_sizing.json --csv output/compare.csv` (see `docs/compare-sets.md`; UI walkthrough with annotated screenshots in `docs/compare-user-guide.md`).
 
 ## Testing with curl
 

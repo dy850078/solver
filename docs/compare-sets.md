@@ -2,6 +2,8 @@
 
 `app/compare.py` · `POST /api/compare/run` · `python -m app.compare` · UI `/ui/compare.html`
 
+> 給使用者的 UI 操作手冊（含標註截圖）在 `docs/compare-user-guide.md`；本文是技術規格。
+
 ## 1. 解決什麼問題
 
 採購前常要回答：「A 機型 + (master×5 / infra×5 / l4lb-storage×3) + 3 個 cluster 共住，
