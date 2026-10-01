@@ -105,10 +105,10 @@ BM**、每個 cluster 平均幾台、每台 BM 最多塞幾台 VM、資源利用
 | 編號 | 欄位 | 說明 |
 |---|---|---|
 | 1 | Racks | 機櫃數。影響 anti-affinity 能分散到幾個桶。 |
-| 2 | AGs | Availability group 數。每個 AG 至少會配一台 BM。 |
+| 2 | AGs | Availability group 數。每個 AG 至少會配一台 BM。**若小於 Spread AGs，會被自動拉高到 Spread AGs**（見第 5 項）。 |
 | 3 | anti-affinity | 同一 cluster 同 role 的 VM 分散到不同 AG（建議開）。 |
 | 4 | failover | 產生 master → learner 的 N-1 failover 規則（套餐要同時有 master 與 learner 才有效）。 |
-| 5 | Spread AGs | anti-affinity 的目標桶數（軟性目標，不足會給警告）。 |
+| 5 | Spread AGs | anti-affinity 要把同 role 的 VM 分散到幾個 AG。在這個頁面它**不是軟性目標**：產生 mock 拓撲時，AGs 小於這個值會被直接拉高（例如 AGs=2、Spread AGs=3 → 實際產生 3 個 AG、至少 3 台 BM），Parameters 裡仍顯示你填的 AGs。想要固定 AG 數，把 Spread AGs 設成 ≤ AGs。 |
 | 6 | Tightness | 目標利用率。**採購用途請維持 `1.0`**（不預留餘裕，solver 擺出的台數就是要買的台數）。 |
 | 7 | Seed | 亂數種子；固定後 rack / AG 配置可重現。 |
 | 8 | Max solve seconds | 每個情境給 solver 的時間上限，預設 30。 |
