@@ -1,9 +1,11 @@
-# ADR-015: blueprint 多 cluster 規劃——規劃期聯合求解、執行期靜態置入，全部落在 scheduler side，solver 零改動
+# ADR-019: blueprint 多 cluster 規劃——規劃期聯合求解、執行期靜態置入，全部落在 scheduler side，solver 零改動
 
 - **日期**: 2026-09-21
 - **作者**: Claude（與 dy850078 討論定案）
 - **相關 PR / commit**: 本 ADR 所在 PR（無程式碼變更）
 - **影響範圍**: 無——這是一份「決定不改 solver」的邊界決策記錄
+- **互動討論頁**: [`docs/blueprint-design.html`](../blueprint-design.html)——架構圖、三段協議、
+  可操作的模擬器（含混合模式動態插單與 drift/重規劃）、DB schema 與 FAQ;下載後用瀏覽器開啟
 
 > 寫作對象:一位正在學習 CP-SAT 與排程系統設計的工程師。
 > 本 ADR 特殊之處:結論是 solver **一行都不用改**。記錄它的價值在於推演過程——
@@ -34,7 +36,7 @@
 **軸二:blueprint 概念的歸屬**
 - A. 下沉進 solver(rollout 加 `mode: "joint"`,或新開 blueprint 端點)。
   曾經成立的理由:合併多 cluster 請求的邏輯(規則 flat-map、synthetic id 歸屬、
-  切片回報)已在 UI JS 存在一份(`rollout-form.js:554-565` 的 "All at once"),
+  切片回報)已在 UI JS 存在一份(`rollout-form.js:620-631` 的 "All at once"),
   Go 再寫是第三份。**被消解而排除:**一旦確定走明確 `vms`(見軸三),合併只剩
   兩個 list 串接;切片是 Go 對自家 DB 的 GROUP BY;而藍圖是**有狀態物**
   (世代、active/superseded、關聯調度單)——solver 是無狀態純函數,狀態歸
@@ -73,11 +75,11 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 
 ## 4. 實作走讀(既有縫隙——為何零改動就站得起來)
 
-- `models.py:160-173`(Step B 之前的輸入語意):`pinned_to` 是「過去的事實」,
+- `models.py:237-250`(Step B 之前的輸入語意):`pinned_to` 是「過去的事實」,
   「新 VM 必須放某台」的正確表達是單元素 `candidate_baremetals`(ADR-012 §2
   否決過混用)。藍圖執行正是後者的設計用途——這個二分讓同一套模型服務
   規劃、驗證、重規劃三種用途。
-- `solver.py:244-321` `_normalize_pinned_capacity`(Step A 前的正規化):
+- `solver.py:268-352` `_normalize_pinned_capacity`(Step A 前的正規化):
   `effective_used = used - Σ pinned_demand`,pinned 的固定 assign 變數再經
   C2 加回,帳面淨額為零;四道 INPUT_ERROR 守門(host 不存在、candidate 衝突、
   `used > total`、effective < 0)。驗證式置入的 drift 偵測大半來自這裡——
@@ -85,7 +87,7 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 - `rollout.py:151-166` fold-forward 帳本:`pinned_to` 與
   `used_capacity += demand` **成對**更新。Go 組重規劃請求時必須複製同一套
   算術,少一半就是 double-count 或 phantom capacity。
-- `models.py:498-513` `PlacementAssignment.pinned`:結果回描完整終態,
+- `models.py:618-633` `PlacementAssignment.pinned`:結果回描完整終態,
   scheduler 只執行 `pinned=False` 的條目——藍圖世代的自我完整性
   (重規劃帶入的事實 vs 本代新規劃)直接沿用這個旗標。
 
@@ -105,10 +107,10 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
   前綴嚴重卡死(占走關鍵 AG)時唯一出路是 rebalance(unpin + minimize
   moves)——那是 ADR-012 §5 言明的獨立未來模式,不是重規劃的副作用。
 - **Go 合併碼是新的第一線暴露面**:裸 solve 對規則裡未知的 `vm_ids` 是
-  無聲丟棄(`solver.py:492-516` 只去重不驗存在;未知 id 無 assign 變數,
+  無聲丟棄(`solver.py:523-547` 只去重不驗存在;未知 id 無 assign 變數,
   建約束時自然消失)。C6 成員集變空 → 獨占保護蒸發,仍回 OPTIMAL;完整
   檢查只在 rollout `_validate`(`rollout.py:188-262`),裸路徑僅零成員時發
-  advisory(`solver.py:801-810`),部分打錯連警告都沒有。不能一律
+  advisory(`solver.py:835-844`),部分打錯連警告都沒有。不能一律
   INPUT_ERROR 是因 split 路徑允許引用尚未物化的 synthetic id。短期:Go
   合併後自查規則 id ⊆ VM 清單、讀回 advisory;中期 follow-up:在無
   `requirements` 的 pure-solve 路徑補 INPUT_ERROR。

@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>藍圖調度設計</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --bg:#F6F7F9; --surface:#FFFFFF; --surface2:#EEF1F5; --ink:#1C232D; --ink2:#5A6572;
+  --line:#D8DEE6; --accent:#2B62C9; --accent-ink:#FFFFFF; --accent-soft:#E3ECFB;
+  --ca:#0E8A7B; --ca-soft:#D9F0ED; --cb:#5B5BD6; --cb-soft:#E4E4F9; --cc:#C07310; --cc-soft:#F7EAD4;
+  --dyn:#8A4FBF; --dyn-soft:#EFE3FA; --wild:#B3261E;
+  --ok:#1A7F37; --ok-soft:#DDF0E2; --warn:#B54708; --warn-soft:#FBEAD3; --bad:#C22B26; --bad-soft:#FADCDB;
+  --pin:#66707C; --ghost:#9AA5B1; --code-bg:#20262E; --code-ink:#D9E1EA;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#12161C; --surface:#1A2029; --surface2:#232B36; --ink:#E6EAF0; --ink2:#98A3B0;
+    --line:#333D4A; --accent:#6C9BEF; --accent-ink:#0E1420; --accent-soft:#22314A;
+    --ca:#3FC0AE; --ca-soft:#123B36; --cb:#9C9CF2; --cb-soft:#2A2A4E; --cc:#E3A455; --cc-soft:#423114;
+    --dyn:#BD8DE8; --dyn-soft:#37244C; --wild:#F2726B;
+    --ok:#57C776; --ok-soft:#173423; --warn:#EFA55B; --warn-soft:#3C2A12; --bad:#F17B75; --bad-soft:#44201E;
+    --pin:#8B95A1; --ghost:#5F6B78; --code-bg:#0E1319; --code-ink:#C9D3DE;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#12161C; --surface:#1A2029; --surface2:#232B36; --ink:#E6EAF0; --ink2:#98A3B0;
+  --line:#333D4A; --accent:#6C9BEF; --accent-ink:#0E1420; --accent-soft:#22314A;
+  --ca:#3FC0AE; --ca-soft:#123B36; --cb:#9C9CF2; --cb-soft:#2A2A4E; --cc:#E3A455; --cc-soft:#423114;
+  --dyn:#BD8DE8; --dyn-soft:#37244C; --wild:#F2726B;
+  --ok:#57C776; --ok-soft:#173423; --warn:#EFA55B; --warn-soft:#3C2A12; --bad:#F17B75; --bad-soft:#44201E;
+  --pin:#8B95A1; --ghost:#5F6B78; --code-bg:#0E1319; --code-ink:#C9D3DE;
+  color-scheme: dark;
+}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:"Noto Sans TC",-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;
+  font-size:15px; line-height:1.75; padding-inline:16px;
+}
+.wrap{max-width:1080px; margin:0 auto;}
+code,pre,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;}
+code{background:var(--surface2); border:1px solid var(--line); border-radius:4px; padding:0 5px; font-size:.86em;}
+h1{font-size:1.7rem; line-height:1.3; margin:.2em 0 .1em; text-wrap:balance;}
+h2{font-size:1.25rem; margin:0 0 .6em; padding-top:.2em; text-wrap:balance;}
+h3{font-size:1.02rem; margin:1.4em 0 .5em;}
+p{margin:.5em 0; max-width:72ch;}
+.sub{color:var(--ink2);}
+.eyebrow{font-size:.72rem; letter-spacing:.12em; color:var(--accent); font-weight:700; text-transform:uppercase;}
+a{color:var(--accent);}
+
+nav.top{
+  position:sticky; top:env(safe-area-inset-top,0px); z-index:30;
+  background:var(--bg); border-bottom:1px solid var(--line);
+  display:flex; gap:4px; overflow-x:auto; padding:8px 0; margin-bottom:20px;
+}
+nav.top a{
+  white-space:nowrap; text-decoration:none; color:var(--ink2); font-weight:500; font-size:.88rem;
+  padding:5px 12px; border-radius:999px;
+}
+nav.top a:hover{background:var(--surface2); color:var(--ink);}
+section{scroll-margin-top:70px; margin-bottom:44px;}
+.card{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:18px 20px;}
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px;}
+.grid2>*,#simgrid>*{min-width:0;}
+@media (max-width:760px){.grid2{grid-template-columns:1fr;}}
+
+/* 架構流 */
+.flow{display:flex; gap:0; align-items:stretch; flex-wrap:wrap; margin:14px 0 6px;}
+.flow .node{
+  flex:1 1 200px; background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; min-width:200px; position:relative;
+}
+.flow .arrow{align-self:center; color:var(--ink2); padding:0 8px; font-weight:700;}
+.node .t{font-weight:700;}
+.node .d{font-size:.82rem; color:var(--ink2); line-height:1.6; margin-top:4px;}
+.node ul{margin:6px 0 0; padding-left:18px; font-size:.82rem; color:var(--ink2);}
+.node.solver{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset;}
+.badge{display:inline-block; font-size:.7rem; font-weight:700; border-radius:4px; padding:1px 7px; vertical-align:2px;}
+.badge.zero{background:var(--ok-soft); color:var(--ok);}
+
+table.doc{border-collapse:collapse; width:100%; font-size:.86rem;}
+table.doc th,table.doc td{border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top;}
+table.doc th{background:var(--surface2); font-weight:700;}
+.tblwrap{overflow-x:auto;}
+
+pre.mermaid{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:10px; overflow-x:auto;}
+
+/* ── 模擬器 ── */
+#simgrid{display:grid; grid-template-columns:280px 1fr; gap:14px; align-items:start;}
+@media (max-width:900px){#simgrid{grid-template-columns:1fr;}}
+.panel{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:14px 16px;}
+.panel h4{margin:0 0 10px; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase; color:var(--ink2);}
+.ctl{display:flex; flex-direction:column; gap:12px;}
+.crow{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.crow label{font-size:.85rem;}
+.cdot{width:10px; height:10px; border-radius:3px; display:inline-block;}
+input[type=number]{width:58px; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; font-size:.85rem;}
+button{
+  font:inherit; font-size:.87rem; font-weight:500; border-radius:8px; cursor:pointer;
+  border:1px solid var(--line); background:var(--surface); color:var(--ink); padding:7px 12px;
+}
+button:hover:not(:disabled){border-color:var(--accent);}
+button.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink); font-weight:700;}
+button.danger{color:var(--bad); border-color:var(--bad);}
+button:disabled{opacity:.42; cursor:not-allowed;}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+.switch{display:flex; align-items:center; gap:8px; font-size:.85rem; cursor:pointer;}
+.switch input{accent-color:var(--accent); width:16px; height:16px;}
+
+#statusbar{
+  border-radius:8px; padding:9px 13px; font-size:.9rem; font-weight:500;
+  background:var(--surface2); border:1px solid var(--line); margin-bottom:12px;
+}
+#statusbar.ok{background:var(--ok-soft); border-color:var(--ok); }
+#statusbar.bad{background:var(--bad-soft); border-color:var(--bad);}
+#statusbar.warn{background:var(--warn-soft); border-color:var(--warn);}
+
+#bmgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;}
+.bm{border:1px solid var(--line); border-radius:9px; background:var(--surface); padding:8px 9px; font-size:.78rem; position:relative;}
+.bm.dead{opacity:.55; border-style:dashed; border-color:var(--bad);}
+.bm .hd{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px;}
+.bm .nm{font-weight:700; font-size:.82rem;}
+.bm .ag{font-size:.68rem; color:var(--ink2); background:var(--surface2); border-radius:4px; padding:0 5px;}
+.capbar{height:7px; border-radius:4px; background:var(--surface2); overflow:hidden; display:flex; margin:3px 0 6px;}
+.capbar i{display:block; height:100%;}
+.capbar .u-built{background:var(--accent);}
+.capbar .u-ghost{background:var(--ghost); opacity:.55;}
+.capbar .u-dyn{background:var(--dyn);}
+.capbar .u-wild{background:var(--wild);}
+.chips{display:flex; flex-wrap:wrap; gap:3px;}
+.chip{
+  border-radius:4px; padding:0 5px; font-size:.68rem; font-weight:600; line-height:1.7;
+  border:1px solid transparent; color:var(--ink);
+}
+.chip.ghost{background:transparent; border:1px dashed var(--ghost); color:var(--ink2);}
+.chip .pin{font-size:.6rem; opacity:.8;}
+.deadmark{position:absolute; top:6px; right:8px; color:var(--bad); font-weight:700; font-size:.7rem;}
+
+.legend{display:flex; gap:14px; flex-wrap:wrap; font-size:.75rem; color:var(--ink2); margin:8px 0 0;}
+.legend span{display:flex; align-items:center; gap:5px;}
+
+#log{list-style:none; margin:0; padding:0; font-size:.8rem; max-height:220px; overflow-y:auto;}
+#log li{padding:4px 2px; border-bottom:1px dashed var(--line); display:flex; gap:8px;}
+#log li .n{color:var(--ink2); font-size:.72rem; min-width:26px; text-align:right;}
+#log li.bad{color:var(--bad);}
+#log li.ok{color:var(--ok);}
+
+pre.json{
+  background:var(--code-bg); color:var(--code-ink); border-radius:9px; padding:12px 14px;
+  font-size:.75rem; line-height:1.6; overflow-x:auto; max-height:340px; overflow-y:auto; margin:0;
+}
+.dbtbl{width:100%; border-collapse:collapse; font-size:.73rem; font-family:"IBM Plex Mono",ui-monospace,monospace;}
+.dbtbl th,.dbtbl td{border:1px solid var(--line); padding:2px 7px; text-align:left; white-space:nowrap;}
+.dbtbl th{background:var(--surface2); font-weight:600;}
+.dbtbl .sup{color:var(--ink2); text-decoration:line-through;}
+.dbwrap{overflow-x:auto; max-height:220px; overflow-y:auto;}
+.pill{display:inline-block; border-radius:999px; padding:0 8px; font-size:.7rem; font-weight:700;}
+.pill.active{background:var(--ok-soft); color:var(--ok);}
+.pill.superseded{background:var(--surface2); color:var(--ink2);}
+.pill.planned{background:var(--accent-soft); color:var(--accent);}
+.pill.placed{background:var(--ok-soft); color:var(--ok);}
+.pill.dynamic{background:var(--dyn-soft); color:var(--dyn);}
+
+.note{font-size:.8rem; color:var(--ink2); border-left:3px solid var(--line); padding-left:10px; margin:10px 0;}
+.callout{border-left:3px solid var(--accent); background:var(--accent-soft); border-radius:0 8px 8px 0; padding:10px 14px; margin:12px 0; font-size:.9rem;}
+.callout.warn{border-color:var(--warn); background:var(--warn-soft);}
+footer{color:var(--ink2); font-size:.78rem; border-top:1px solid var(--line); margin-top:30px; padding:14px 0 30px;}
+@media (prefers-reduced-motion:no-preference){
+  .bm,.chip{transition:opacity .2s,border-color .2s;}
+}
+</style>
+<style>body{margin:0} img{max-width:100%} [hidden]{display:none!important}</style>
+</head>
+<body>
+<div class="wrap">
+<header style="padding-top:18px">
+  <div class="eyebrow">Design Review · Frontend → Scheduler → Solver → Inventory DB</div>
+  <h1>藍圖調度設計</h1>
+  <p class="sub">多 cluster 規劃期聯合求解，執行期照藍圖驗證式靜態置入；支援「部分藍圖、部分動態」混合情境。互動模擬器為示意（簡化貪婪引擎），非真實 CP-SAT 求解。</p>
+</header>
+
+<nav class="top">
+  <a href="#arch">架構總覽</a>
+  <a href="#sim">互動模擬器</a>
+  <a href="#mixed">混合模式 E2E</a>
+  <a href="#schema">DB Schema</a>
+  <a href="#faq">風險與 FAQ</a>
+</nav>
+
+<!-- ═══════════ 1. 架構總覽 ═══════════ -->
+<section id="arch">
+  <h2>1 · 架構總覽</h2>
+  <p>核心決策：<strong>blueprint（藍圖）是 scheduler side 的概念</strong>——它有狀態（世代、active/superseded、與調度單的關聯），所以歸 inventory DB 管；solver 維持無狀態純函數，<strong>零改動</strong>。規劃、執行、重規劃三件事，全部用 solver 既有的三個 API 完成。</p>
+
+  <div class="flow">
+    <div class="node">
+      <div class="t">Frontend（規劃 UI）</div>
+      <div class="d">產品／容量團隊操作</div>
+      <ul>
+        <li>選定 BM 池（bm_group）與目標 clusters</li>
+        <li>觸發聯合規劃、檢視藍圖</li>
+        <li>逐批執行、監看 drift、核准重規劃</li>
+      </ul>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node">
+      <div class="t">Go Scheduler</div>
+      <div class="d">藍圖的擁有者（有狀態）</div>
+      <ul>
+        <li>合併多 cluster 為一個聯合請求</li>
+        <li>持久化藍圖、逐批組驗證請求</li>
+        <li>動態插單協同求解、drift 偵測與重規劃</li>
+      </ul>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node solver">
+      <div class="t">Solver <span class="badge zero">零改動</span></div>
+      <div class="d">無狀態純函數（CP-SAT）</div>
+      <ul>
+        <li><code>POST /v1/placement/split-and-solve</code>：聯合規劃</li>
+        <li>同一端點：逐批「驗證式」solve</li>
+        <li><code>POST /v1/placement/rollout</code>：重規劃</li>
+      </ul>
+    </div>
+    <div class="arrow">→</div>
+    <div class="node">
+      <div class="t">Inventory DB</div>
+      <div class="d">事實與意圖分開存放</div>
+      <ul>
+        <li>既有：bm / bm_group / vm / schedule_request / schedule_placement</li>
+        <li>新增：<code>blueprint</code>、<code>blueprint_placement</code></li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>三段協議（sequence）</h3>
+  <pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant F as Frontend
+    participant S as Go Scheduler
+    participant V as Solver (stateless)
+    participant D as Inventory DB
+    rect rgba(43,98,201,0.08)
+    note over F,D: Phase 1 — 規劃（一次聯合求解）
+    F->>S: 選 bm_group + clusters，觸發規劃
+    S->>V: split-and-solve（所有 cluster 明確 VM，自由 candidates）
+    V-->>S: OPTIMAL：全部 assignments
+    S->>D: 寫 blueprint(gen=1, active) + blueprint_placement(planned)
+    end
+    rect rgba(26,127,55,0.08)
+    note over F,D: Phase 2 — 逐批驗證式執行（cluster k）
+    F->>S: 建置 cluster k
+    S->>V: solve（本批 VM candidate=[藍圖BM]，已建=pinned_to，真實 used）
+    V-->>S: OPTIMAL（無 drift 時 presolve 秒回）
+    S->>D: schedule_request(blueprint_id) + schedule_placement(→blueprint_placement)
+    end
+    rect rgba(194,43,38,0.08)
+    note over F,D: Phase 3 — 重規劃（drift 或需求改版觸發）
+    V-->>S: INFEASIBLE / INPUT_ERROR（= 精確 drift 訊號）
+    S->>V: rollout（已建 VM = existing_vms pins，只放剩餘 cluster）
+    V-->>S: 新解（grandfathering 保證已建不會逼出 INFEASIBLE）
+    S->>D: blueprint(gen+1, active)，舊版 superseded
+    end
+  </pre>
+
+  <h3>為什麼「照藍圖靜態置入」是安全的：前綴安全性</h3>
+  <div class="callout">
+    C2（容量）、C3（anti-affinity）、C4（max-per-BM）、C6（獨占）全部是「<span class="mono">Σ ≤ cap</span>」型約束——<strong>聯合可行解的任何子集必然可行</strong>。所以只要現實與藍圖一致，照藍圖分批置入，任何建置順序的任何中間狀態都自動可行。這與 ADR-013「聯合可行 ≠ 逐批可行」不矛盾：那個警告針對「每批重新求解」的貪婪路徑；藍圖消除了執行期的選擇，也就消除了路徑依賴。
+  </div>
+  <div class="callout warn">
+    唯一例外是 <strong>C5（failover N-1）</strong>：backup 建成之前保護本來就不成立。這是建置期暫態（今日逐批建置亦然），非新風險，但排程順序宜讓 backup 早建。
+  </div>
+
+  <h3>執行期請求裡的三種 VM 身分</h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th>身分</th><th>表達方式</th><th>語意</th></tr>
+    <tr><td>已建事實</td><td><code>pinned_to: "bm-x"</code></td><td>過去的事實。<code>used_capacity</code> 含其消耗，solver 內部正規化；C3/C4/C5 grandfathered（凍結不惡化）。</td></tr>
+    <tr><td>藍圖鎖定</td><td><code>candidate_baremetals: ["bm-x"]</code></td><td>對未來的約束：這台新 VM 必須放藍圖指定的 BM。驗證通過 = 無 drift。</td></tr>
+    <tr><td>動態自由</td><td><code>candidate_baremetals: [...]（池內全部）</code></td><td>混合模式的動態插單：solver 現場決定位置。</td></tr>
+  </table></div>
+  <p class="sub">三種身分可以並存於同一次 solve——這就是「部分藍圖、部分動態」不需要任何 solver 新機制的原因。</p>
+</section>
+
+<!-- ═══════════ 2. 互動模擬器 ═══════════ -->
+<section id="sim">
+  <h2>2 · 互動模擬器</h2>
+  <p>模擬 frontend 的完整操作流：<strong>①聯合規劃 → ②逐批執行 → ③動態插單（開/關預留保護）→ ④注入 drift → ⑤重規劃</strong>。右側 BM 網格即時反映機況；下方同步顯示 scheduler 送給 solver 的請求 JSON 與 inventory DB 的表格狀態。</p>
+  <p class="note">置放引擎為簡化示意：貪婪 + C2 容量檢查 + C3 依 AG 分散（cap = ⌈群組數/AG 數⌉）。真實系統為 CP-SAT 聯合最佳化。</p>
+
+  <div id="statusbar">尚未規劃——設定 cluster 後按「① 聯合規劃」。</div>
+
+  <div id="simgrid">
+    <div class="ctl">
+      <div class="panel">
+        <h4>Cluster 設定</h4>
+        <div class="crow"><span class="cdot" style="background:var(--ca)"></span><label>cluster-a</label>
+          M <input type="number" id="ca-m" min="0" max="6" value="3"> W <input type="number" id="ca-w" min="0" max="9" value="3"></div>
+        <div class="crow"><span class="cdot" style="background:var(--cb)"></span><label>cluster-b</label>
+          M <input type="number" id="cb-m" min="0" max="6" value="3"> W <input type="number" id="cb-w" min="0" max="9" value="3"></div>
+        <div class="crow"><span class="cdot" style="background:var(--cc)"></span><label>cluster-c</label>
+          M <input type="number" id="cc-m" min="0" max="6" value="3"> W <input type="number" id="cc-w" min="0" max="9" value="4"></div>
+        <div class="sub" style="font-size:.75rem">BM 池：9 台 × 64c/256G，3 個 AG。<br>master 8c/32G · worker 16c/64G</div>
+      </div>
+      <div class="panel">
+        <h4>操作</h4>
+        <div class="ctl">
+          <button class="primary" id="btn-plan">① 聯合規劃（產出藍圖）</button>
+          <button id="btn-exec" disabled>② 建置下一批</button>
+          <label class="switch"><input type="checkbox" id="opt-reserve" checked>藍圖預留保護（幽靈協同求解）</label>
+          <button id="btn-dyn" disabled>③ 動態插單（worker 16c/64G）</button>
+          <button class="danger" id="btn-fail" disabled>④a 隨機 BM 故障</button>
+          <button class="danger" id="btn-wild" disabled>④b 野 VM（繞過 scheduler 佔用容量）</button>
+          <button id="btn-replan" disabled>⑤ 重規劃（gen+1）</button>
+          <button id="btn-reset">重設</button>
+        </div>
+      </div>
+      <div class="panel">
+        <h4>事件流</h4>
+        <ul id="log"></ul>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h4>BM 池（bm_group: pool-1）</h4>
+        <div id="bmgrid"></div>
+        <div class="legend">
+          <span><i class="cdot" style="background:var(--accent)"></i>已建（pinned 事實）</span>
+          <span><i class="cdot" style="background:var(--ghost);opacity:.55"></i>藍圖未建（幽靈預留）</span>
+          <span><i class="cdot" style="background:var(--dyn)"></i>動態插單</span>
+          <span><i class="cdot" style="background:var(--wild)"></i>野 VM</span>
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:14px">
+        <div class="panel">
+          <h4>Scheduler → Solver 請求（最近一次）</h4>
+          <pre class="json" id="apibox">// 尚無請求</pre>
+        </div>
+        <div class="panel">
+          <h4>Inventory DB（即時）</h4>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div><div class="sub mono" style="font-size:.72rem">blueprint</div><div class="dbwrap"><table class="dbtbl" id="db-bp"></table></div></div>
+            <div><div class="sub mono" style="font-size:.72rem">blueprint_placement（active 世代）</div><div class="dbwrap"><table class="dbtbl" id="db-bpp"></table></div></div>
+            <div><div class="sub mono" style="font-size:.72rem">schedule_request</div><div class="dbwrap"><table class="dbtbl" id="db-sr"></table></div></div>
+            <div><div class="sub mono" style="font-size:.72rem">schedule_placement</div><div class="dbwrap"><table class="dbtbl" id="db-sp"></table></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ 3. 混合模式 E2E ═══════════ -->
+<section id="mixed">
+  <h2>3 · 混合模式 E2E 配套：部分藍圖、部分動態</h2>
+  <p>真實環境不會只有藍圖流量——藍圖執行到一半，動態的加機需求就會進來。設計上把「計畫外」拆成兩類，配套完全不同：</p>
+  <div class="tblwrap"><table class="doc">
+    <tr><th></th><th>受管動態插單</th><th>野 drift</th></tr>
+    <tr><td>定義</td><td>走 scheduler 的計畫外請求（臨時加 VM）</td><td>繞過 scheduler 的消耗（人工佔機、BM 故障、帳外 VM）</td></tr>
+    <tr><td>處理</td><td><strong>與藍圖幽靈協同求解</strong>（見下），不觸發重規劃</td><td>下一批驗證 INFEASIBLE 才被發現 → 觸發重規劃</td></tr>
+    <tr><td>DB 痕跡</td><td><code>schedule_request.mode=dynamic</code>；<code>schedule_placement.blueprint_placement_id = NULL</code></td><td>無調度單——事後由 used_capacity 與帳面差額對帳</td></tr>
+  </table></div>
+
+  <h3>藍圖幽靈預留：動態單如何不弄壞藍圖</h3>
+  <p>動態插單時，scheduler 把「藍圖中<strong>尚未建置</strong>的 VM」以鎖定 candidates（幽靈）一起放進同一次 solve：</p>
+  <pre class="json" style="max-height:none">{
+  "vms": [
+    {"id":"dyn-worker-1","cluster_id":"adhoc","demand":{...},
+     "candidate_baremetals":["bm-1","...","bm-9"]},      // 動態：自由
+    {"id":"vm-b-w2","cluster_id":"cluster-b","demand":{...},
+     "candidate_baremetals":["bm-5"]},                    // 幽靈：藍圖鎖定
+    {"id":"vm-a-m1","pinned_to":"bm-1", ...}              // 已建：事實
+  ],
+  "baremetals": [ ...真實 used_capacity... ]
+}</pre>
+  <p>solver 只會把 <code>dyn-worker-1</code> 放在<strong>不侵蝕藍圖已規劃容量</strong>的位置；放不下就 INFEASIBLE（＝動態單被拒，藍圖不受影響）。幽靈的 assignments 回來後 scheduler 直接忽略——它自己知道哪些 id 是幽靈。solver 契約零改動。</p>
+
+  <h3>政策點（討論時要定案）：預留保護 vs 先到先贏</h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th></th><th>預留保護（推薦，模擬器開關「開」）</th><th>先到先贏（開關「關」）</th></tr>
+    <tr><td>做法</td><td>動態單與藍圖幽靈協同求解</td><td>動態單只看當下剩餘容量</td></tr>
+    <tr><td>優點</td><td>藍圖穩定、不觸發重規劃；容量衝突在動態單當下被拒，訊號即時</td><td>scheduler 實作最簡單；動態單成功率高</td></tr>
+    <tr><td>代價</td><td>動態單可能被拒（需要拒單／排隊的產品流程）</td><td>藍圖容量被蠶食 → 逐批驗證失敗 → 藍圖頻繁 churn</td></tr>
+    <tr><td>適用</td><td>藍圖池（bm_group 策略 = blueprint / mixed）</td><td>純動態池（策略 = dynamic）</td></tr>
+  </table></div>
+  <p class="sub">建議以 bm_group 為粒度設策略：blueprint-only（拒收動態單）、mixed（預留保護協同求解）、dynamic-only（無藍圖，維持今日行為）。用模擬器把開關關掉，可以親眼看到先到先贏如何把下一批逼成 INFEASIBLE。</p>
+
+  <h3>E2E 生命週期總覽</h3>
+  <pre class="mermaid">
+flowchart LR
+    P[規劃<br>joint solve] --> E[逐批執行<br>驗證式置入]
+    E -->|批批 OPTIMAL| DONE[完工<br>blueprint completed]
+    E -->|動態插單| CO[幽靈協同求解]
+    CO -->|放得下| E
+    CO -->|放不下| REJ[拒單/排隊]
+    E -->|INFEASIBLE<br>野 drift / BM 故障| R[重規劃 gen+1<br>已建=pins]
+    R --> E
+  </pre>
+</section>
+
+<!-- ═══════════ 4. DB Schema ═══════════ -->
+<section id="schema">
+  <h2>4 · Inventory DB Schema</h2>
+  <p>設計判斷：<strong><code>schedule_placement</code> 是事實、藍圖是意圖，分表</strong>。同一個 VM 會出現在多個世代的藍圖（意圖）裡，但事實永遠只有一筆；混表會讓最熱的「查實際佈局」查詢永遠要濾旗標。分表後 plan-vs-actual 的 drift 報表就是一個乾淨的 join。</p>
+  <pre class="mermaid">
+erDiagram
+    bm_group ||--o{ bm : contains
+    bm_group ||--o{ blueprint : "planned for"
+    blueprint ||--o{ blueprint_placement : has
+    blueprint |o--o| blueprint : "parent (gen chain)"
+    vm ||--o{ blueprint_placement : "planned as"
+    bm ||--o{ blueprint_placement : "planned on"
+    blueprint ||--o{ schedule_request : "executed by"
+    schedule_request ||--o{ schedule_placement : records
+    blueprint_placement |o--o{ schedule_placement : "fulfilled by"
+    vm ||--o| schedule_placement : "placed as"
+    bm ||--o{ schedule_placement : hosts
+  </pre>
+  <h3>新表</h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th>表</th><th>欄位重點</th><th>不變量／備註</th></tr>
+    <tr><td><code>blueprint</code></td><td><code>blueprint_id</code> PK、<code>bm_group_id</code> FK、<code>generation</code> + <code>parent_blueprint_id</code>（世代鏈）、<code>status</code>（active/superseded/completed/cancelled）、<code>config_fingerprint</code>、<code>bm_snapshot_fingerprint</code>、request/response JSON 原文歸檔</td><td>一個 bm_group 同時僅一份 active（partial unique index）。指紋 = drift 快路徑；驗證 solve = 慢路徑兜底。</td></tr>
+    <tr><td><code>blueprint_placement</code></td><td><code>blueprint_id</code>/<code>vm_id</code>/<code>bm_id</code> FK、<code>cluster_id</code>（哪一批）、<code>pinned</code>（重規劃帶入的事實 vs 本代新規劃）、<code>status</code>（planned/placed/superseded）</td><td>Unique(blueprint_id, vm_id)。<code>pinned</code> 對應 solver 回應旗標，使每代藍圖自我完整。</td></tr>
+  </table></div>
+  <h3>既有表加欄位</h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th>表</th><th>新欄位</th><th>用途</th></tr>
+    <tr><td><code>schedule_request</code></td><td>nullable <code>blueprint_id</code> FK、批次標識、<code>mode</code>（blueprint/dynamic/mixed）</td><td>NULL = 傳統 ad-hoc，舊流程不受影響。mode 讓混合池的行為可稽核。</td></tr>
+    <tr><td><code>schedule_placement</code></td><td>nullable <code>blueprint_placement_id</code> FK</td><td>「事實兌現了哪筆計畫」。跨世代後靠 vm_id join 分不清照哪一代放的；明確 FK 才能做 <strong>VM 粒度</strong>的 plan-vs-actual drift 報表（現有 reconcile 只到容量格粒度）。動態單此欄為 NULL——天然區分計畫內外。</td></tr>
+    <tr><td><code>vm</code></td><td><code>status</code>（planned/building/active）※若尚無生命週期欄</td><td>規劃期即備好 id/name，VM 列在建置前就存在。</td></tr>
+    <tr><td><code>bm_group</code></td><td>（可選）<code>policy</code>（blueprint/mixed/dynamic）</td><td>混合模式的池級策略。<code>bm</code> 不動。</td></tr>
+  </table></div>
+  <p class="sub">先不建 <code>blueprint_step</code> 表：step 級狀態可由調度單 + 明細推導；等需要掛獨立 metadata（預計時程、負責人）再升級，避免過早正規化。</p>
+</section>
+
+<!-- ═══════════ 5. FAQ ═══════════ -->
+<section id="faq">
+  <h2>5 · 風險與 FAQ</h2>
+  <h3>Q1 為什麼 solver 完全不用改？</h3>
+  <p>三個需求各自被既有原語接住：規劃 = 普通 split-and-solve（多 cluster 本來就支援，auto-rule 以 <code>(cluster_id, ip_type, node_role)</code> 分組、各 cluster 獨立 spread）；執行 = 「事實 vs 約束」二分（<code>pinned_to</code> vs 單元素 <code>candidate_baremetals</code>，ADR-012）；重規劃 = rollout 的 fold-forward + grandfathering。藍圖唯一的新東西是「狀態」，而狀態歸 DB，不歸純函數。</p>
+  <h3>Q2 動態插單會不會弄壞藍圖？</h3>
+  <p>受管的不會：幽靈協同求解讓動態 VM 只落在不侵蝕藍圖容量的位置，放不下就拒單，藍圖不動。會弄壞藍圖的是<strong>野 drift</strong>（繞過 scheduler 的消耗），它由逐批驗證兜底發現，觸發重規劃。</p>
+  <h3>Q3 重規劃會不會把已建的 cluster 逼成 INFEASIBLE？</h3>
+  <p>不會。已建 VM 以 <code>existing_vms</code> pins 帶入，C3/C4/C5 caps 被 grandfathered（<span class="mono">max(cap, 既有數量)</span>）——既有偏斜凍結、不惡化、永不 INFEASIBLE。代價：最佳性降為「給定凍結前綴下的最優」；若前綴嚴重卡死（占走關鍵 AG），唯一出路是 rebalance（unpin + minimize moves），那是獨立的未來模式，不是重規劃的副作用。</p>
+  <h3>Q4 drift 怎麼分類處理？</h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th>drift 類型</th><th>偵測訊號</th><th>處理</th></tr>
+    <tr><td>BM 消失／縮容</td><td>驗證批 INFEASIBLE 或 INPUT_ERROR（pinned 主機不在清單、used &gt; total）</td><td>重規劃剩餘 cluster</td></tr>
+    <tr><td>野 VM 佔用</td><td>used_capacity 上升被驗證批看見；擠得下照常、擠不下 INFEASIBLE</td><td>擠不下才重規劃</td></tr>
+    <tr><td>需求改版</td><td>主動觸發（人為決定）</td><td>重規劃（小幅加 VM 可走 add-node）</td></tr>
+    <tr><td>config 漂移</td><td><code>config_fingerprint</code> 不一致</td><td>拒絕執行，重新規劃</td></tr>
+  </table></div>
+  <h3>Q5 有沒有已知的坑？</h3>
+  <p>有一個：solver 裸 solve 路徑對規則裡<strong>未知的 vm_ids 是無聲丟棄</strong>——打錯 id 會讓 C6 成員集變空、獨占保護蒸發，仍回 OPTIMAL。scheduler 的合併程式是第一線暴露面：短期在合併後自查「規則 id ⊆ VM 清單」並讀回 solver advisory；中期在 solver 的 pure-solve 路徑補 INPUT_ERROR（獨立 follow-up）。</p>
+  <h3>Q6 什麼訊號出現時要重新審視這個設計？</h3>
+  <p>drift 率高到藍圖頻繁重規劃時，藍圖失去意義——屆時縮短規劃視窗（一次規劃更少 cluster），或該池退回逐批 rollout。</p>
+</section>
+
+<footer>依 ADR-019（blueprint scheduler-side planning）整理 · 模擬器為簡化示意，非真實 CP-SAT 求解 · 討論回饋請回到原設計文件</footer>
+</div>
+
+<script>
+"use strict";
+/* ───────────────────────── 模擬置放引擎（示意用） ─────────────────────────
+   C2: 容量（cpu/mem 兩維）；C3: 依 AG 分散，cap = ceil(群組大小 / AG 數)。
+   貪婪：優先放進該群組使用數最少的 AG，再選該 AG 中剩餘容量最大的 BM。 */
+const AGS=["ag-1","ag-2","ag-3"];
+const SPEC={master:{cpu:8,mem:32},worker:{cpu:16,mem:64},dyn:{cpu:16,mem:64}};
+const CLUSTERS=[
+ {id:"cluster-a",key:"ca",color:"var(--ca)",soft:"var(--ca-soft)"},
+ {id:"cluster-b",key:"cb",color:"var(--cb)",soft:"var(--cb-soft)"},
+ {id:"cluster-c",key:"cc",color:"var(--cc)",soft:"var(--cc-soft)"}];
+const CMAP=Object.fromEntries(CLUSTERS.map(c=>[c.id,c]));
+
+let S=null, evn=0;
+function freshState(){
+  return {
+    bms:Array.from({length:9},(_,i)=>({id:"bm-"+(i+1),ag:AGS[i%3],cap:{cpu:64,mem:256},
+      used:{cpu:0,mem:0},wild:{cpu:0,mem:0},alive:true})),
+    blueprint:null, gens:[], builtOrder:[], nextBatch:0,
+    dynCount:0, wildCount:0, infeasible:null,
+    sreq:[], splc:[], lastApi:"// 尚無請求"
+  };
+}
+function vmsOf(){ // 由輸入面板組出各 cluster 的 VM 清單
+  const out=[];
+  for(const c of CLUSTERS){
+    const m=+document.getElementById(c.key+"-m").value||0;
+    const w=+document.getElementById(c.key+"-w").value||0;
+    for(let i=1;i<=m;i++) out.push({id:`vm-${c.key.slice(1)}-m${i}`,cluster:c.id,role:"master",demand:SPEC.master});
+    for(let i=1;i<=w;i++) out.push({id:`vm-${c.key.slice(1)}-w${i}`,cluster:c.id,role:"worker",demand:SPEC.worker});
+  }
+  return out;
+}
+function fits(bm,extra,d){return bm.alive && bm.used.cpu+bm.wild.cpu+extra.cpu+d.cpu<=bm.cap.cpu
+                                     && bm.used.mem+bm.wild.mem+extra.mem+d.mem<=bm.cap.mem;}
+/* place: vms=待放清單（可含 lockedTo），loads=各 BM 的暫定額外負載，
+   groupCount[(cluster|role|ag)]=已占用計數（含 pins），回 {ok,map} 或 {ok:false,reason} */
+function place(vms,loads,groupCount){
+  const map={};
+  for(const vm of vms){
+    const gsize=vms.filter(v=>v.cluster===vm.cluster&&v.role===vm.role).length
+               + (groupCount.base?.[vm.cluster+"|"+vm.role]||0);
+    const cap=Math.ceil(gsize/AGS.length);
+    let cands=S.bms.filter(b=>vm.lockedTo? b.id===vm.lockedTo : true);
+    let best=null,bestKey=null;
+    for(const b of cands){
+      if(!fits(b,loads[b.id],vm.demand)) continue;
+      const agUse=(groupCount[vm.cluster+"|"+vm.role+"|"+b.ag]||0);
+      const agCap=Math.max(cap, vm.lockedTo? agUse+1 : 0); // 鎖定=藍圖既定，視同 grandfathered
+      if(agUse>=agCap) continue;
+      const free=(b.cap.cpu-b.used.cpu-b.wild.cpu-loads[b.id].cpu);
+      const key=[agUse,-free];
+      if(!best||key[0]<bestKey[0]||(key[0]===bestKey[0]&&key[1]<bestKey[1])){best=b;bestKey=key;}
+    }
+    if(!best){
+      const why=vm.lockedTo
+        ? (S.bms.find(b=>b.id===vm.lockedTo && !b.alive)
+            ? `藍圖 BM ${vm.lockedTo} 已故障`
+            : `藍圖 BM ${vm.lockedTo} 容量不足（被計畫外消耗佔用）`)
+        : `${vm.id}（${vm.demand.cpu}c/${vm.demand.mem}G）在池中找不到滿足容量與 AG 分散的位置`;
+      return {ok:false, vm:vm.id, reason:why};
+    }
+    map[vm.id]=best.id;
+    loads[best.id]={cpu:loads[best.id].cpu+vm.demand.cpu, mem:loads[best.id].mem+vm.demand.mem};
+    const k=vm.cluster+"|"+vm.role+"|"+best.ag;
+    groupCount[k]=(groupCount[k]||0)+1;
+  }
+  return {ok:true,map};
+}
+const zeroLoads=()=>Object.fromEntries(S.bms.map(b=>[b.id,{cpu:0,mem:0}]));
+
+/* ── 動作 ── */
+function doPlan(){
+  S=Object.assign(freshState(),{}); // 全新開始（重規劃走 doReplan）
+  const vms=vmsOf();
+  if(!vms.length){log("沒有任何 VM——請先設定 cluster 數量","bad");return;}
+  const r=place(vms.map(v=>({...v})),zeroLoads(),{});
+  showApi(planRequestJson(vms));
+  if(!r.ok){S.infeasible={phase:"plan",reason:r.reason};log(`聯合規劃 INFEASIBLE：${r.reason}`,"bad");render();return;}
+  const gen=1;
+  S.blueprint={id:"bp-001",gen,status:"active",
+    rows:vms.map(v=>({vm:v.id,cluster:v.cluster,role:v.role,demand:v.demand,bm:r.map[v.id],
+                      status:"planned",pinned:false}))};
+  S.gens.push({id:"bp-001",gen,status:"active"});
+  S.nextBatch=0;S.builtOrder=CLUSTERS.map(c=>c.id).filter(cid=>vms.some(v=>v.cluster===cid));
+  log(`聯合規劃 OPTIMAL：藍圖 bp-001 (gen 1)，${vms.length} 台 VM 已排定`,"ok");
+  setStatus("藍圖 bp-001 (gen 1) ACTIVE — 按「② 建置下一批」開始逐批執行。","ok");
+  render();
+}
+function doExec(){
+  const cid=S.builtOrder[S.nextBatch]; if(!cid) return;
+  const batch=S.blueprint.rows.filter(p=>p.cluster===cid&&p.status==="planned");
+  showApi(execRequestJson(cid,batch));
+  // 驗證：鎖定位置在當下現實中仍可行？
+  const gc=builtGroupCount();
+  const r=place(batch.map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand,lockedTo:p.bm})),
+                zeroLoads(),gc);
+  if(!r.ok){
+    S.infeasible={phase:"exec",cluster:cid,reason:r.reason};
+    log(`建置 ${cid}：INFEASIBLE — ${r.reason}`,"bad");
+    setStatus(`驗證批 INFEASIBLE（${cid}）：${r.reason} → 這就是精確的 drift 訊號，按「⑤ 重規劃」。`,"bad");
+    render();return;
+  }
+  const sr="req-"+String(S.sreq.length+1).padStart(3,"0");
+  S.sreq.push({id:sr,mode:"blueprint",blueprint:S.blueprint.id,batch:cid});
+  for(const p of batch){
+    p.status="placed";
+    const bm=S.bms.find(b=>b.id===p.bm);
+    bm.used={cpu:bm.used.cpu+p.demand.cpu,mem:bm.used.mem+p.demand.mem};
+    S.splc.push({vm:p.vm,bm:p.bm,req:sr,bpp:p.vm});
+  }
+  S.nextBatch++;
+  log(`建置 ${cid}：OPTIMAL，${batch.length} 台照藍圖置入（調度單 ${sr}）`,"ok");
+  setStatus(S.nextBatch>=S.builtOrder.length
+    ? "全部批次建置完成 — 藍圖 completed。可再玩動態插單或重設。"
+    : `${cid} 建置完成。下一批：${S.builtOrder[S.nextBatch]}。也可以先「③ 動態插單」或注入 drift 觀察行為。`,"ok");
+  if(S.nextBatch>=S.builtOrder.length){S.blueprint.status="completed";
+    S.gens.find(g=>g.id===S.blueprint.id).status="completed";}
+  render();
+}
+function doDyn(){
+  const protect=document.getElementById("opt-reserve").checked;
+  S.dynCount++;
+  const vm={id:"dyn-w"+S.dynCount,cluster:"adhoc",role:"dyn",demand:SPEC.dyn};
+  const ghosts=protect? S.blueprint.rows.filter(p=>p.status==="planned")
+                         .map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand,lockedTo:p.bm})):[];
+  showApi(dynRequestJson(vm,ghosts,protect));
+  const r=place([vm,...ghosts],zeroLoads(),builtGroupCount());
+  if(!r.ok){
+    if(protect){log(`動態插單 ${vm.id} 被拒：放入任何位置都會侵蝕藍圖預留（${r.reason}）`,"bad");
+      setStatus(`動態插單被拒（預留保護生效）——藍圖不受影響。這是「拒單」政策的體驗。`,"warn");S.dynCount--;}
+    else{log(`動態插單 ${vm.id} INFEASIBLE：${r.reason}`,"bad");S.dynCount--;}
+    render();return;
+  }
+  const bm=S.bms.find(b=>b.id===r.map[vm.id]);
+  bm.used={cpu:bm.used.cpu+vm.demand.cpu,mem:bm.used.mem+vm.demand.mem};
+  bm.dyn=(bm.dyn||[]).concat(vm.id);
+  const sr="req-"+String(S.sreq.length+1).padStart(3,"0");
+  S.sreq.push({id:sr,mode:"dynamic",blueprint:null,batch:"-"});
+  S.splc.push({vm:vm.id,bm:bm.id,req:sr,bpp:null});
+  log(`動態插單 ${vm.id} → ${bm.id}（${protect?"幽靈協同求解，藍圖預留未被侵蝕":"先到先贏，未檢查藍圖預留"}）`, protect?"ok":"");
+  if(protect) setStatus(`動態插單 ${vm.id} → ${bm.id}：與藍圖幽靈協同求解，規劃容量未被侵蝕。`,"ok");
+  else setStatus(`⚠ ${vm.id} 以先到先贏放上 ${bm.id}——它可能吃掉了藍圖的規劃容量，建置下一批時就會看到後果。`,"warn");
+  render();
+}
+function doFail(){
+  const alive=S.bms.filter(b=>b.alive&&S.blueprint.rows.some(p=>p.bm===b.id&&p.status==="planned"));
+  const pool=alive.length?alive:S.bms.filter(b=>b.alive);
+  if(!pool.length)return;
+  const bm=pool[Math.floor(Math.random()*pool.length)];
+  bm.alive=false;
+  log(`BM 故障：${bm.id}（${bm.ag}）— 其上未建的藍圖位置已失效`,"bad");
+  setStatus(`${bm.id} 故障。若它承載未建藍圖位置，下一批驗證會 INFEASIBLE → 重規劃。`,"warn");
+  render();
+}
+function doWild(){
+  const cands=S.bms.filter(b=>b.alive&&(b.cap.cpu-b.used.cpu-b.wild.cpu)>=16);
+  if(!cands.length){log("野 VM 放不進任何 BM（池已滿）","bad");return;}
+  cands.sort((a,b)=>ghostLoad(b).cpu-ghostLoad(a).cpu); // 專挑幽靈預留多的 BM 佔
+  const bm=cands[0]; S.wildCount++;
+  bm.wild={cpu:bm.wild.cpu+16,mem:bm.wild.mem+64};
+  bm.wildIds=(bm.wildIds||[]).concat("wild-"+S.wildCount);
+  log(`野 VM wild-${S.wildCount} 直接佔用 ${bm.id} 16c/64G（無調度單，scheduler 不知情）`,"bad");
+  setStatus(`野 VM 佔用了 ${bm.id}。藍圖不知情——建置下一批時驗證才會發現。`,"warn");
+  render();
+}
+function doReplan(){
+  const remaining=S.blueprint.rows.filter(p=>p.status==="planned")
+    .map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand}));
+  const built=S.blueprint.rows.filter(p=>p.status==="placed");
+  showApi(replanRequestJson(built,remaining));
+  const r=place(remaining.map(v=>({...v})),zeroLoads(),builtGroupCount());
+  if(!r.ok){
+    log(`重規劃 INFEASIBLE：${r.reason} — 池容量已不足，需擴池或縮需求`,"bad");
+    setStatus(`重規劃也 INFEASIBLE：${r.reason}。這模擬「藍圖救不回來」的情境——擴池或砍需求。`,"bad");
+    render();return;
+  }
+  const gen=S.blueprint.gen+1, id="bp-"+String(gen).padStart(3,"0");
+  S.gens.find(g=>g.id===S.blueprint.id).status="superseded";
+  S.blueprint={id,gen,status:"active",
+    rows:[...built.map(p=>({...p,pinned:true})),
+          ...remaining.map(v=>({vm:v.id,cluster:v.cluster,role:v.role,demand:v.demand,
+                                bm:r.map[v.id],status:"planned",pinned:false}))]};
+  S.gens.push({id,gen,status:"active"});
+  S.infeasible=null;
+  log(`重規劃完成：${id} (gen ${gen}) ACTIVE，已建 ${built.length} 台凍結為 pins，重排 ${remaining.length} 台`,"ok");
+  setStatus(`新藍圖 ${id} (gen ${gen}) 生效——舊版 superseded。繼續「② 建置下一批」。`,"ok");
+  render();
+}
+function doReset(){S=freshState();evn=0;document.getElementById("log").innerHTML="";
+  setStatus("尚未規劃——設定 cluster 後按「① 聯合規劃」。","");showApi("// 尚無請求");render();}
+
+/* ── 輔助 ── */
+function builtGroupCount(){ // 已建 VM 的 (cluster|role|ag) 計數 + base 群組大小
+  const gc={base:{}};
+  if(!S.blueprint) return gc;
+  for(const p of S.blueprint.rows.filter(p=>p.status==="placed")){
+    const bm=S.bms.find(b=>b.id===p.bm);
+    gc[p.cluster+"|"+p.role+"|"+bm.ag]=(gc[p.cluster+"|"+p.role+"|"+bm.ag]||0)+1;
+    gc.base[p.cluster+"|"+p.role]=(gc.base[p.cluster+"|"+p.role]||0)+1;
+  }
+  return gc;
+}
+function ghostLoad(bm){
+  if(!S.blueprint) return {cpu:0,mem:0};
+  return S.blueprint.rows.filter(p=>p.bm===bm.id&&p.status==="planned")
+    .reduce((a,p)=>({cpu:a.cpu+p.demand.cpu,mem:a.mem+p.demand.mem}),{cpu:0,mem:0});
+}
+/* ── API JSON 展示 ── */
+const short=v=>JSON.stringify(v);
+function planRequestJson(vms){
+  return `// POST /v1/placement/split-and-solve — 聯合規劃（所有 cluster 一次）
+{
+  "vms": [
+${vms.slice(0,4).map(v=>`    {"id":${short(v.id)},"cluster_id":${short(v.cluster)},"node_role":${short(v.role)},
+     "demand":${short(v.demand)},"candidate_baremetals":["bm-1","…","bm-9"]}`).join(",\n")},
+    … 共 ${vms.length} 台（全部自由 candidates）
+  ],
+  "baremetals": [ 9 台，真實 used_capacity ],
+  "config": {"auto_generate_anti_affinity": true, "target_spread": {"ag": 3}}
+}
+// → scheduler 將回應存入 blueprint / blueprint_placement`;
+}
+function execRequestJson(cid,batch){
+  const built=S.blueprint.rows.filter(p=>p.status==="placed");
+  return `// POST /v1/placement/split-and-solve — 建置 ${cid}（驗證式置入）
+{
+  "vms": [
+${batch.slice(0,3).map(p=>`    {"id":${short(p.vm)},"cluster_id":${short(p.cluster)},
+     "candidate_baremetals":[${short(p.bm)}]}  // 藍圖鎖定`).join(",\n")},
+    … 本批共 ${batch.length} 台
+${built.slice(0,2).map(p=>`    ,{"id":${short(p.vm)},"pinned_to":${short(p.bm)}}  // 已建事實`).join("\n")}
+    ${built.length>2?`… 已建共 ${built.length} 台（pinned_to）`:""}
+  ],
+  "baremetals": [ 真實 used_capacity（含已建與計畫外消耗）]
+}
+// 無 drift → presolve 秒回 OPTIMAL；INFEASIBLE = 精確 drift 訊號`;
+}
+function dynRequestJson(vm,ghosts,protect){
+  return `// POST /v1/placement/split-and-solve — 動態插單（${protect?"幽靈協同求解":"先到先贏"}）
+{
+  "vms": [
+    {"id":${short(vm.id)},"cluster_id":"adhoc","demand":${short(vm.demand)},
+     "candidate_baremetals":["bm-1","…","bm-9"]}  // 動態：自由
+${protect?ghosts.slice(0,3).map(g=>`    ,{"id":${short(g.id)},"candidate_baremetals":[${short(g.lockedTo)}]}  // 幽靈：藍圖預留`).join("\n")+(ghosts.length>3?`\n    … 幽靈共 ${ghosts.length} 台`:""):"    // （保護關閉：不帶幽靈，藍圖預留不設防）"}
+    , … 已建 VM 以 pinned_to 帶入
+  ]
+}
+// 幽靈的 assignments 由 scheduler 忽略，只執行 ${short(vm.id)}`;
+}
+function replanRequestJson(built,remaining){
+  return `// POST /v1/placement/rollout — 重規劃（gen ${S.blueprint.gen} → ${S.blueprint.gen+1}）
+{
+  "existing_vms": [
+${built.slice(0,3).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)}}`).join(",\n")},
+    … 已建共 ${built.length} 台（凍結為 pins，grandfathered）
+  ],
+  "steps": [ 剩餘 ${remaining.length} 台，按 cluster 分批 ],
+  "baremetals": [ 當下現實：故障 BM 已移除、野 VM 消耗已入 used ]
+}
+// 成功 → 新世代藍圖；已建 cluster 永不搬遷`;
+}
+
+/* ── render ── */
+function setStatus(msg,cls){const el=document.getElementById("statusbar");el.textContent=msg;el.className=cls||"";}
+function showApi(txt){S.lastApi=txt;document.getElementById("apibox").textContent=txt;}
+function log(msg,cls){evn++;const li=document.createElement("li");if(cls)li.className=cls;
+  li.innerHTML=`<span class="n">${evn}</span><span></span>`;li.lastChild.textContent=msg;
+  document.getElementById("log").prepend(li);}
+function render(){
+  // 按鈕狀態
+  const bp=S.blueprint, done=bp&&bp.status==="completed";
+  document.getElementById("btn-exec").disabled=!bp||done||!!S.infeasible||S.nextBatch>=S.builtOrder.length;
+  document.getElementById("btn-dyn").disabled=!bp;
+  document.getElementById("btn-fail").disabled=!bp;
+  document.getElementById("btn-wild").disabled=!bp;
+  document.getElementById("btn-replan").disabled=!bp||done||!S.infeasible;
+  const eb=document.getElementById("btn-exec");
+  eb.textContent=bp&&S.nextBatch<S.builtOrder.length?`② 建置下一批（${S.builtOrder[S.nextBatch]}）`:"② 建置下一批";
+  // BM 網格
+  const grid=document.getElementById("bmgrid");grid.innerHTML="";
+  for(const b of S.bms){
+    const gl=ghostLoad(b);
+    const pct=v=>Math.min(100,100*v/b.cap.cpu);
+    const div=document.createElement("div");div.className="bm"+(b.alive?"":" dead");
+    const chips=[];
+    if(bp)for(const p of bp.rows.filter(p=>p.bm===b.id)){
+      const c=CMAP[p.cluster];
+      if(p.status==="placed")chips.push(`<span class="chip" style="background:${c.soft};border-color:${c.color}">${p.vm}${p.pinned?' <span class="pin">📌</span>':""}</span>`);
+      else chips.push(`<span class="chip ghost">${p.vm}</span>`);
+    }
+    for(const d of (b.dyn||[]))chips.push(`<span class="chip" style="background:var(--dyn-soft);border-color:var(--dyn)">${d}</span>`);
+    for(const w of (b.wildIds||[]))chips.push(`<span class="chip" style="background:var(--bad-soft);border-color:var(--wild)">${w}</span>`);
+    div.innerHTML=`
+      <div class="hd"><span class="nm">${b.id}</span><span class="ag">${b.ag}</span></div>
+      <div class="capbar" title="cpu">
+        <i class="u-built" style="width:${pct(b.used.cpu-(b.dyn||[]).length*16)}%"></i>
+        <i class="u-dyn" style="width:${pct((b.dyn||[]).length*16)}%"></i>
+        <i class="u-wild" style="width:${pct(b.wild.cpu)}%"></i>
+        <i class="u-ghost" style="width:${pct(gl.cpu)}%"></i>
+      </div>
+      <div class="sub" style="font-size:.68rem">cpu ${b.used.cpu+b.wild.cpu}/${b.cap.cpu}${gl.cpu?` (+預留 ${gl.cpu})`:""}</div>
+      <div class="chips">${chips.join("")}</div>
+      ${b.alive?"":'<div class="deadmark">FAILED</div>'}`;
+    grid.appendChild(div);
+  }
+  // DB 表
+  const bpT=document.getElementById("db-bp");
+  bpT.innerHTML=`<tr><th>id</th><th>gen</th><th>parent</th><th>status</th></tr>`+
+    S.gens.map((g,i)=>`<tr class="${g.status==='superseded'?'sup':''}"><td>${g.id}</td><td>${g.gen}</td><td>${i? S.gens[i-1].id:"∅"}</td><td><span class="pill ${g.status==='active'?'active':g.status==='completed'?'placed':'superseded'}">${g.status}</span></td></tr>`).join("")
+    ||`<tr><td colspan="4" class="sub">（空）</td></tr>`;
+  const bppT=document.getElementById("db-bpp");
+  bppT.innerHTML=`<tr><th>vm_id</th><th>bm_id</th><th>cluster</th><th>pinned</th><th>status</th></tr>`+
+    (bp?bp.rows.map(p=>`<tr><td>${p.vm}</td><td>${p.bm}</td><td>${p.cluster}</td><td>${p.pinned?"✓":""}</td><td><span class="pill ${p.status}">${p.status}</span></td></tr>`).join(""):`<tr><td colspan="5" class="sub">（空）</td></tr>`);
+  const srT=document.getElementById("db-sr");
+  srT.innerHTML=`<tr><th>id</th><th>mode</th><th>blueprint_id</th><th>batch</th></tr>`+
+    (S.sreq.map(r=>`<tr><td>${r.id}</td><td><span class="pill ${r.mode==='dynamic'?'dynamic':'planned'}">${r.mode}</span></td><td>${r.blueprint??"NULL"}</td><td>${r.batch}</td></tr>`).join("")||`<tr><td colspan="4" class="sub">（空）</td></tr>`);
+  const spT=document.getElementById("db-sp");
+  spT.innerHTML=`<tr><th>vm_id</th><th>bm_id</th><th>request</th><th>blueprint_placement_id</th></tr>`+
+    (S.splc.map(r=>`<tr><td>${r.vm}</td><td>${r.bm}</td><td>${r.req}</td><td>${r.bpp??"NULL ← 動態單"}</td></tr>`).join("")||`<tr><td colspan="4" class="sub">（空）</td></tr>`);
+}
+document.getElementById("btn-plan").addEventListener("click",doPlan);
+document.getElementById("btn-exec").addEventListener("click",doExec);
+document.getElementById("btn-dyn").addEventListener("click",doDyn);
+document.getElementById("btn-fail").addEventListener("click",doFail);
+document.getElementById("btn-wild").addEventListener("click",doWild);
+document.getElementById("btn-replan").addEventListener("click",doReplan);
+document.getElementById("btn-reset").addEventListener("click",doReset);
+S=freshState();
+/* 開頁即示範：直接跑一次規劃 + 第一批，讓頁面在靜止狀態就能看懂 */
+doPlan(); if(S.blueprint) doExec();
+</script>
+
+<!-- Mermaid diagrams render client-side; needs network access to the CDN. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+if (window.mermaid) {
+  var dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+  mermaid.run({ querySelector: "pre.mermaid" });
+}
+</script>
+</body>
+</html>
