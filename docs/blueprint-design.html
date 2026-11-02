@@ -192,7 +192,7 @@ footer{color:var(--ink2); font-size:.78rem; border-top:1px solid var(--line); ma
 <!-- ═══════════ 1. 架構總覽 ═══════════ -->
 <section id="arch">
   <h2>1 · 架構總覽</h2>
-  <p>核心決策：<strong>blueprint（藍圖）是 scheduler side 的概念</strong>——它有狀態（世代、active/superseded、與調度單的關聯），所以歸 inventory DB 管；solver 維持無狀態純函數，<strong>零改動</strong>。規劃、執行、重規劃三件事，全部用 solver 既有的三個 API 完成。</p>
+  <p>核心決策：<strong>blueprint（藍圖）是 scheduler side 的概念</strong>——它有狀態（世代、active/superseded、與調度單的關聯），所以歸 inventory DB 管；solver 維持無狀態純函數，<strong>零改動</strong>。規劃、逐批執行、動態插單、重規劃，全部只用 solver 既有的 <code>/v1/placement/solve</code> 一個端點完成。</p>
 
   <div class="flow">
     <div class="node">
@@ -219,9 +219,9 @@ footer{color:var(--ink2); font-size:.78rem; border-top:1px solid var(--line); ma
       <div class="t">Solver <span class="badge zero">零改動</span></div>
       <div class="d">無狀態純函數（CP-SAT）</div>
       <ul>
-        <li><code>POST /v1/placement/split-and-solve</code>：聯合規劃</li>
-        <li>同一端點：逐批「驗證式」solve</li>
-        <li><code>POST /v1/placement/rollout</code>：重規劃</li>
+        <li><code>POST /v1/placement/solve</code>：聯合規劃</li>
+        <li>同一端點：逐批「驗證式」求解、動態插單</li>
+        <li>同一端點：重規劃（已建 VM 帶 <code>pinned_to</code>）</li>
       </ul>
     </div>
     <div class="arrow">→</div>
@@ -246,21 +246,21 @@ sequenceDiagram
     rect rgba(43,98,201,0.08)
     note over F,D: Phase 1 — 規劃（一次聯合求解）
     F->>S: 選 bm_group + clusters，觸發規劃
-    S->>V: split-and-solve（所有 cluster 明確 VM，自由 candidates）
+    S->>V: /solve（所有 cluster 明確 VM，自由 candidates）
     V-->>S: OPTIMAL：全部 assignments
     S->>D: 寫 blueprint(gen=1, active) + blueprint_placement(planned)
     end
     rect rgba(26,127,55,0.08)
     note over F,D: Phase 2 — 逐批驗證式執行（cluster k）
     F->>S: 建置 cluster k
-    S->>V: solve（本批 VM candidate=[藍圖BM]，已建=pinned_to，真實 used）
+    S->>V: /solve（本批 candidate=[藍圖BM]，已建=pinned_to，真實 used，規則只帶在場 cluster）
     V-->>S: OPTIMAL（無 drift 時 presolve 秒回）
     S->>D: schedule_request(blueprint_id) + schedule_placement(→blueprint_placement)
     end
     rect rgba(194,43,38,0.08)
     note over F,D: Phase 3 — 重規劃（drift 或需求改版觸發）
     V-->>S: INFEASIBLE / INPUT_ERROR（= 精確 drift 訊號）
-    S->>V: rollout（已建 VM = existing_vms pins，只放剩餘 cluster）
+    S->>V: /solve（已建 = pinned_to，剩餘 cluster 自由 candidates，聯合求解）
     V-->>S: 新解（grandfathering 保證已建不會逼出 INFEASIBLE）
     S->>D: blueprint(gen+1, active)，舊版 superseded
     end
@@ -272,6 +272,17 @@ sequenceDiagram
   </div>
   <div class="callout warn">
     唯一例外是 <strong>C5（failover N-1）</strong>：backup 建成之前保護本來就不成立。這是建置期暫態（今日逐批建置亦然），非新風險，但排程順序宜讓 backup 早建。
+  </div>
+
+  <h3>為什麼只用 <code>/solve</code></h3>
+  <div class="tblwrap"><table class="doc">
+    <tr><th>端點</th><th>結論</th><th>理由</th></tr>
+    <tr><td><code>/solve</code></td><td>採用</td><td>契約最小、語意清楚。規劃、驗證、動態插單、重規劃都只是 <code>vms</code> 裡三種身分的不同組合，Go 只需對接一個端點。</td></tr>
+    <tr><td><code>/split-and-solve</code></td><td>未來選項</td><td>欄位是 <code>/solve</code> 的超集加必填 <code>requirements</code>；<code>requirements=[]</code> 時 splitter 產生 0 台、交給同一個求解器，結果相同。現階段一律是明確 VM，用不到依資源用量切分。</td></tr>
+    <tr><td><code>/rollout</code></td><td>對照工具</td><td>逐批貪婪模擬，每一步只看到自己這批。拿來重規劃會把藍圖要消滅的路徑依賴請回來。留著回答「不用藍圖、照順序逐批建會不會卡住」。</td></tr>
+  </table></div>
+  <div class="callout warn">
+    逐批驗證時，<strong>規則只帶在場 cluster 的（已建 + 本批）</strong>：C5 failover 規則的 selector 若一台 VM 都對不到，solver 回 <code>INPUT_ERROR</code>。這是用 4 cluster／76 VM 範例實測時發現的；同一實測中四批驗證全部 OPTIMAL、位置與藍圖一致。
   </div>
 
   <h3>執行期請求裡的三種 VM 身分</h3>
@@ -440,11 +451,11 @@ erDiagram
 <section id="faq">
   <h2>5 · 風險與 FAQ</h2>
   <h3>Q1 為什麼 solver 完全不用改？</h3>
-  <p>三個需求各自被既有原語接住：規劃 = 普通 split-and-solve（多 cluster 本來就支援，auto-rule 以 <code>(cluster_id, ip_type, node_role)</code> 分組、各 cluster 獨立 spread）；執行 = 「事實 vs 約束」二分（<code>pinned_to</code> vs 單元素 <code>candidate_baremetals</code>，ADR-012）；重規劃 = rollout 的 fold-forward + grandfathering。藍圖唯一的新東西是「狀態」，而狀態歸 DB，不歸純函數。</p>
+  <p>三個需求各自被既有原語接住：規劃 = 一次普通 <code>/solve</code>（多 cluster 本來就支援，auto-rule 以 <code>(cluster_id, ip_type, node_role)</code> 分組、各 cluster 獨立 spread）；執行 = 「事實 vs 約束」二分（<code>pinned_to</code> vs 單元素 <code>candidate_baremetals</code>，ADR-012）；重規劃 = 同一個 <code>/solve</code> 帶 pins + grandfathering。藍圖唯一的新東西是「狀態」，而狀態歸 DB，不歸純函數。</p>
   <h3>Q2 動態插單會不會弄壞藍圖？</h3>
   <p>受管的不會：幽靈協同求解讓動態 VM 只落在不侵蝕藍圖容量的位置，放不下就拒單，藍圖不動。會弄壞藍圖的是<strong>野 drift</strong>（繞過 scheduler 的消耗），它由逐批驗證兜底發現，觸發重規劃。</p>
   <h3>Q3 重規劃會不會把已建的 cluster 逼成 INFEASIBLE？</h3>
-  <p>不會。已建 VM 以 <code>existing_vms</code> pins 帶入，C3/C4/C5 caps 被 grandfathered（<span class="mono">max(cap, 既有數量)</span>）——既有偏斜凍結、不惡化、永不 INFEASIBLE。代價：最佳性降為「給定凍結前綴下的最優」；若前綴嚴重卡死（占走關鍵 AG），唯一出路是 rebalance（unpin + minimize moves），那是獨立的未來模式，不是重規劃的副作用。</p>
+  <p>不會。已建 VM 以 <code>pinned_to</code> 帶入，C3/C4/C5 caps 被 grandfathered（<span class="mono">max(cap, 既有數量)</span>）——既有偏斜凍結、不惡化、永不 INFEASIBLE。代價：最佳性降為「給定凍結前綴下的最優」；若前綴嚴重卡死（占走關鍵 AG），唯一出路是 rebalance（unpin + minimize moves），那是獨立的未來模式，不是重規劃的副作用。</p>
   <h3>Q4 drift 怎麼分類處理？</h3>
   <div class="tblwrap"><table class="doc">
     <tr><th>drift 類型</th><th>偵測訊號</th><th>處理</th></tr>
@@ -673,7 +684,7 @@ function ghostLoad(bm){
 /* ── API JSON 展示 ── */
 const short=v=>JSON.stringify(v);
 function planRequestJson(vms){
-  return `// POST /v1/placement/split-and-solve — 聯合規劃（所有 cluster 一次）
+  return `// POST /v1/placement/solve — 聯合規劃（所有 cluster 一次）
 {
   "vms": [
 ${vms.slice(0,4).map(v=>`    {"id":${short(v.id)},"cluster_id":${short(v.cluster)},"node_role":${short(v.role)},
@@ -687,7 +698,7 @@ ${vms.slice(0,4).map(v=>`    {"id":${short(v.id)},"cluster_id":${short(v.cluster
 }
 function execRequestJson(cid,batch){
   const built=S.blueprint.rows.filter(p=>p.status==="placed");
-  return `// POST /v1/placement/split-and-solve — 建置 ${cid}（驗證式置入）
+  return `// POST /v1/placement/solve — 建置 ${cid}（驗證式置入）
 {
   "vms": [
 ${batch.slice(0,3).map(p=>`    {"id":${short(p.vm)},"cluster_id":${short(p.cluster)},
@@ -696,12 +707,13 @@ ${batch.slice(0,3).map(p=>`    {"id":${short(p.vm)},"cluster_id":${short(p.clust
 ${built.slice(0,2).map(p=>`    ,{"id":${short(p.vm)},"pinned_to":${short(p.bm)}}  // 已建事實`).join("\n")}
     ${built.length>2?`… 已建共 ${built.length} 台（pinned_to）`:""}
   ],
-  "baremetals": [ 真實 used_capacity（含已建與計畫外消耗）]
+  "baremetals": [ 真實 used_capacity（含已建與計畫外消耗）],
+  "failover_rules": [ 只帶已建 + 本批 cluster 的規則 ]
 }
 // 無 drift → presolve 秒回 OPTIMAL；INFEASIBLE = 精確 drift 訊號`;
 }
 function dynRequestJson(vm,ghosts,protect){
-  return `// POST /v1/placement/split-and-solve — 動態插單（${protect?"幽靈協同求解":"先到先贏"}）
+  return `// POST /v1/placement/solve — 動態插單（${protect?"幽靈協同求解":"先到先贏"}）
 {
   "vms": [
     {"id":${short(vm.id)},"cluster_id":"adhoc","demand":${short(vm.demand)},
@@ -713,13 +725,14 @@ ${protect?ghosts.slice(0,3).map(g=>`    ,{"id":${short(g.id)},"candidate_baremet
 // 幽靈的 assignments 由 scheduler 忽略，只執行 ${short(vm.id)}`;
 }
 function replanRequestJson(built,remaining){
-  return `// POST /v1/placement/rollout — 重規劃（gen ${S.blueprint.gen} → ${S.blueprint.gen+1}）
+  return `// POST /v1/placement/solve — 重規劃（gen ${S.blueprint.gen} → ${S.blueprint.gen+1}，聯合求解）
 {
-  "existing_vms": [
-${built.slice(0,3).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)}}`).join(",\n")},
-    … 已建共 ${built.length} 台（凍結為 pins，grandfathered）
+  "vms": [
+${built.slice(0,2).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)}},  // 已建：凍結`).join("\n")}
+    … 已建共 ${built.length} 台（pinned_to，grandfathered）
+${remaining.slice(0,2).map(v=>`    {"id":${short(v.id)},"candidate_baremetals":["bm-1","…","bm-9"]},  // 剩餘：自由`).join("\n")}
+    … 剩餘共 ${remaining.length} 台，所有未建 cluster 一起解
   ],
-  "steps": [ 剩餘 ${remaining.length} 台，按 cluster 分批 ],
   "baremetals": [ 當下現實：故障 BM 已移除、野 VM 消耗已入 used ]
 }
 // 成功 → 新世代藍圖；已建 cluster 永不搬遷`;

@@ -30,7 +30,7 @@
   `candidate_baremetals`,已建批次以 `pinned_to` + 真實 `used_capacity` 帶入。
   無 drift 時 presolve 把全固定的模型秒收斂成 OPTIMAL(近乎免費);
   INFEASIBLE 即精確的 drift 訊號。
-- C. 每批重新聯合求解——後面的解可能想搬已建 VM,搬不動就退化成 rollout,
+- C. 每批重新聯合求解——後面的解可能想搬已建 VM,搬不動就退化成逐批貪婪,
   且每批結果不可預期。**排除:不確定性正是藍圖要消滅的東西。**
 
 **軸二:blueprint 概念的歸屬**
@@ -41,37 +41,55 @@
   兩個 list 串接;切片是 Go 對自家 DB 的 GROUP BY;而藍圖是**有狀態物**
   (世代、active/superseded、關聯調度單)——solver 是無狀態純函數,狀態歸
   Go/DB 是 reconcile 已立過的原則(ADR-005,決議 #25)。
-- B. **(採用)scheduler side 全包**——規劃 = 一次普通 `split-and-solve`
-  (多 cluster 明確 VM 合併請求);執行 = 一次普通驗證 solve;重規劃 = 一次
-  普通 `rollout`。指紋:`config_fingerprint` 既有,BM 快照 hash Go 自算。
-  命名張力靠歸屬消解:`rollout` 保留「模擬建置順序」語意,`blueprint` 是
-  scheduler 側名詞,**不改任何端點名**。
+- B. **(採用)scheduler side 全包,只用 `/v1/placement/solve` 一個端點**——
+  規劃 = 一次 `/solve`(多 cluster 明確 VM 合併請求);逐批執行 = 一次驗證式
+  `/solve`;重規劃 = 一次 `/solve`(已建 VM 帶 `pinned_to`)。指紋:
+  `config_fingerprint` 既有,BM 快照 hash Go 自算。`blueprint` 是 scheduler
+  側名詞,**不改任何端點名**。
+
+**軸四:用哪個端點**
+- `/split-and-solve`:`SplitPlacementRequest` 是 `PlacementRequest` 的全部欄位
+  加一個必填的 `requirements`。`requirements=[]` 時 splitter 產生 0 個
+  synthetic,接著組出同一個 `PlacementRequest`、交給同一個 `VMPlacementSolver`
+  (`split_solver.py:86-96`),結果與 `/solve` 相同,只多一層空轉和一個空的
+  `split_decisions`。**排除:**現階段一律是明確 VM,用不到依資源用量切分;
+  保留為未來「預算先行」規劃的選項。
+- `/rollout`(用於重規劃):rollout 是**逐批貪婪**模擬,每一步只看到自己這批。
+  拿它重規劃,等於把藍圖要消滅的路徑依賴請回來。**排除:**重規劃也該是聯合
+  求解。`/rollout` 保留為對照工具,回答「不用藍圖、照這個順序逐批建會不會卡住」。
+- `/solve`(採用):契約最小,語意最清楚(這裡沒有切分),Go 端只對接一個
+  端點。規劃、驗證、動態插單、重規劃都只是 `vms` 裡三種身分的不同組合。
 
 **軸三:明確 VM vs splitter synthetic**——synthetic 只在 `requirements`
 (預算→切分)時存在;規劃期已備齊 id/name 就走明確 `vms`,splitter 整段跳過。
-藍圖裡全是真實身分,「執行期必須凍結切分決策」的風險整個消失。`requirements`
-保留為預算先行場景的可選能力,若用,藍圖必須把切分結果物化成明確 VM。
+藍圖裡全是真實身分,「執行期必須凍結切分決策」的風險整個消失,也因此用
+`/solve` 就夠了。日後若改用 `/split-and-solve` 做預算先行規劃,藍圖必須把
+切分結果物化成明確 VM,執行期不再帶 `requirements`。
 
 ## 3. 最終決策
 
 blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態純函數,
 零改動。三段協議:
 
-1. **規劃**:Go 合併目標 cluster 為一個 split-and-solve 請求 → 結果與請求
+1. **規劃**:Go 合併目標 cluster 為一個 `/solve` 請求 → 結果與請求
    JSON 原文一起存 DB(`blueprint` 主檔:`bm_group_id`、`generation` +
    `parent_blueprint_id` 世代鏈、status、兩個指紋;`blueprint_placement`
    明細:vm/bm/cluster、`pinned` 旗標。與 `schedule_placement` 分表——
    後者是事實、前者是意圖,同一 VM 會出現在多個世代的意圖裡)。
-2. **逐批執行**:Go 切出 cluster k 片段組驗證請求(單元素
+2. **逐批執行**:Go 切出 cluster k 片段組驗證式 `/solve` 請求(單元素
    `candidate_baremetals`;已建 VM `pinned_to`;真實 `used_capacity`)→
-   OPTIMAL 則執行,assignments 必等於藍圖;`schedule_request` 以 nullable
+   OPTIMAL 則執行,assignments 必等於藍圖。**規則只帶在場 cluster 的**(已建 +
+   本批):C5 failover 規則的 selector 若一台 VM 都對不到,solver 回
+   `INPUT_ERROR`(C3/C4/C6 遇到同樣情況只是略過或發 advisory),所以未建
+   cluster 的 failover 規則必須先濾掉;`schedule_request` 以 nullable
    `blueprint_id` 關聯,`schedule_placement` 以 `blueprint_placement_id`
    記錄「事實兌現了哪筆計畫」,VM 粒度的 plan-vs-actual 於是可查
    (reconcile.py 只到容量格粒度)。
 3. **重規劃**(雙觸發、同機制):被動(驗證批 INFEASIBLE / INPUT_ERROR /
-   指紋不一致)或主動(後續 cluster 需求改版)→ 已建 VM 全部作
-   `existing_vms` pins 重新聯合求解,只放剩餘 cluster → 新世代藍圖,舊版
-   superseded。ADR-012 的 grandfathering 保證已建叢集永不逼出 INFEASIBLE。
+   指紋不一致)或主動(後續 cluster 需求改版)→ 一次 `/solve`:已建 VM 全部
+   帶 `pinned_to`,剩餘 cluster 的 VM 以自由 candidates 一起聯合求解 → 新世代
+   藍圖,舊版 superseded。ADR-012 的 grandfathering 保證已建叢集永不逼出
+   INFEASIBLE。
 
 ## 4. 實作走讀(既有縫隙——為何零改動就站得起來)
 
@@ -85,8 +103,9 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
   `used > total`、effective < 0)。驗證式置入的 drift 偵測大半來自這裡——
   「免費」不是比喻,是既有程式碼路徑。
 - `rollout.py:151-166` fold-forward 帳本:`pinned_to` 與
-  `used_capacity += demand` **成對**更新。Go 組重規劃請求時必須複製同一套
-  算術,少一半就是 double-count 或 phantom capacity。
+  `used_capacity += demand` **成對**更新。藍圖流程不呼叫 `/rollout`,但 Go 在
+  逐批執行和重規劃時組 pins 請求,必須遵守同一套算術:`used_capacity` 要包含
+  已建 VM 的消耗,少一半就是 double-count 或 phantom capacity。
 - `models.py:618-633` `PlacementAssignment.pinned`:結果回描完整終態,
   scheduler 只執行 `pinned=False` 的條目——藍圖世代的自我完整性
   (重規劃帶入的事實 vs 本代新規劃)直接沿用這個旗標。
@@ -106,16 +125,17 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 - **重規劃的邊界**:已建 VM 永不搬遷,最佳性降為「給定凍結前綴下的最優」。
   前綴嚴重卡死(占走關鍵 AG)時唯一出路是 rebalance(unpin + minimize
   moves)——那是 ADR-012 §5 言明的獨立未來模式,不是重規劃的副作用。
-- **Go 合併碼是新的第一線暴露面**:裸 solve 對規則裡未知的 `vm_ids` 是
+- **Go 合併碼是新的第一線暴露面**:`/solve` 對規則裡未知的 `vm_ids` 是
   無聲丟棄(`solver.py:523-547` 只去重不驗存在;未知 id 無 assign 變數,
   建約束時自然消失)。C6 成員集變空 → 獨占保護蒸發,仍回 OPTIMAL;完整
-  檢查只在 rollout `_validate`(`rollout.py:188-262`),裸路徑僅零成員時發
+  檢查只在 rollout `_validate`(`rollout.py:188-262`),藍圖流程不走 rollout
+  就拿不到這層保護;`/solve` 僅在零成員時發
   advisory(`solver.py:835-844`),部分打錯連警告都沒有。不能一律
   INPUT_ERROR 是因 split 路徑允許引用尚未物化的 synthetic id。短期:Go
   合併後自查規則 id ⊆ VM 清單、讀回 advisory;中期 follow-up:在無
   `requirements` 的 pure-solve 路徑補 INPUT_ERROR。
 - **重新審視訊號**:drift 率高到頻繁重規劃,藍圖失去意義——縮短規劃視窗,
-  或退回逐批 rollout。
+  或該池退回逐批調度。
 
 ## 6. 你應該帶走的知識
 
@@ -129,11 +149,15 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 
 ## 7. 驗證方式
 
-無程式碼變更,`make test` 維持全綠即可。設計本身可用既有機能親手驗證:
-- 前綴安全性:`make cli INPUT=examples/rollout/multi_cluster_mixed_specs.json`
-  的 joint 對照(UI "All at once")取得聯合解,手工切出單一 cluster 組驗證
-  請求(候選=藍圖 BM、他批為 pins)重放,應得 OPTIMAL 且位置不變。
-- drift:同一驗證請求把某台 BM 的 `used_capacity` 調高到擠不下,應轉
-  INFEASIBLE。
+無程式碼變更,`make test` 維持全綠即可。設計本身已用既有 solver 實測
+(`examples/2room_3ag_4cluster_failover.json`:4 個 cluster、76 台 VM,含 C3/C4/C5):
+- 前綴安全性:一次 `/solve` 取得聯合解,再依 c1→c4 逐批組驗證式請求重放
+  (本批 = 單元素 candidates、已建 = `pinned_to` 並把消耗計入 `used_capacity`、
+  failover 規則只帶在場 cluster)。結果**四批全部 OPTIMAL,位置與藍圖完全一致**。
+- drift:把 c4 某台藍圖 BM 的 `used_capacity` 填滿再驗證 c4,得 `INFEASIBLE`,
+  diagnostics 直接點名 `vms_with_no_eligible_bm: ['c4-m-1']`。
+- 實測中發現的協議細節:第一次重放把全部 failover 規則原樣帶入,得到
+  `INPUT_ERROR: failover rule 'c2-...': primary selector matches no VMs`——
+  這就是 §3 第 2 點「規則只帶在場 cluster」的由來。
 - scheduler 側實作時的測試要點:active 藍圖唯一性、世代鏈、
   plan-vs-actual join 的 drift 查詢、合併請求的規則 id 自查。
