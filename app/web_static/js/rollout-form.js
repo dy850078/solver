@@ -19,7 +19,7 @@
  * JSON escape hatch on the page.
  */
 
-import { escapeHtml as esc } from "./util.js";
+import { escapeHtml as esc, formatGpu, gpuSummary } from "./util.js";
 
 const GiB = 1024;
 // Advisory suggestion catalogs only — node_role and ip_type are OPEN
@@ -40,8 +40,10 @@ export function renderDatalists(root) {
 }
 
 export const state = {
-  specs: [],   // {name, cpu, memGiB, disk, gpu}
-  // groups: {role, ipType, specIdx, count, maxPerBm|null, shared, exclusive}
+  specs: [],   // {name, cpu, memGiB, disk, gpu: {model: count}}
+  // groups: {role, ipType, specIdx, count, maxPerBm|null, shared, exclusive, noColocate}
+  // noColocate: no-colocate tag — same-tag groups in a step merge into ONE
+  // max/BM rule whose selector lists every member role (ADR-016/017).
   steps: [],
   // The fleet: one shared topology skeleton + one or more machine models.
   // A model's `roles` list makes it a dedicated pool (only those roles may
@@ -50,7 +52,7 @@ export const state = {
   fleet: {
     topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
     models: [
-      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] },
     ],
   },
   // buildMode "sequential" replays steps in order (the rollout);
@@ -61,10 +63,10 @@ export const state = {
 };
 
 const blank = {
-  spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: 0 }),
-  fmodel: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] }),
+  spec: () => ({ name: "", cpu: 8, memGiB: 32, disk: 200, gpu: {} }),
+  fmodel: () => ({ count: 3, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] }),
   group: () => ({ role: "worker", ipType: "routable", specIdx: 0, count: 3,
-                  maxPerBm: null, shared: false, exclusive: false }),
+                  maxPerBm: null, shared: false, exclusive: false, noColocate: "" }),
 };
 
 /* Topology knobs, in hierarchy order. The four that default to 1 collapse
@@ -76,7 +78,7 @@ const TOPO_DIMS = [
 ];
 
 export const specLabel = (s) =>
-  `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb${s.gpu ? `/${s.gpu}gpu` : ""}`;
+  `${s.name || "spec"} · ${s.cpu}c/${s.memGiB}g/${s.disk}gb${Object.keys(s.gpu || {}).length ? `/${gpuSummary(s.gpu)}` : ""}`;
 
 /* ── field helpers ─────────────────────────────────────────────────── */
 
@@ -141,6 +143,10 @@ function groupRow(g, gi, si) {
       <label class="mini"><span class="mini__label">max/BM</span>
         <input class="input" type="number" min="1" value="${g.maxPerBm ?? ""}"
           placeholder="∞" ${bind(`groups.${si}`, gi, "maxPerBm")}></label>
+      <label class="mini" title="No-colocate tag: groups with the same tag share ONE max/BM cap across their roles (same max/BM + sh required)">
+        <span class="mini__label">apart</span>
+        <input class="input" type="text" value="${esc(g.noColocate ?? "")}"
+          placeholder="tag" ${bind(`groups.${si}`, gi, "noColocate")}></label>
       ${checkbox("shared", g.shared, "sh",
         "Shared eco-system group: cluster_id becomes \"shared\" so the group spans clusters")}
       ${checkbox("exclusive", g.exclusive, "ex",
@@ -286,6 +292,7 @@ function applyFieldEdit(el) {
     if (!g) return;
     if (f === "maxPerBm") g[f] = el.value.trim() === "" ? null : Number(value);
     else if (f === "specIdx" || f === "count") g[f] = Number(value);
+    else if (f === "noColocate") g[f] = String(value).trim();
     else g[f] = value;
   } else if (sec === "fmodels") {
     const m = state.fleet.models[i];
@@ -360,11 +367,14 @@ function handleAction(action, i, stepIdx) {
 
 /* ── request assembly ──────────────────────────────────────────────── */
 
-const resources = (cpu, memGiB, disk, gpu = 0) => ({
+const resources = (cpu, memGiB, disk, gpu = {}) => ({
   cpu_cores: Math.max(0, Math.round(cpu)),
   memory_mib: Math.max(0, Math.round(memGiB * GiB)),
   storage_gb: Math.max(0, Math.round(disk)),
-  gpu_count: Math.max(0, Math.round(gpu)),
+  gpu: Object.fromEntries(
+    Object.entries(gpu || {}).filter(([, c]) => c > 0)
+      .map(([m, c]) => [m, Math.round(c)])
+  ),
 });
 
 const dim = (v) => Math.max(1, Math.round(Number(v) || 1));
@@ -497,6 +507,7 @@ function buildRequestWith({ withCandidates }) {
     const exclusiveRules = [];
     const failoverRules = [];
     const roleCounts = {};
+    const tagBuckets = new Map();   // `${cluster}|${tag}` → {cluster, tag, groups}
     st.groups.forEach((g, gi) => {
       const spec = state.specs[g.specIdx];
       if (!spec) throw new Error(`Step "${name}" group ${gi + 1} has no valid spec.`);
@@ -517,7 +528,18 @@ function buildRequestWith({ withCandidates }) {
         });
       }
       const selector = { cluster_id: cluster, ip_type: g.ipType, node_role: g.role };
-      if (g.maxPerBm != null && g.maxPerBm >= 1) {
+      const tag = (g.noColocate ?? "").trim();
+      if (tag) {
+        // Tagged groups are merged per (cluster, tag) below, once every
+        // group of the step has been seen; the tag needs a cap to share.
+        if (!(g.maxPerBm >= 1)) {
+          throw new Error(`Step "${name}" group ${gi + 1} (${g.role}) has no-colocate tag ` +
+            `"${tag}" but no max/BM — the tag is a cap shared across roles.`);
+        }
+        const key = `${cluster}|${tag}`;
+        if (!tagBuckets.has(key)) tagBuckets.set(key, { cluster, tag, groups: [] });
+        tagBuckets.get(key).groups.push(g);
+      } else if (g.maxPerBm != null && g.maxPerBm >= 1) {
         const id = `maxbm/${cluster}/${g.ipType}/${g.role}`;
         if (!emittedRules.has(id)) {
           emittedRules.add(id);
@@ -532,6 +554,50 @@ function buildRequestWith({ withCandidates }) {
         }
       }
     });
+    // No-colocate tags → ONE rule per (cluster, tag) whose selector lists the
+    // union of member roles (ADR-016): every member competes for the same
+    // per-BM slots, so control-plane + learner at max/BM=1 never share a
+    // machine. Mirrors mockgen's validation: one cap, one scope, and a role
+    // is either tagged in every group or in none (the selector matches by
+    // role, so an untagged sibling would be swept into the union silently).
+    const tagOfRole = new Map();   // `${cluster}|${role}` → tag | ""
+    for (const g of st.groups) {
+      const cluster = g.shared ? "shared" : name;
+      const k = `${cluster}|${g.role}`;
+      const t = (g.noColocate ?? "").trim();
+      if (tagOfRole.has(k) && tagOfRole.get(k) !== t) {
+        const [a, b] = [tagOfRole.get(k), t].sort();
+        throw new Error(a === ""
+          ? `Step "${name}": role "${g.role}" has no-colocate tag "${b}" in one group but ` +
+            "not in another — tag every group of that role, or none."
+          : `Step "${name}": role "${g.role}" appears under two no-colocate tags ` +
+            `("${a}", "${b}") — a role belongs to at most one.`);
+      }
+      tagOfRole.set(k, t);
+    }
+    const seenTags = new Map();   // tag → cluster (scope consistency)
+    for (const { cluster, tag, groups } of tagBuckets.values()) {
+      const scopeOf = (c) => (c === "shared" ? "shared" : "cluster");
+      if (seenTags.has(tag) && scopeOf(seenTags.get(tag)) !== scopeOf(cluster)) {
+        throw new Error(`Step "${name}": no-colocate tag "${tag}" mixes shared and ` +
+          "per-cluster groups — one rule can only select one cluster_id.");
+      }
+      seenTags.set(tag, cluster);
+      const caps = [...new Set(groups.map((g) => Math.round(g.maxPerBm)))];
+      if (caps.length > 1) {
+        throw new Error(`Step "${name}": no-colocate tag "${tag}" members disagree on ` +
+          `max/BM (${caps.join(", ")}) — a merged rule has one cap.`);
+      }
+      const roles = [...new Set(groups.map((g) => g.role))].sort();
+      const ips = new Set(groups.map((g) => g.ipType));
+      const ip = ips.size === 1 ? [...ips][0] : null;   // differing ip_types → any
+      const id = `maxbm/${cluster}/${ip ?? "*"}/${roles.join("+")}`;
+      if (emittedRules.has(id)) continue;
+      emittedRules.add(id);
+      const selector = { cluster_id: cluster, node_role: roles.length === 1 ? roles[0] : roles };
+      if (ip) selector.ip_type = ip;
+      maxPerBmRules.push({ group_id: id, selector, max_per_bm: caps[0] });
+    }
     // Failover follows the mockgen convention: per cluster, masters backed
     // by learners of the SAME cluster, N-1 over AGs; skipped when either
     // role is absent (the backup selector would resolve empty).
@@ -608,7 +674,7 @@ export function buildSizingRequest() {
 
 /* ── load an existing RolloutRequest back into the form ────────────── */
 
-const specKey = (r) => `${r.cpu_cores}|${r.memory_mib}|${r.storage_gb}|${r.gpu_count ?? 0}`;
+const specKey = (r) => `${r.cpu_cores}|${r.memory_mib}|${r.storage_gb}|${formatGpu(r.gpu)}`;
 
 /**
  * Best-effort reverse mapping (used when an example/upload is loaded).
@@ -639,7 +705,7 @@ export function loadIntoForm(req) {
         cpu: demand.cpu_cores ?? 0,
         memGiB: Math.round((demand.memory_mib ?? 0) / GiB),
         disk: demand.storage_gb ?? 0,
-        gpu: demand.gpu_count ?? 0,
+        gpu: demand.gpu ?? {},
       });
     }
     return byKey.get(key);
@@ -663,6 +729,7 @@ export function loadIntoForm(req) {
         maxPerBm: null,
         shared,
         exclusive: false,
+        noColocate: "",
       });
     }
     return { name: s.name || "", groups: [...groups.values()] };
@@ -672,18 +739,30 @@ export function loadIntoForm(req) {
   // Rules are emitted once, in the first step a group key appears, but a
   // shared group may recur in later steps — so match every rule against
   // ALL steps' groups. An unmatched or non-conventional rule → JSON mode.
+  // A selector's node_role may be a string or a LIST of roles (ADR-016: the
+  // no-colocate union), and ip_type may be absent (= any ip_type).
   const groupsFor = (sel, stepName) => {
     const wantShared = sel?.cluster_id === "shared";
     if (!wantShared && sel?.cluster_id !== stepName) return null;
+    if (sel?.node_role == null) return null;
+    const roles = new Set([].concat(sel.node_role));
     const hits = [];
     for (const st of steps) {
       if (!wantShared && st.name !== stepName) continue;
       for (const g of st.groups) {
-        if (g.shared === wantShared && g.role === sel?.node_role &&
-            g.ipType === sel?.ip_type) hits.push(g);
+        if (g.shared === wantShared && roles.has(g.role) &&
+            (sel.ip_type == null || g.ipType === sel.ip_type)) hits.push(g);
       }
     }
-    return hits.length ? hits : null;
+    // Every listed role must resolve to a group, or the request says more
+    // than the form can show.
+    if (!hits.length || ![...roles].every((r) => hits.some((g) => g.role === r))) return null;
+    // A wildcard-ip rule over ONE role spanning several ip groups would be
+    // rebuilt as per-ip rules (looser than the original) — keep JSON mode.
+    // A multi-role union rebuilds as a wildcard again, so it round-trips.
+    if (sel.ip_type == null && roles.size === 1 &&
+        new Set(hits.map((g) => g.ipType)).size > 1) return null;
+    return hits;
   };
   let failover = false;
   for (const st of req.steps) {
@@ -691,7 +770,13 @@ export function loadIntoForm(req) {
       if (rule.vm_ids?.length || !rule.selector) return false;
       const hits = groupsFor(rule.selector, st.name);
       if (!hits || !(rule.max_per_bm >= 1)) return false;
-      hits.forEach((g) => { g.maxPerBm = rule.max_per_bm; });
+      const roles = [].concat(rule.selector.node_role);
+      hits.forEach((g) => {
+        g.maxPerBm = rule.max_per_bm;
+        // A multi-role selector is a no-colocate union; the tag name is not
+        // in the request, so the joined role list stands in for it.
+        if (roles.length > 1) g.noColocate = roles.slice().sort().join("+");
+      });
     }
     for (const rule of st.exclusive_bm_rules ?? []) {
       if (rule.vm_ids?.length || !rule.selector) return false;
@@ -775,7 +860,7 @@ function deriveFleet(bms, vms) {
         cpu: c.cpu_cores ?? 0,
         memGiB: Math.round((c.memory_mib ?? 0) / GiB),
         disk: c.storage_gb ?? 0,
-        gpu: c.gpu_count ?? 0,
+        gpu: c.gpu ?? {},
         roles: [],
         ids: new Set(),
       });
@@ -859,8 +944,8 @@ function sameFleet(a, b) {
 
 function seed() {
   state.specs = [
-    { name: "M-8c32g", cpu: 8, memGiB: 32, disk: 200, gpu: 0 },
-    { name: "L-16c64g", cpu: 16, memGiB: 64, disk: 400, gpu: 0 },
+    { name: "M-8c32g", cpu: 8, memGiB: 32, disk: 200, gpu: {} },
+    { name: "L-16c64g", cpu: 16, memGiB: 64, disk: 400, gpu: {} },
   ];
   state.steps = [
     { name: "cluster-a", groups: [
@@ -877,7 +962,7 @@ function seed() {
   state.fleet = {
     topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 3, ags: 3 },
     models: [
-      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: 0, roles: [] },
+      { count: 6, cpu: 64, memGiB: 256, disk: 2000, gpu: {}, roles: [] },
     ],
   };
 }

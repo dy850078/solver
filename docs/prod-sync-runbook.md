@@ -277,10 +277,31 @@ make install
 > 現在 Makefile 會自動偵測:uv 在 PATH 就用 uv,否則用 venv+pip;
 > 兩者皆無時給出明確指示而不是難懂的 traceback。
 >
-> **⚠️ uv 不讀 `PIP_INDEX_URL`。** 實測:只設 `PIP_INDEX_URL` 時 uv 會**靜默
-> 改用公開 PyPI** —— 在封閉網路等於繞過安全邊界拉套件(或連不出去而失敗,
-> 錯誤訊息還指不到真正原因)。`make install` 偵測到「有設 PIP_INDEX_URL 卻沒設
-> UV_INDEX_URL」時會出警告,但**設對兩個變數才是解法**。
+> **⚠️ uv 不讀 `PIP_INDEX_URL`,也不讀 `pip.conf`。** 實測:只設
+> `PIP_INDEX_URL` 時 uv 會**靜默改用公開 PyPI** —— 在封閉網路等於繞過安全邊界
+> 拉套件(或連不出去而失敗,錯誤訊息還指不到真正原因)。更陰險的一種:index
+> 只寫在 `~/.config/pip/pip.conf`,環境變數一個都沒設 —— pip 一直好好的,
+> 某天機器上裝了 uv,`make install` 靜默換成 uv,下一次依賴有變動的 sync
+> 才炸出 `failed to fetch pypi.org/…`。
+>
+> `sync-from-upstream.sh` 的 Preflight 會檢查這件事:uv 在 PATH 上、卻只有
+> pip 側(環境變數或 pip.conf)有 index 設定時,直接印出那個 URL 和對應的
+> `export UV_INDEX_URL=…`。它是**警告不是硬擋**(開放網路下 uv 打公開 PyPI
+> 是合法的),看到就先設好再往下跑。
+>
+> 要讓每個 venv、每種啟動方式都吃到,用 uv 自己的設定檔而不是 `.bashrc`
+> (cron / systemd / `ssh host 'cmd'` 不讀 `.bashrc`):
+>
+> ```toml
+> # ~/.config/uv/uv.toml
+> [[index]]
+> url = "https://<內部索引>/simple"     # 跟 pip.conf 的 index-url 同一個
+> default = true
+> ```
+>
+> uv 0.4.23 之前不支援 `[[index]]`,改寫一行 `index-url = "…"`。pip.conf 有
+> `trusted-host` 的話,uv 對應的是最上層的 `allow-insecure-host = ["<host>"]`。
+> 環境變數優先於設定檔,兩邊都有就要指向同一處,否則各說各話。
 
 **驗證分兩層**,能跑多少跑多少:
 
@@ -373,7 +394,8 @@ cd solver-prod
 | | 列出 incoming commits ——「**這就是 MR 會 deploy 的東西**」 | |
 | Merge | 從 `origin/master` 開 `sync/YYYY-MM-DD`,merge mirror | conflict → upstream 動到你也客製的檔案 |
 | Sync log | 在根路徑的 `SYNC_LOG.md` append 一筆「時間戳 + upstream/base SHA + commit 清單」並 commit | 見下方說明 |
-| Install | `make install`（並在 `PIP_INDEX_URL` 有設但 `UV_INDEX_URL` 沒設時警告） | 內網 index 沒吃到 |
+| Preflight | remote 存在、工作區乾淨、分支名可用;uv 在 PATH 卻只有 pip 側有 index 設定時警告並印出 `export UV_INDEX_URL=…` | 內網 index 沒吃到（見 2.4 的 uv 註記） |
+| Install | `make install` | |
 | Test | `make test` | |
 | CLI | `make cli` 等效,斷言 `solver_status` 是 OPTIMAL/FEASIBLE | 只跑不夠,要看結果 |
 | Smoke | 真的起 server,斷言 `/health` 回 `{"status":"ok"}`、`POST /v1/placement/solve` 會解 | liveness probe 的契約 |

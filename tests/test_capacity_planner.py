@@ -1667,3 +1667,15 @@ class TestProcureEndpoint:
         assert data["requirement_coverage"][0]["new_buy"] >= 1
         import re
         assert re.fullmatch(r"[0-9a-f]{12}", data["config_fingerprint"])
+
+
+class TestSelectorListForm:
+    """_group_per_bm_cap must honour the list-of-roles selector form."""
+
+    def test_selector_matches_req_with_role_list(self):
+        from app.capacity_planner import _selector_matches_req
+        sel = GroupSelector(node_role=["control-plane", "control-plane-learner"])
+        assert _selector_matches_req(sel, make_req(cpu=8, role="control-plane"))
+        assert _selector_matches_req(sel, make_req(cpu=8, role="control-plane-learner"))
+        assert not _selector_matches_req(sel, make_req(cpu=8, role="worker"))
+        assert not _selector_matches_req(None, make_req(cpu=8, role="control-plane"))

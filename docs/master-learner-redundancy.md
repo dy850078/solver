@@ -2,8 +2,10 @@
 
 > **作者**: Claude Opus 4.7
 > **日期**: 2026-05-19
-> **狀態**: Draft (尚未實作)
+> **狀態**: Implemented
 > **相關分支**: `claude/master-learner-redundancy-ChL6a`
+>
+> 現況以 docs/constraints.md 與 ADR-010 / ADR-011 / ADR-016 為準；本文保留為設計理由。
 
 ---
 

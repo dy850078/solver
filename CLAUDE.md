@@ -26,6 +26,7 @@ app/
 ├── diagnostics.py   # Advisory diagnostics (e.g. spread_below_target)
 ├── server.py        # FastAPI app + CLI mode; UI gated behind ENABLE_UI
 ├── mockgen.py       # Mock request generator for testing/demo
+├── compare.py       # Compare sets — catalogs + referenced scenarios, each sized by mockgen, tabulated (ADR-018)
 └── examples_api.py  # Serves examples/ to the UI
 tests/               # pytest suite; test files mirror app/ modules
 examples/            # Canonical request JSONs (also used by README curl examples)
@@ -40,12 +41,22 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   `SPREAD_DIMENSIONS` in `app/models.py`.
 - **Constraint catalog** (labels used in code comments and tests — keep them):
   - **C1** — each VM assigned to exactly one BM (`assign[vm,bm]` BoolVars).
-  - **C2** — BM capacity per resource field (`RESOURCE_FIELDS`: cpu, mem, storage, gpu),
-    against `available_capacity = total - used`.
+  - **C2** — BM capacity per resource dimension (scalars cpu/mem/storage plus
+    one `gpu:<model>` dimension per GPU model — `resource_dims`/`res_get` in
+    `app/models.py`; GPU models are independent, never fungible), against
+    `available_capacity = total - used`.
   - **C3** — anti-affinity: per dimension d in `spread_on`, per bucket b:
     `Σ assign[vm∈group, bm∈b] ≤ cap_d`, default cap `⌈|VMs|/|buckets(d)|⌉`.
     Dimensions are AND'd, never the Cartesian product.
   - **C4** — max-per-BM: no single BM hosts more than `max_per_bm` VMs of a group.
+    Rule selectors (`GroupSelector`) take `node_role` as a string or a list
+    (role ∈ set, ADR-016): a C4 rule over a role *union* (e.g. control-plane ∪
+    control-plane-learner, cap 1) keeps those roles off each other's BMs while
+    auto C3/C5 still treat them as separate roles. Identity (which role string a
+    VM carries) is the scheduler's; policy (co-locate or not) is a rule.
+    The mock generator and both UI forms express that union rule via a
+    per-node-group `no_colocate_group` tag (ADR-017): same tag ⇒ one merged
+    rule; mockgen's fleet sizing and ground truth count per merged unit.
   - **C5** — failover N-1: per bucket b of `fault_domain`:
     `Σ(primary∈b) + Σ(backup∈b) ≤ |backup|`.
   - **C6** — exclusive occupancy: members of an `exclusive_bm_rules` group
@@ -115,9 +126,12 @@ Non-negotiable communication rules:
 
 ## Workflow
 
-- **Branching**: never push to `main`. Work on a feature branch
-  (`<topic>` or `claude/<topic>`), push with `git push -u origin <branch>`,
-  and open a PR only when the user asks. The human reviews every PR before merge.
+- **Branching**: the trunk is `release-to-gitlab` (`main` is stale — do not
+  base work on it or push to it). Work on a feature branch (`<topic>` or
+  `claude/<topic>`), push with `git push -u origin <branch>`, and open a PR
+  against `release-to-gitlab` only when the user asks. The human reviews every
+  PR before merge. Note: a fresh clone may only carry `main`; fetch the trunk
+  explicitly (`git fetch origin release-to-gitlab`) before comparing or basing.
 - **Commit** after each completed task with a descriptive message.
 - **ADR required for core changes**: any change to solver/splitter/models
   logic needs a decision record in `docs/decisions/` (use the `/adr` skill;

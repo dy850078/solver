@@ -1,0 +1,23 @@
+{
+  "_description": "ADR-016 scenario 1 via the mock generator: control-plane and control-plane-learner tagged with the same no_colocate_group, so ONE max_per_bm rule with a two-role list selector keeps all six VMs on six distinct BMs. Clear one tag to get scenario 2 (per-role rules, co-location allowed, ~3 BMs).",
+  "seed": 1,
+  "clusters": 1,
+  "vm_specs": {
+    "cp": { "cpu_cores": 8, "memory_mib": 32000, "storage_gb": 200 }
+  },
+  "node_groups": [
+    { "role": "control-plane",         "count": 3, "ip_type": "routable", "spec": "cp", "max_per_bm": 1, "no_colocate_group": "cp" },
+    { "role": "control-plane-learner", "count": 3, "ip_type": "routable", "spec": "cp", "max_per_bm": 1, "no_colocate_group": "cp" }
+  ],
+  "bm_profiles": [
+    {
+      "name": "ctrl",
+      "capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 }
+    }
+  ],
+  "racks": 6,
+  "ags": 3,
+  "anti_affinity": true,
+  "target_spread": { "ag": 3 },
+  "tightness": 1.0
+}

@@ -7,14 +7,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -31,14 +29,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -55,14 +51,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -79,14 +73,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -103,14 +95,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -127,14 +117,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -151,14 +139,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -175,14 +161,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -199,14 +183,12 @@
       "total_capacity": {
         "cpu_cores": 64,
         "memory_mib": 262144,
-        "storage_gb": 2000,
-        "gpu_count": 0
+        "storage_gb": 2000
       },
       "used_capacity": {
         "cpu_cores": 0,
         "memory_mib": 0,
-        "storage_gb": 0,
-        "gpu_count": 0
+        "storage_gb": 0
       },
       "topology": {
         "site": "site-1",
@@ -227,8 +209,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -250,8 +231,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -273,8 +253,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -296,8 +275,7 @@
           "demand": {
             "cpu_cores": 16,
             "memory_mib": 65536,
-            "storage_gb": 400,
-            "gpu_count": 0
+            "storage_gb": 400
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -319,8 +297,7 @@
           "demand": {
             "cpu_cores": 16,
             "memory_mib": 65536,
-            "storage_gb": 400,
-            "gpu_count": 0
+            "storage_gb": 400
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -347,8 +324,7 @@
           "demand": {
             "cpu_cores": 4,
             "memory_mib": 16384,
-            "storage_gb": 100,
-            "gpu_count": 0
+            "storage_gb": 100
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -370,8 +346,7 @@
           "demand": {
             "cpu_cores": 4,
             "memory_mib": 16384,
-            "storage_gb": 100,
-            "gpu_count": 0
+            "storage_gb": 100
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -393,8 +368,7 @@
           "demand": {
             "cpu_cores": 4,
             "memory_mib": 16384,
-            "storage_gb": 100,
-            "gpu_count": 0
+            "storage_gb": 100
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -416,8 +390,7 @@
           "demand": {
             "cpu_cores": 32,
             "memory_mib": 131072,
-            "storage_gb": 800,
-            "gpu_count": 0
+            "storage_gb": 800
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -439,8 +412,7 @@
           "demand": {
             "cpu_cores": 32,
             "memory_mib": 131072,
-            "storage_gb": 800,
-            "gpu_count": 0
+            "storage_gb": 800
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -462,8 +434,7 @@
           "demand": {
             "cpu_cores": 32,
             "memory_mib": 131072,
-            "storage_gb": 800,
-            "gpu_count": 0
+            "storage_gb": 800
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -490,8 +461,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -513,8 +483,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -536,8 +505,7 @@
           "demand": {
             "cpu_cores": 8,
             "memory_mib": 32768,
-            "storage_gb": 200,
-            "gpu_count": 0
+            "storage_gb": 200
           },
           "node_role": "master",
           "ip_type": "routable",
@@ -559,8 +527,7 @@
           "demand": {
             "cpu_cores": 16,
             "memory_mib": 65536,
-            "storage_gb": 400,
-            "gpu_count": 0
+            "storage_gb": 400
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -582,8 +549,7 @@
           "demand": {
             "cpu_cores": 16,
             "memory_mib": 65536,
-            "storage_gb": 400,
-            "gpu_count": 0
+            "storage_gb": 400
           },
           "node_role": "worker",
           "ip_type": "routable",
@@ -605,8 +571,7 @@
           "demand": {
             "cpu_cores": 16,
             "memory_mib": 65536,
-            "storage_gb": 400,
-            "gpu_count": 0
+            "storage_gb": 400
           },
           "node_role": "worker",
           "ip_type": "routable",

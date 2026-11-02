@@ -1,8 +1,8 @@
 # BM Packing 調校實驗報告
 
 > **日期**: 2026-05-19
-> **狀態**: 待測試 / 結果待填寫
-> **相關檔案**: `app/solver.py` (objective function), `app/models.py:150-171` (SolverConfig)
+> **狀態**: 待測試 / 結果待填寫 — 未執行（結果表空白）
+> **相關檔案**: `app/solver.py::_add_objective` (objective function), `app/models.py::SolverConfig`
 
 ---
 
@@ -53,7 +53,7 @@ headroom threshold) 設定下,solver 與 Excel LP 在多個維度上的差距。
 | 配置 | `bm_used` (/20) | `max_util%` | `worst_ag_load` | 一句話總結 |
 |---|---|---|---|---|
 | **REF (Excel)** |  |  | n/a | 理論下界 (純 min BM,無 anti-affinity) |
-| **DEFAULT** (10/8/90/1) |  |  |  | 目前線上設定 |
+| **DEFAULT** (10/8/90/1) |  |  |  | `examples/sample_request.json` 的設定（程式碼預設 w_slot_score=0） |
 | **C1** (10/8/**95**/1) |  |  |  | 只放寬 headroom |
 | **B1** (**20**/**2**/**85**/1) |  |  |  | 中度 packing,crossover ≈ 95% |
 | **A1** (**100**/**1**/**95**/1) |  |  |  | 積極 packing,接近 Excel |
@@ -78,7 +78,7 @@ headroom threshold) 設定下,solver 與 Excel LP 在多個維度上的差距。
 
 ## 3. 為什麼 solver 用較多 BM (假設)
 
-目前 solver 的目標函數 (`app/solver.py:662-699`) 是多目標加權:
+目前 solver 的目標函數 (`app/solver.py::_add_objective`) 是多目標加權:
 
 ```
 minimize  w_consolidation × Σ bm_used
@@ -87,9 +87,11 @@ minimize  w_consolidation × Σ bm_used
         + w_resource_waste× Σ splitter_waste
 ```
 
-`SolverConfig` (`app/models.py:163-171`) 預設值與目前線上設定:
+（另有 `w_procurement` / `w_committed_stock` / `w_procurement_balance` 三個 capacity-planning 專用項；純 placement 請求沒有 procurement/committed BM，這些項為 0，對本實驗無影響。）
 
-| 參數 | 程式碼預設 | **目前線上實際值** |
+`SolverConfig` (`app/models.py::SolverConfig`) 預設值與本實驗 baseline 使用的值（線上實際設定由 Go scheduler 決定，本文無法查證；baseline 取 `examples/sample_request.json`，它是 `examples/` 中唯一設 `w_slot_score=1` 的請求）:
+
+| 參數 | 程式碼預設 | **實驗 baseline（examples/sample_request.json）** |
 |---|---|---|
 | `w_consolidation` | 10 | 10 |
 | `w_headroom` | 8 | 8 |
@@ -115,16 +117,16 @@ w_headroom × (100 - threshold) ≈ w_consolidation
 
 ### 3.2 其他可能的原因
 
-1. **Anti-affinity 是硬約束** (`app/solver.py:382-442`):
+1. **Anti-affinity 是硬約束** (`app/solver.py::_add_anti_affinity_constraints`):
    同 group 的 VM 強制散布到不同 AG,等於下限就需要多台 BM。Excel LP 沒有這條。
-2. **`w_slot_score` 已啟用 (= 1)**: 詳見 §3.3,效應與 headroom 同方向 (傾向使用更多/更大 BM 以保留 slot)。
+2. **`w_slot_score` 在 baseline 啟用 (= 1；程式碼預設為 0)**: 詳見 §3.3,效應與 headroom 同方向 (傾向使用更多/更大 BM 以保留 slot)。
 3. **Solver time limit**: 大規模案例若提早停在 `FEASIBLE`,
    可能還沒收斂到最少 BM 的解。
 4. **Splitter 注入的 waste 項**: 對 BM 用量間接影響。
 
 ### 3.3 Slot Score 的行為與影響
 
-對應實作: `app/solver.py:542-655` (`_compute_slot_score_bonus`)。
+對應實作: `app/solver.py::_compute_slot_score_bonus`。
 
 ```
 slot_score(BM) = bm_used × Σ over_tshirt_sizes  min_dim( remaining / tshirt_demand )
@@ -204,7 +206,7 @@ w_slot_score × (該 BM 上預期會剩的 t-shirt slot 數) ≈ w_consolidation
 | 配置 ID | `w_consolidation` | `w_headroom` | `headroom_upper_bound_pct` | `w_slot_score` | 預期行為 |
 |---|---|---|---|---|---|
 | **REF** | — | — | — | — | Excel LP 純 min(BM) 結果,作為理論下界 |
-| **DEFAULT** | 10 | 8 | 90 | **1** | 目前線上設定 (baseline) |
+| **DEFAULT** | 10 | 8 | 90 | **1** | `examples/sample_request.json` 設定 (baseline) |
 | **C1** | 10 | 8 | **95** | 1 | 最小改動:只放寬 threshold |
 | **B1** | **20** | **2** | **85** | 1 | 中度 packing (crossover ≈ 95%) |
 | **A1** | **100** | **1** | **95** | 1 | 接近 Excel (crossover ≈ 95%,packing 優先) |

@@ -27,7 +27,13 @@ from .models import (
     SolverConfig,
     VM,
 )
-from .splitter import RESOURCE_FIELDS, pod_node_floor
+from .models import res_get, resource_dims
+from .splitter import pod_node_floor
+
+
+def _has_any_demand(r: Resources) -> bool:
+    """Any positive dimension (scalar or per-GPU-model)."""
+    return any(res_get(r, d) > 0 for d in resource_dims([r]))
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -44,14 +50,14 @@ def requirement_vm_floor(req: ResourceRequirement, config: SolverConfig) -> int:
     opposite question and must not be used here.)
     """
     specs = req.vm_specs if req.vm_specs is not None else config.vm_specs
-    specs = [s for s in (specs or []) if any(getattr(s, f) > 0 for f in RESOURCE_FIELDS)]
+    specs = [s for s in (specs or []) if _has_any_demand(s)]
     resource_floor = 0
     if specs:
-        for field in RESOURCE_FIELDS:
-            total = getattr(req.total_resources, field)
+        for dim in resource_dims([req.total_resources, *specs]):
+            total = res_get(req.total_resources, dim)
             if total <= 0:
                 continue
-            biggest = max(getattr(s, field) for s in specs)
+            biggest = max(res_get(s, dim) for s in specs)
             if biggest > 0:
                 resource_floor = max(resource_floor, _ceil_div(total, biggest))
     floor = max(resource_floor, pod_node_floor(req, config.max_pods_per_node))
@@ -62,7 +68,7 @@ def requirement_vm_floor(req: ResourceRequirement, config: SolverConfig) -> int:
 
 def _smallest_specs(req: ResourceRequirement, config: SolverConfig) -> list[Resources]:
     specs = req.vm_specs if req.vm_specs is not None else config.vm_specs
-    return [s for s in (specs or []) if any(getattr(s, f) > 0 for f in RESOURCE_FIELDS)]
+    return [s for s in (specs or []) if _has_any_demand(s)]
 
 
 def capacity_floor(
@@ -82,13 +88,21 @@ def capacity_floor(
     one. Requirements contribute their total_resources directly; their
     spec is the splitter's choice and volume is spec-independent.
     """
+    # Dimensions come from demand AND capacity: a demanded GPU model the
+    # fleet doesn't carry has cap 0 and is skipped here (this floor stays a
+    # valid under-estimate; the solve itself reports the infeasibility).
     floor = 0
-    for field in RESOURCE_FIELDS:
-        cap = getattr(capacity, field)
+    dims = resource_dims([
+        capacity,
+        *(vm.demand for vm in vms),
+        *(r.total_resources for r in reqs),
+    ])
+    for dim in dims:
+        cap = res_get(capacity, dim)
         if cap <= 0:
             continue
-        total = sum(getattr(vm.demand, field) for vm in vms)
-        total += sum(getattr(r.total_resources, field) for r in reqs)
+        total = sum(res_get(vm.demand, dim) for vm in vms)
+        total += sum(res_get(r.total_resources, dim) for r in reqs)
         if total > 0:
             floor = max(floor, _ceil_div(total, cap))
     return floor
@@ -142,8 +156,8 @@ def pack_floor(
     """
     def is_big(demand: Resources) -> bool:
         return any(
-            getattr(demand, f) * 2 > getattr(capacity, f) > 0
-            for f in RESOURCE_FIELDS
+            res_get(demand, d) * 2 > res_get(capacity, d) > 0
+            for d in resource_dims([demand, capacity])
         )
 
     count = sum(1 for vm in vms if is_big(vm.demand))

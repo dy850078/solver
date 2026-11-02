@@ -9,7 +9,7 @@
   },
   "bm_profiles": [
     { "name": "standard", "capacity": { "cpu_cores": 64, "memory_mib": 256000, "storage_gb": 2000 } },
-    { "name": "gpu", "capacity": { "cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu_count": 8 } }
+    { "name": "gpu", "capacity": { "cpu_cores": 96, "memory_mib": 384000, "storage_gb": 4000, "gpu": { "h200": 8 } } }
   ],
   "rooms": 2,
   "racks": 6,

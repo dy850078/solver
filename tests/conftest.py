@@ -16,26 +16,31 @@ def client():
     return TestClient(api)
 
 
-def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=0,
-            used_cpu=0, used_mem=0, used_disk=0,
+def make_bm(bm_id, cpu=64, mem=256_000, disk=2000, gpu=None,
+            used_cpu=0, used_mem=0, used_disk=0, used_gpu=None,
             ag="ag-1", dc="dc-1", room="room-1", rack="rack-1",
             network="", pool=""):
+    """gpu / used_gpu: per-model dicts, e.g. {"h200": 4}."""
     return Baremetal(
         id=bm_id,
-        total_capacity=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk, gpu_count=gpu),
-        used_capacity=Resources(cpu_cores=used_cpu, memory_mib=used_mem, storage_gb=used_disk),
+        total_capacity=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk,
+                                 gpu=gpu or {}),
+        used_capacity=Resources(cpu_cores=used_cpu, memory_mib=used_mem,
+                                storage_gb=used_disk, gpu=used_gpu or {}),
         topology=Topology(site="site-a", phase="p1", datacenter=dc, room=room, rack=rack, ag=ag),
         network=network,
         pool=pool,
     )
 
 
-def make_vm(vm_id, cpu=4, mem=16_000, disk=100,
+def make_vm(vm_id, cpu=4, mem=16_000, disk=100, gpu=None,
             role=NodeRole.WORKER, cluster="cluster-1",
             ip_type="routable", candidates=None, pinned_to=None):
+    """gpu: per-model demand dict, e.g. {"h200": 1}."""
     return VM(
         id=vm_id,
-        demand=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk),
+        demand=Resources(cpu_cores=cpu, memory_mib=mem, storage_gb=disk,
+                         gpu=gpu or {}),
         node_role=role,
         ip_type=ip_type,
         cluster_id=cluster,

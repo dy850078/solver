@@ -71,3 +71,21 @@ export async function generateMock(body) {
   });
   return jsonOrThrow(res);
 }
+
+export async function compareRun(body) {
+  const res = await fetch("/api/compare/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function compareResolve(body) {
+  const res = await fetch("/api/compare/resolve", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}

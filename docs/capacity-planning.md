@@ -2,7 +2,7 @@
 
 > **作者**: Claude (claude-code)
 > **日期**: 2026-06-30
-> **狀態**: Design — 待 review，尚未實作
+> **狀態**: Implemented（見 `app/capacity_planner.py`；本文保留設計理由與 Decision Log）
 > **相關元件**: `app/splitter.py`、`app/split_solver.py`、`app/solver.py`、`app/models.py`、`app/diagnostics.py`
 
 ---
@@ -41,7 +41,7 @@ solver 的前提下，補上三塊缺口：
 - 不做即時排程（即時 placement 仍走既有 `/v1/placement/solve`）。
 - 不做成本最佳化 / 採購議價 / 機型 TCO 比較（只回「台數」，不回「金額」）。
 - 不重排既有已上線節點（多期模擬中 placement 是黏住的，roll-forward 不 reshuffle）。
-- 本提案**只交付設計**，不含實作。
+- 本提案原先**只交付設計**；現已實作（`app/capacity_planner.py`），本文保留設計理由與 Decision Log。
 
 ---
 
@@ -69,10 +69,10 @@ PlacementRequest / SplitPlacementRequest
 | 需求 | 現況 | 缺口 |
 |---|---|---|
 | 需求 → 加幾台什麼 VM | ✅ `split-and-solve` | 無（已支援） |
-| 一台 VM 限制多少 Pod | ❌ `Resources` 無 pod 欄位 (`models.py:27`) | **缺口 1** |
-| 還沒買機器，要買幾台 BM | ❌ splitter 強制 `candidate_baremetals` 必填 (`splitter.py:102`)，只能放進既有庫存 | **缺口 2** |
+| 一台 VM 限制多少 Pod | ❌ `Resources` 無 pod 欄位 (`models.py::Resources`) | **缺口 1** |
+| 還沒買機器，要買幾台 BM | ❌ splitter 強制 `candidate_baremetals` 必填 (`splitter.py::ResourceSplitter._resolve_specs`)，只能放進既有庫存 | **缺口 2** |
 | 多 fab × 多季度的 in-stock / 缺口報表 | ❌ 單發、無時間維、無跨 fab 聚合，只回 `bm_used_count/bm_total_count` | **缺口 3** |
-| 碎片化呈現 | ⚠️ `slot_score` 只在 objective 內被優化 (`solver.py:864`)，未外露成報表 | **缺口 3** |
+| 碎片化呈現 | ⚠️ `slot_score` 只在 objective 內被優化 (`solver.py::VMPlacementSolver._compute_slot_score_bonus`)，未外露成報表 | **缺口 3** |
 | 採買量評估 | ❌ 無「缺口 → 採買台數」輸出 | **缺口 3** |
 
 ### 為什麼「BM 台數」這個舊指標會失真
@@ -177,14 +177,14 @@ class ProcurementCap(BaseModel):
 #### 平均擺放策略：跨 AG / 實體 DC，且考慮 in-stock 現況
 
 實務採買是**跨 3 個桶平均擺放**（目前是 3 AG，正轉向 3 實體 DC）。兩者引擎都天生支援：
-`ag` 與 `datacenter` **都已在 `SPREAD_DIMENSIONS`**（`models.py:18`）。所以只需一個參數
+`ag` 與 `datacenter` **都已在 `SPREAD_DIMENSIONS`**（`models.py::SPREAD_DIMENSIONS`）。所以只需一個參數
 指定要平衡哪個維度，數學完全一致 —— 這正好覆蓋「先用 3 AG 算、之後 1 AG 對應 1 實體 DC」
 的轉換：
 
 ```python
 # SolverConfig 新增
 procurement_spread_dimension: str = "ag"     # "ag" | "datacenter"（或其他 SPREAD_DIMENSIONS）
-w_procurement_balance: int = 3               # 平衡「結果可用量」的軟目標權重
+w_procurement_balance: int = 0               # 平衡「結果可用量」的軟目標權重（0 = 停用，實作預設）
 ```
 
 **關鍵：平均的是「採買後的結果可用量」，不是「採買台數」。** 若 ag-0 現有 in-stock 還很多、
@@ -233,10 +233,11 @@ resulting_available[b] = in_stock_available[b] + added_resources[b] − demand_p
   1. 主：`minimize Σ bm_buy_used`（總採買台數最少；未來可換成加權成本）。
   2. 軟：`minimize (max−min) resulting_available[b]`（平衡結果可用量，權重 `w_procurement_balance`）。
 
-實作上直接在 `solver.py` 的 CP-SAT 模型加一組「虛擬可採買 BM」，復用 `bm_used` 機制
-（`solver.py:770`）—— 採買 BM 就是「可選啟用、啟用要計數」的 BM。
+實作上由 `capacity_planner.py::_solve_once` 建立 `cp_model.CpModel`，把「虛擬可採買 BM」
+附加進 BM 池後交給既有 splitter + solver 聯合求解，復用 `bm_used` 機制
+（`solver.py::VMPlacementSolver._build_bm_used_vars`）—— 採買 BM 就是「可選啟用、啟用要計數」的 BM。
 
-缺口成因標註複用 `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py:308`）：
+缺口成因標註複用 `DiagnosticsBuilder._constraint_layer_check()`（`diagnostics.py`）：
 能區分缺口是 `capacity`（純資源不足）還是 `anti_affinity`（拓撲/AG 打散不足）造成 ——
 後者正是「單台自由落點」若沒有跨桶候選就會卡住的情形，也是本設計要 L1 的原因。
 
@@ -339,19 +340,19 @@ cluster 都不同，per-role 尺標也不「真」。既然都不可能真，就
 `reference_vm_spec` 只是儀表的尺，刻意不追求 per-cluster 精準。
 
 > **各 role 不同 spec 的支援性（設計檢視）**：**現有即支援**。`ResourceRequirement.vm_specs`
-> （`models.py:400`）每個 role 可帶自己的 spec pool，splitter `_resolve_specs`（`splitter.py:99`）
+> （`models.py::ResourceRequirement`）每個 role 可帶自己的 spec pool，splitter `_resolve_specs`（`splitter.py::ResourceSplitter`）
 > 「有就用、沒有 fallback config.vm_specs」（splitter 決策 C）。`SplitDecision` 本就 by role 分開。
 > `DemandEntry.vm_specs` 沿用此機制。故 master 用一組、worker 用另一組是既有能力，不需新增設計。
 
 #### 碎片率（健康度副指標）
 
 `stranded = Σ_bm (裝不下 min_useful_spec 的剩餘空間)`，即「名目 − 可落地」的細分，
-正是現有 `slot_score` 概念（`solver.py:864`），把它從 objective 內部指標**外露成報表欄位**。
+正是現有 `slot_score` 概念（`solver.py::VMPlacementSolver._compute_slot_score_bonus`），把它從 objective 內部指標**外露成報表欄位**。
 
 > **用 `min_useful_spec`（最小可用 spec）而非 `reference_vm_spec`（決議 #34）**：碎片是「連最小的
 > 都塞不下」才算真浪費；若用代表性 spec 會把「塞不下 32c 但塞得下 8c」的可用空間誤判為浪費。
 >
-> **命名切開撞名**：現有 `w_headroom`/`headroom_upper_bound_pct`（`models.py:311`）是「單台 BM 別
+> **命名切開撞名**：現有 `w_headroom`/`headroom_upper_bound_pct`（`models.py::SolverConfig`）是「單台 BM 別
 > 塞超過 90%」的利用率餘裕，與此處「還能長幾台」無關。故本儀表用 `remaining_node_slots` /
 > `reference_vm_spec`，不沿用 `headroom` 字樣。
 
@@ -378,7 +379,7 @@ cluster 現況。分工如下：
 提供 user 一張需求單填寫資源量，大部分**現有資料模型已支援**：
 
 - **「只在乎 CPU 就只填 CPU」** → splitter 對每個資源維度檢查 `if total_demand <= 0: continue`
-  （`splitter.py:171`），需求填 0 的維度**不會產生 coverage 約束**。忽略某些值天生可用。
+  （`splitter.py::ResourceSplitter._build_requirement`），需求填 0 的維度**不會產生 coverage 約束**。忽略某些值天生可用。
 - **顯式指定 VM spec** → `ResourceRequirement.vm_specs` 已存在；填了就只用這些 spec。
 - **Pod Count** → Phase 1 新增 `total_pods`。
 
@@ -392,7 +393,7 @@ cluster 現況。分工如下：
 ```python
 class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一個目標月
     cluster_id: str
-    node_role: NodeRole = NodeRole.WORKER
+    node_role: str = "worker"             # open string（ADR-010）；NodeRole 僅為建議目錄
     period: str                           # 目標月份 "2026-07"
     # 增量需求；維度層級填 0 = 該維度不約束（不代表 VM 該維度用量為 0）
     cpu_cores: int = 0
@@ -403,7 +404,7 @@ class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
-    fab: str | None = None                # 預設由 cluster 現有 footprint 推導（系統帶入）
+    fab: str = ""                         # "" = single-fab 模式（比對全部 BM）；由系統帶入
     allowed_bm_types: list[str] | None = None  # 決議 #38：per-cluster 限採買機型；None=fab 內任何機型
     # 註：無 demand_mode（一律增量）；無 cluster 現況欄位（系統經 Go Scheduler 帶入）
 ```
@@ -441,10 +442,14 @@ class DemandEntry(BaseModel):             # 需求帳本的一列；每列 = 一
 需要的資料：cluster 現有節點在每個 spread bucket 的**聚合數**（不需逐節點落點），
 由 Go Scheduler Service 從 Inventory 聚合後帶入：
 
+> **未實作**：`ExistingDistribution` 未進入 `app/models.py`；此能力（Option B）已由
+> ADR-012 pinned VMs（`VM.pinned_to`，C3/C4/C5 cap 依既有數 grandfather）/ ADR-013 rollout
+> `RolloutRequest.existing_vms` 取代。以下保留原設計文字。
+
 ```python
 class ExistingDistribution(BaseModel):
     cluster_id: str
-    node_role: NodeRole
+    node_role: str
     spread_dimension: str                 # "ag" | "datacenter"
     counts_per_bucket: dict[str, int]     # {"ag-0": 3, "ag-1": 1, "ag-2": 1}
 ```
@@ -452,10 +457,10 @@ class ExistingDistribution(BaseModel):
 **Role-aware 強度（決議）**：
 
 - **Master — 硬約束**：5 台 master 天然 `⌈5/3⌉=2` → **2/2/1**，正是既有 `AntiAffinityRule`
-  auto-cap 公式 `ceil(N/buckets)`（`models.py:180`），N 用「現有 + 新增」總數。add-master
+  auto-cap 公式 `ceil(N/buckets)`（`models.py::AntiAffinityRule`），N 用「現有 + 新增」總數。add-master
   時把現有 master 分佈當基線。
 - **Worker — 軟約束**：傾斜就靠 add-node 慢慢 balance，不擋 solve。沿用既有 `target_spread`
-  advisory 機制（`models.py:308`，達不到目標發 `spread_below_target` 而非失敗）+ 平衡目標
+  advisory 機制（`models.py::SolverConfig.target_spread`，達不到目標發 `spread_below_target` 而非失敗）+ 平衡目標
   （把新 worker 推向較空的桶）。
 
 **優雅處理既有違規（master 硬約束的邊界）**：若現有分佈本身已違規（歷史遺留，如 ag-0 已 3 台
@@ -468,13 +473,13 @@ class ExistingDistribution(BaseModel):
 同時發 advisory：「ag-0 現有 master 超標，建議重排（超出本工具範圍）」
 ```
 
-> ⚠️ 這是既有 splitter **刻意未做**的 topology-affinity-with-existing（`requirement-splitter.md`
+> ⚠️ 這是既有 splitter **刻意未做**的 topology-affinity-with-existing（`requirement-splitter-v2.md`
 > 決策 E）。本設計以「聚合基線數」的輕量形式補上，避免引入完整 `existing_vms` 模型。
 
 ### 缺口 3f — 現有 BM 上的 VM 佔用（per-BM，給 max_per_bm 用）
 
 缺口 3e 的「每 AG 聚合數」只夠**跨 AG 打散**。但「**同一台 BM 上同 type VM 的數量上限**」
-（`MaxPerBaremetalRule` / `auto_generate_max_per_bm`，`models.py:271`）是 **per-BM 粒度**，
+（`MaxPerBaremetalRule` / `auto_generate_max_per_bm`，`models.py`）是 **per-BM 粒度**，
 聚合到 AG 就不夠 —— 必須知道「具體哪台 BM 已有幾台某 group 的現有 VM」。否則 solver 會把新
 節點排到「資源夠、但 max_per_bm 已滿」的 BM 上，與 Go scheduler 真實放置打架。
 
@@ -489,6 +494,10 @@ class ExistingDistribution(BaseModel):
 **實際用途（決議）**：max_per_bm 主要用在 **master** —— group `(cluster_id, node_role=master)`、
 `max_per_bm=1`（一台 BM 最多 1 個同 cluster master）。故每台 BM 對此 group 的現有數只會是
 0/1，count-only 剛好且唯一必要。
+
+> **未實作**：`ExistingBmOccupancy` 未進入 `app/models.py`；Option B 已由 ADR-012 pinned VMs
+> / ADR-013 rollout `existing_vms` 取代（pinned VM 直接帶身分與落點，max_per_bm 自然計入）。
+> 以下保留原設計文字。
 
 ```python
 class ExistingBmOccupancy(BaseModel):
@@ -515,7 +524,7 @@ class ExistingBmOccupancy(BaseModel):
 > Option B（完整 `existing_vms`，即 splitter 決策 E 的 deferred 能力）列為未來，僅當出現
 > 「需區分特定 VM 身分」的約束（指定 VM 的 failover 配對、逐 VM affinity）時才值得付代價。
 
-**solver 改動極小**：max_per_bm 約束（`diagnostics.py:283` / solver 對應處）由
+**solver 改動極小**：max_per_bm 約束（`diagnostics.py::DiagnosticsBuilder._check_max_per_bm_feasibility` / solver 對應處）由
 `Σ(新 VM) ≤ cap` 擴成 `existing_count[bm][group] + Σ(新 VM) ≤ cap`，加一個常數而已。
 
 ### 缺口 3g — 網路域 (BGP) 隔離
@@ -527,10 +536,10 @@ class ExistingBmOccupancy(BaseModel):
 > **不進 `SPREAD_DIMENSIONS`**，走「候選過濾」那條路。
 
 **sizing / placement / 打散：現有機制已滿足。** 靠既有 `candidate_baremetals`
-（`models.py:135`、`ResourceRequirement.candidate_baremetals:403`）：
+（`models.py::VM.candidate_baremetals`、`ResourceRequirement.candidate_baremetals`）：
 
 - Go Scheduler 填 cluster A 的候選時只放 **BGP1 的 BM** → solver 自然只放 BGP1，零改動。
-- 打散自動正確：`reachable_buckets` 由候選 BM 算（`diagnostics.py:136`），只在「有 BGP1 rack
+- 打散自動正確：`reachable_buckets` 由候選 BM 算（`diagnostics.py::DiagnosticsBuilder._check_anti_affinity_feasibility`），只在「有 BGP1 rack
   的 AG」間展開。
 - 與 provenance 一致：BGP 是系統已知屬性，由 Go Scheduler 填候選，**不需 user 填**。
 
@@ -561,11 +570,13 @@ class ProcurementCap(BaseModel):
 
 ```python
 class CommittedStock(BaseModel):      # 選填輸入（空=不啟用）；已採購但待分配的庫存
-    fab: str
+    fab: str = ""                     # named-fab 模式下必填
     type_id: str
     count: int                        # 已買幾台
     bucket: str | None = None         # 已上架則填（→ 等同 in_stock）；浮動則 None（solver 決定落點）
-    network: str | None = None
+    network: str = ""
+    pool: str = ""                    # 專用 pool 目的地；"" = shared
+    available_from: str | None = None # "YYYY-MM" 生效月（僅 /plan 生效；/procure 忽略）
 ```
 
 兩種擺法：已上架（知道 AG/BGP）→ 直接當 `in_stock`；未上架（浮動）→ 當已購池，solver 決定落點
@@ -578,7 +589,7 @@ class CommittedStock(BaseModel):      # 選填輸入（空=不啟用）；已採
 class BaremetalType(BaseModel):
     type_id: str
     capacity: Resources
-    fab: str                          # 1U 假設；未來 GPU 多 U 用 rack_units 擴充
+    fab: str = ""                     # 1U 假設；未來 GPU 多 U 用 rack_units 擴充
 
 class ProcurementCap(BaseModel):      # 缺口 2：桶機位上限（缺此桶 → 理想化無上限）
     fab: str
@@ -593,13 +604,16 @@ class CapacityPlanRequest(BaseModel):
     procurement_types: list[BaremetalType]   # 每 fab 可多機型
     procurement_caps: list[ProcurementCap] = []  # 桶機位上限；缺 → 該桶理想化無上限（缺口 2）
     committed_stock: list[CommittedStock] = []   # 已採購待分配庫存（缺口 3h，選填）
-    existing_distributions: list[ExistingDistribution] = []  # 現有節點每桶聚合數（缺口 3e）
-    existing_bm_occupancy: list[ExistingBmOccupancy] = []     # 現有 VM per-BM 佔用（缺口 3f）
+    # existing_distributions / existing_bm_occupancy 未實作（見缺口 3e/3f 註記，ADR-012/013）
+    fleet_events: list[FleetEvent] = []          # 除役/釋放事件（E2.5，ADR-004）
+    anti_affinity_rules / max_per_bm_rules / failover_rules   # 規則，同 PlacementRequest
     config: SolverConfig              # 含 max_pods_per_node, vm_specs, reference_vm_spec,
                                       #    min_useful_spec, procurement_spread_dimension,
                                       #    w_procurement_balance
 
 # 規劃報表最細粒度 = (fab, bucket=AG/DC, network=BGP, month)；不下到個別 BM/rack
+# 以下為草案；實際欄位以 app/models.py::BucketMonthCell / PeriodFabReport / BudgetRow
+# 為準（BudgetRow 以 type_id 分機型，ADR-001；cell 另有 pool 座標，E2/S6）
 class BucketMonthCell(BaseModel):
     fab: str
     bucket: str                       # AG 或 DC（依 procurement_spread_dimension）
@@ -639,6 +653,10 @@ POST /v1/capacity/plan
   Request:  CapacityPlanRequest
   Response: CapacityReport
 ```
+
+> 實作端點（`app/server.py`）：`/v1/capacity/procure`（單 fab/單期，`solve_capacity_plan`）、
+> `/v1/capacity/plan`（多期 roll-forward，`solve_capacity_horizon`）、
+> `/v1/capacity/reconcile`（plan-vs-actual，`app/reconcile.py`）。
 
 ---
 
@@ -740,7 +758,7 @@ POST /v1/capacity/plan
 | 4 | 現階段 **per-fab 自給自足**，不跨 fab 調撥 | 簡化、可平行；符合現況 | 未來跨 fab 調撥：編排層加跨 fab placement 選項（多 fab 候選池 + 調撥成本權重），列為 Phase 4 |
 | 5 | 報表頭條用**可落地可用量**，名目量降為證據欄 | 名目量會因碎片/拓撲高估，無法支撐採買論述 | — |
 | 6 | 缺口用**全 cluster joint placement** 算，不 by-cluster 加總 `remaining_node_slots` | 各 cluster 搶同一 BM 池，加總會 double-count | — |
-| 7 | 需求單可**忽略部分維度**（填 0 不約束） | splitter 既有行為（`splitter.py:171`） | 報表仍照實反映被忽略維度的真實佔用 |
+| 7 | 需求單可**忽略部分維度**（填 0 不約束） | splitter 既有行為（`splitter.py::ResourceSplitter._build_requirement`） | 報表仍照實反映被忽略維度的真實佔用 |
 | 8 | 採買單位 = **單台 BM**（非整櫃） | 符合實際採購顆粒度 | 落點理想化後由 solver 在桶內分配（Q1；見 #28）|
 | 9 | 落點 = **L1：solver 在 fab 的 AG/DC 桶內分配** | 平衡「規劃可控」與「自動最佳化」 | 現階段理想化無機位上限（Q2；見 #28）|
 | 10 | 平均維度**可選 `ag` 或 `datacenter`**，用 `procurement_spread_dimension` | 兩者皆在 `SPREAD_DIMENSIONS`；覆蓋 AG→實體 DC 轉換（3AG 結果可 1:1 對應實體 DC）| — |

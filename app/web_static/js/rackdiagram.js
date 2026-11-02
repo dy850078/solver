@@ -57,19 +57,21 @@ function capacityRows(bm, assigns, request) {
   if (!total) return null;
   const demands = assigns.map((a) => lookupVm(a.vm_id, request)?.demand);
   if (demands.some((d) => !d)) return null;
-  const sum = (f) => demands.reduce((acc, d) => acc + (d[f] ?? 0), 0);
+  // Field accessors: scalars read the property; GPU is per-model
+  // (Resources.gpu = {model: count}), one micro-bar per model on this BM.
   const fields = [
-    ["cpu_cores", "cpu", (v) => `${v}c`],
-    ["memory_mib", "mem", (v) => v >= 1024 ? `${Math.round(v / 1024)}Gi` : `${v}Mi`],
-    ["storage_gb", "sto", (v) => v >= 1000 ? `${(v / 1000).toFixed(1)}T` : `${v}G`],
-    ["gpu_count", "gpu", (v) => `${v}`],
+    ["cpu", (r) => r?.cpu_cores ?? 0, (v) => `${v}c`],
+    ["mem", (r) => r?.memory_mib ?? 0, (v) => v >= 1024 ? `${Math.round(v / 1024)}Gi` : `${v}Mi`],
+    ["sto", (r) => r?.storage_gb ?? 0, (v) => v >= 1000 ? `${(v / 1000).toFixed(1)}T` : `${v}G`],
+    ...Object.keys(total.gpu ?? {}).sort().map((m) =>
+      [m, (r) => r?.gpu?.[m] ?? 0, (v) => `${v}`]),
   ];
   const rows = [];
-  for (const [f, label, fmt] of fields) {
-    const cap = total[f] ?? 0;
+  for (const [label, get, fmt] of fields) {
+    const cap = get(total);
     if (cap <= 0) continue;                    // no such resource on this BM
-    const pre = used[f] ?? 0;
-    const placed = sum(f);
+    const pre = get(used);
+    const placed = demands.reduce((acc, d) => acc + get(d), 0);
     rows.push({ label, pre, placed, cap, fmt, pct: (pre + placed) / cap });
   }
   if (!rows.length) return null;
@@ -202,7 +204,7 @@ function renderVm(vm) {
     data-cpu="${vm.demand?.cpu_cores ?? ""}"
     data-mem="${vm.demand?.memory_mib ?? ""}"
     data-storage="${vm.demand?.storage_gb ?? ""}"
-    data-gpu="${vm.demand?.gpu_count ?? ""}"
+    data-gpu="${escapeHtml(Object.entries(vm.demand?.gpu ?? {}).map(([m, c]) => `${c}×${m}`).join(" + "))}"
   >${badge}<span class="vm-chip__host">${escapeHtml(shown)}</span></span>`;
 }
 
@@ -268,7 +270,7 @@ function renderPanel(panel, showCapacity) {
 
 function vmTooltipNode(el) {
   const cpu = el.dataset.cpu, mem = el.dataset.mem, st = el.dataset.storage, gpu = el.dataset.gpu;
-  const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu} GPU` : "—";
+  const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu || "0"} GPU` : "—";
   return buildTooltipBody(
     el.dataset.vmHostname || el.dataset.vmId,
     [

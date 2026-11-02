@@ -1,0 +1,263 @@
+{
+  "_description": "Control-plane / learner NO-co-location policy (scenario 1). The scheduler always sends masters as node_role=control-plane and learners as control-plane-learner (identity, independent of policy). One explicit C4 rule with a LIST selector over both roles and max_per_bm=1 forbids any two of the six from sharing a BM. Auto C3 still groups per role, so masters spread across 3 AGs and learners spread across 3 AGs independently; the C5 failover rule still distinguishes primary/backup by role. For the co-location-ALLOWED policy (scenario 2) drop max_per_bm_rules and set config.auto_generate_max_per_bm=true + default_max_per_bm=1.",
+  "_curl": "curl -sX POST -H 'Content-Type: application/json' -d @examples/control_plane_learner_separate.json http://localhost:50051/v1/placement/solve | jq",
+  "vms": [
+    {
+      "id": "m-1",
+      "hostname": "k8s-control-plane-01",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    },
+    {
+      "id": "m-2",
+      "hostname": "k8s-control-plane-02",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    },
+    {
+      "id": "m-3",
+      "hostname": "k8s-control-plane-03",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    },
+    {
+      "id": "l-1",
+      "hostname": "k8s-control-plane-learner-01",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane-learner",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    },
+    {
+      "id": "l-2",
+      "hostname": "k8s-control-plane-learner-02",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane-learner",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    },
+    {
+      "id": "l-3",
+      "hostname": "k8s-control-plane-learner-03",
+      "demand": {
+        "cpu_cores": 8,
+        "memory_mib": 32000,
+        "storage_gb": 200
+      },
+      "node_role": "control-plane-learner",
+      "ip_type": "routable",
+      "cluster_id": "A",
+      "candidate_baremetals": [
+        "bm-r0-a",
+        "bm-r0-b",
+        "bm-r0-c",
+        "bm-r1-a",
+        "bm-r1-b",
+        "bm-r1-c"
+      ]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-r0-a",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-0",
+        "rack": "rack-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r0-b",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-0",
+        "rack": "rack-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r0-c",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-0",
+        "rack": "rack-3",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-r1-a",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-2",
+        "room": "room-1",
+        "rack": "rack-4",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-r1-b",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-2",
+        "room": "room-1",
+        "rack": "rack-5",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-r1-c",
+      "total_capacity": {
+        "cpu_cores": 64,
+        "memory_mib": 256000,
+        "storage_gb": 2000
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-2",
+        "room": "room-1",
+        "rack": "rack-6",
+        "ag": "ag-3"
+      }
+    }
+  ],
+  "max_per_bm_rules": [
+    {
+      "group_id": "A-control-plane-no-colocate",
+      "selector": {
+        "cluster_id": "A",
+        "node_role": [
+          "control-plane",
+          "control-plane-learner"
+        ]
+      },
+      "max_per_bm": 1
+    }
+  ],
+  "failover_rules": [
+    {
+      "rule_id": "cp-learners-by-room",
+      "primary": {
+        "cluster_id": "A",
+        "node_role": "control-plane"
+      },
+      "backup": {
+        "cluster_id": "A",
+        "node_role": "control-plane-learner"
+      },
+      "fault_domain": "room",
+      "policy": "n_minus_1"
+    }
+  ],
+  "config": {
+    "max_solve_time_seconds": 30,
+    "auto_generate_anti_affinity": true,
+    "target_spread": {
+      "ag": 3,
+      "room": 2
+    },
+    "w_consolidation": 10,
+    "w_headroom": 8,
+    "headroom_upper_bound_pct": 90
+  }
+}

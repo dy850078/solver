@@ -4,6 +4,8 @@
 // distributions) flows through the "Advanced overrides (JSON)" box, which is
 // deep-merged over the form-built params.
 
+import { parseGpu, formatGpu } from "./util.js";
+
 // Known-role catalog — datalist SUGGESTIONS only; roles are open strings
 // (ADR-010) and any ^[\w.-]+$ value is accepted. First six mirror the
 // backend NodeRole enum; the rest are common eco-system roles worth a
@@ -18,22 +20,22 @@ const DEFAULTS = {
   // Node groups: role is free text (known roles suggested); the same role may
   // appear in several groups (e.g. two worker specs / ip_types).
   node_groups: [
-    { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
-    { role: "worker", count: 3, ip_type: "routable", spec: "", max_per_bm: "" },
-    { role: "infra", count: 2, ip_type: "non-routable", spec: "", max_per_bm: "" },
+    { role: "master", count: 3, ip_type: "routable", spec: "", max_per_bm: "", no_colocate_group: "" },
+    { role: "worker", count: 3, ip_type: "routable", spec: "", max_per_bm: "", no_colocate_group: "" },
+    { role: "infra", count: 2, ip_type: "non-routable", spec: "", max_per_bm: "", no_colocate_group: "" },
   ],
   racks: 4, ags: 3,
   anti_affinity: true,
   target_spread_ag: 3,
   failover: false,
   tightness: 0.7,
-  vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu_count: 0 }],
-  bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu_count: 0, count: "" }],
+  vm_specs: [{ name: "standard", cpu_cores: 8, memory_mib: 32000, storage_gb: 200, gpu: {} }],
+  bm_profiles: [{ name: "standard", cpu_cores: 64, memory_mib: 256000, storage_gb: 2000, gpu: {}, count: "" }],
 };
 
 const IP_OPTIONS = ["routable", "non-routable", ""];
 
-const el = (tag, attrs = {}, children = []) => {
+export const el = (tag, attrs = {}, children = []) => {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "class") e.className = v;
@@ -66,16 +68,18 @@ function getSpecNames() {
     .filter(Boolean);
 }
 
-function specOptions(selected) {
+function specOptions(selected, names = null) {
   return [el("option", { value: "", text: "(default)" }),
-    ...getSpecNames().map((n) => el("option", { value: n, text: n, selected: n === selected }))];
+    ...(names ?? getSpecNames()).map((n) => el("option", { value: n, text: n, selected: n === selected }))];
 }
 
 // Keep every node group's spec dropdown in sync with the spec catalog.
-function refreshSpecDropdowns() {
-  if (!groupRowsEl) return;
-  const names = getSpecNames();
-  for (const sel of groupRowsEl.querySelectorAll(".group-spec")) {
+// Exported for the Compare page, which owns several group containers and
+// its own spec catalog (passes both); the mock form uses its module state.
+export function refreshSpecDropdowns(rootEl = groupRowsEl, names = null) {
+  if (!rootEl) return;
+  names = names ?? getSpecNames();
+  for (const sel of rootEl.querySelectorAll(".group-spec")) {
     const cur = sel.value;
     sel.innerHTML = "";
     sel.appendChild(el("option", { value: "", text: "(default)" }));
@@ -92,7 +96,18 @@ function ensureRoleDatalist() {
   document.body.appendChild(dl);
 }
 
-function groupRow(p = {}) {
+// Wraps any control (input or select) in the same label-above-field shell
+// miniField() uses, so node-group cards share the VM-spec / BM-profile look.
+function miniWrap(label, control, extra = "mini--num", title = "") {
+  const wrap = el("label", { class: `mini ${extra}` }, [el("span", { class: "mini__label", text: label }), control]);
+  if (title) wrap.title = title;
+  return wrap;
+}
+
+// One node-group card. `specNames` lets a caller with its own spec catalog
+// (Compare page) populate the spec dropdown; the mock form's rows read the
+// module-level catalog. The card only depends on its own parent container.
+export function groupRow(p = {}, { specNames = null } = {}) {
   // Roles are open strings (ADR-010): free text with the known catalog as
   // datalist suggestions, so ceph-mon / f5 / lb… need no frontend release.
   ensureRoleDatalist();
@@ -106,23 +121,75 @@ function groupRow(p = {}) {
   const count = el("input", { class: "input group-count", type: "number", min: 0, value: p.count ?? 1 });
   const ip = el("select", { class: "select group-ip" },
     IP_OPTIONS.map((o) => el("option", { value: o, text: o === "" ? "— none —" : o, selected: o === (p.ip_type ?? "routable") })));
-  const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || ""));
+  const spec = el("select", { class: "select group-spec" }, specOptions(p.spec || "", specNames));
   const maxbm = el("input", { class: "input group-maxbm", type: "number", min: 1, placeholder: "∞" });
   if (p.max_per_bm != null && p.max_per_bm !== "") maxbm.value = p.max_per_bm;
+  // No-colocate tag (ADR-016/017): groups sharing a tag merge into ONE
+  // max-per-BM rule whose selector lists every member role, so e.g.
+  // control-plane + control-plane-learner at max/BM=1 never share a BM.
+  // Members must agree on max/BM and scope; the backend rejects otherwise.
+  const tag = el("input", {
+    class: "input group-tag", type: "text", placeholder: "tag", spellcheck: "false",
+    value: p.no_colocate_group || "",
+  });
   const shared = el("label", { class: "group-flag", title: "Shared across all clusters (one pool, cluster_id=shared)" }, [
     el("input", { type: "checkbox", class: "group-shared", checked: p.scope === "shared" }),
-    el("span", { text: "sh" }),
+    el("span", { text: "shared" }),
   ]);
   const excl = el("label", { class: "group-flag", title: "Exclusive: each VM owns its BM outright (C6)" }, [
     el("input", { type: "checkbox", class: "group-excl", checked: !!p.exclusive }),
-    el("span", { text: "ex" }),
+    el("span", { text: "exclusive" }),
   ]);
+  const dup = el("button", { type: "button", class: "btn btn--ghost btn--small cap-dup", text: "⧉", title: "Duplicate this node group" });
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
-  const row = el("div", { class: "role-row role-row--group group-row" }, [role, count, ip, spec, maxbm, shared, excl, remove]);
+  // Same card shell as spec/profile rows: fields wrap by width, so the role
+  // keeps its full name and every field carries its own label.
+  const row = el("div", { class: "cap-row group-row" }, [
+    miniWrap("role", role, "mini--name"),
+    miniWrap("count", count),
+    miniWrap("ip_type", ip, "mini--sel"),
+    miniWrap("spec", spec, "mini--sel"),
+    miniWrap("max/BM", maxbm),
+    miniWrap("no-colocate tag", tag, "mini--num",
+      "Groups with the same tag share ONE max/BM cap across their roles (same max/BM + scope required)"),
+    el("div", { class: "mini--flags" }, [shared, excl]),
+    el("div", { class: "mini--acts" }, [dup, remove]),
+  ]);
+  // Structural edits don't fire input events, so tell listeners (draft
+  // autosave on the Compare page) explicitly.
+  const notify = () => row.parentElement?.dispatchEvent(new Event("input", { bubbles: true }));
+  dup.addEventListener("click", () => {
+    // The card's own spec dropdown already lists the caller's catalog.
+    const names = [...spec.options].map((o) => o.value).filter(Boolean);
+    const copy = readGroupRow(row) ?? { role: role.value, count: 1, ip_type: ip.value, spec: spec.value };
+    row.after(groupRow(copy, { specNames: names }));
+    notify();
+  });
   remove.addEventListener("click", () => {
-    if (groupRowsEl.querySelectorAll(".group-row").length > 1) row.remove();
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".group-row").length > 1) { row.remove(); parent.dispatchEvent(new Event("input", { bubbles: true })); }
   });
   return row;
+}
+
+// Reads one node-group card back into a NodeGroup object, or null when the
+// row is blank (count <= 0). Shared by the mock form and the Compare page.
+export function readGroupRow(row) {
+  const count = Number(row.querySelector(".group-count").value);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const g = {
+    role: row.querySelector(".group-role").value,
+    count,
+    ip_type: row.querySelector(".group-ip").value,
+    spec: row.querySelector(".group-spec").value,
+  };
+  const mx = Number(row.querySelector(".group-maxbm").value);
+  if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
+  const tag = row.querySelector(".group-tag").value.trim();
+  if (tag) g.no_colocate_group = tag;
+  if (row.querySelector(".group-shared").checked) g.scope = "shared";
+  if (row.querySelector(".group-excl").checked) g.exclusive = true;
+  return g;
 }
 
 // A self-labeling field (label above input) that wraps within a .cap-row.
@@ -132,39 +199,43 @@ function miniField(cls, label, val, { text = false, ph = "", extra = "mini--num"
   return el("label", { class: `mini ${extra}` }, [el("span", { class: "mini__label", text: label }), input]);
 }
 
-function specRow(p = {}) {
+// One VM-spec card. `onNameInput` fires on name edits so a caller can resync
+// dependent dropdowns (the mock form resyncs its node groups).
+export function specRow(p = {}, { onNameInput = refreshSpecDropdowns } = {}) {
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
   const row = el("div", { class: "cap-row spec-row" }, [
     miniField("spec-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
     miniField("spec-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
     miniField("spec-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
     miniField("spec-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
-    miniField("spec-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
+    miniField("spec-gpu", "gpu (model:n)", formatGpu(p.gpu), { text: true, ph: "h200:1" }),
     remove,
   ]);
-  row.querySelector(".spec-name").addEventListener("input", refreshSpecDropdowns);
+  row.querySelector(".spec-name").addEventListener("input", () => onNameInput());
   remove.addEventListener("click", () => {
-    if (specRowsEl.querySelectorAll(".spec-row").length > 1) { row.remove(); refreshSpecDropdowns(); }
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".spec-row").length > 1) { row.remove(); onNameInput(); }
   });
   return row;
 }
 
 // ─── Baremetal profile rows ───
 
-function bmRow(p = {}) {
+export function bmRow(p = {}) {
   const remove = el("button", { type: "button", class: "btn btn--ghost btn--small cap-remove", text: "✕" });
   const row = el("div", { class: "cap-row bm-row" }, [
     miniField("bm-name", "name", p.name, { text: true, ph: "name", extra: "mini--name" }),
     miniField("bm-cpu", "cpu", p.cpu_cores, { ph: "cpu" }),
     miniField("bm-mem", "mem (MiB)", p.memory_mib, { ph: "mem", extra: "mini--mem" }),
     miniField("bm-sto", "storage (GB)", p.storage_gb, { ph: "GB" }),
-    miniField("bm-gpu", "gpu", p.gpu_count ?? 0, { ph: "gpu" }),
+    miniField("bm-gpu", "gpu (model:n)", formatGpu(p.gpu), { text: true, ph: "h200:8" }),
     miniField("bm-cnt", "count", p.count, { ph: "auto" }),
     miniField("bm-roles", "roles (comma, blank = all)", (p.roles || []).join(","), { text: true, ph: "all roles", extra: "mini--roles" }),
     remove,
   ]);
   remove.addEventListener("click", () => {
-    if (bmRowsEl.querySelectorAll(".bm-row").length > 1) row.remove();
+    const parent = row.parentElement;
+    if (parent && parent.querySelectorAll(".bm-row").length > 1) row.remove();
   });
   return row;
 }
@@ -194,9 +265,7 @@ export function renderMockForm(container) {
   const addGroup = el("button", { type: "button", class: "btn btn--ghost btn--small", text: "+ Add node group" });
   addGroup.addEventListener("click", () => groupRowsEl.appendChild(groupRow()));
   container.appendChild(el("div", { class: "field" }, [
-    el("label", { class: "field-label", text: "Node groups (role · count · ip_type · spec · max/BM per cluster)" }),
-    el("div", { class: "role-row role-row--group role-row--head muted" },
-      [el("span", { text: "role" }), el("span", { text: "count" }), el("span", { text: "ip_type" }), el("span", { text: "spec" }), el("span", { text: "max/BM" }), el("span", {})]),
+    el("label", { class: "field-label", text: "Node groups (per cluster · same no-colocate tag = one max/BM cap across those roles)" }),
     groupRowsEl,
     addGroup,
   ]));
@@ -241,7 +310,7 @@ const num = (id) => {
   return v === "" ? null : Number(v);
 };
 
-function readCapacityRows(rootEl, rowSel, prefix, withCount) {
+export function readCapacityRows(rootEl, rowSel, prefix, withCount) {
   const out = [];
   for (const row of rootEl.querySelectorAll(rowSel)) {
     const name = row.querySelector(`.${prefix}-name`).value.trim();
@@ -251,7 +320,7 @@ function readCapacityRows(rootEl, rowSel, prefix, withCount) {
       cpu_cores: Number(row.querySelector(`.${prefix}-cpu`).value || 0),
       memory_mib: Number(row.querySelector(`.${prefix}-mem`).value || 0),
       storage_gb: Number(row.querySelector(`.${prefix}-sto`).value || 0),
-      gpu_count: Number(row.querySelector(`.${prefix}-gpu`).value || 0),
+      gpu: parseGpu(row.querySelector(`.${prefix}-gpu`).value),
     };
     out.push({ name: name || prefix, cap, row });
     if (withCount) {
@@ -260,6 +329,18 @@ function readCapacityRows(rootEl, rowSel, prefix, withCount) {
     }
   }
   return out;
+}
+
+// Reads baremetal-profile cards into BmProfile objects ({name, capacity,
+// count?, roles?}). Shared with the Compare page's BM model catalog.
+export function readBmRows(rootEl) {
+  return readCapacityRows(rootEl, ".bm-row", "bm", true).map((b) => {
+    const p = { name: b.name, capacity: b.cap };
+    if (b.count != null) p.count = b.count;
+    const rolesStr = b.row.querySelector(".bm-roles").value.trim();
+    if (rolesStr) p.roles = rolesStr.split(",").map((s) => s.trim()).filter(Boolean);
+    return p;
+  });
 }
 
 function deepMerge(base, over) {
@@ -281,28 +362,11 @@ export function readMockParams() {
 
   const node_groups = [];
   for (const row of groupRowsEl.querySelectorAll(".group-row")) {
-    const count = Number(row.querySelector(".group-count").value);
-    if (!Number.isFinite(count) || count <= 0) continue;
-    const g = {
-      role: row.querySelector(".group-role").value,
-      count,
-      ip_type: row.querySelector(".group-ip").value,
-      spec: row.querySelector(".group-spec").value,
-    };
-    const mx = Number(row.querySelector(".group-maxbm").value);
-    if (Number.isFinite(mx) && mx >= 1) g.max_per_bm = mx;
-    if (row.querySelector(".group-shared").checked) g.scope = "shared";
-    if (row.querySelector(".group-excl").checked) g.exclusive = true;
-    node_groups.push(g);
+    const g = readGroupRow(row);
+    if (g) node_groups.push(g);
   }
 
-  const bm_profiles = readCapacityRows(bmRowsEl, ".bm-row", "bm", true).map((b) => {
-    const p = { name: b.name, capacity: b.cap };
-    if (b.count != null) p.count = b.count;
-    const rolesStr = b.row.querySelector(".bm-roles").value.trim();
-    if (rolesStr) p.roles = rolesStr.split(",").map((s) => s.trim()).filter(Boolean);
-    return p;
-  });
+  const bm_profiles = readBmRows(bmRowsEl);
 
   const params = {
     clusters: num("mf-clusters") ?? 1,
@@ -378,6 +442,7 @@ export function populateMockForm(preset) {
     groups = p.node_groups.map((g) => ({
       role: g.role, count: g.count, ip_type: g.ip_type ?? "",
       spec: g.spec ?? "", max_per_bm: g.max_per_bm ?? "",
+      no_colocate_group: g.no_colocate_group ?? "",
       scope: g.scope ?? "cluster", exclusive: !!g.exclusive,
     }));
   } else {
@@ -416,7 +481,7 @@ export function populateMockForm(preset) {
   const profs = (p.bm_profiles && p.bm_profiles.length) ? p.bm_profiles : DEFAULTS.bm_profiles;
   rebuildCapRows(bmRowsEl, bmRow, profs, (prof) => {
     const cap = prof.capacity ?? prof;
-    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu_count: cap.gpu_count ?? 0, count: prof.count ?? "", roles: prof.roles ?? [] };
+    return { name: prof.name, cpu_cores: cap.cpu_cores, memory_mib: cap.memory_mib, storage_gb: cap.storage_gb, gpu: cap.gpu ?? {}, count: prof.count ?? "", roles: prof.roles ?? [] };
   });
 
   // Anything the form can't hold → Advanced box

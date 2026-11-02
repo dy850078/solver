@@ -1,11 +1,12 @@
 import { listExamples, getExample, solve, splitAndSolve, generateMock } from "./api.js";
 import { buildPanels, collectAgSet, renderRackDiagram, showRackEmpty } from "./rackdiagram.js";
 import { buildAgRackMatrix, renderMatrix } from "./matrix.js";
-import { rebuildColorScale, legendEntries, clusterLegendEntries } from "./colors.js";
-import { renderResult, renderStats, renderLegend, renderError } from "./summary.js";
+import { rebuildColorScale } from "./colors.js";
+import { renderResult, renderStats, renderLegend, renderError, renderTopologyLegend } from "./summary.js";
 import { applyFilter, buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
 import { renderMockForm, readMockParams, populateMockForm } from "./mockform.js";
+import { addMockParams, loadDraft, saveDraft } from "./compare-set.js";
 import { escapeHtml } from "./util.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -108,25 +109,6 @@ function rerenderViz() {
   }
 }
 
-// Two legend rows sharing one palette, split by treatment: cluster = solid
-// badge (matches the chips), AG = 15% tint swatch (matches the BM pills).
-function renderTopologyLegend(el) {
-  const clusters = clusterLegendEntries();
-  const ags = legendEntries();
-  const clRow = clusters.length < 2 ? "" :
-    `<span class="legend__dim">Cluster</span>` + clusters.map((e) => `
-      <span class="legend-item">
-        <span class="legend-badge" style="background:${e.color};color:${e.ink}">${escapeHtml(e.short)}</span>
-        ${escapeHtml(e.cluster)}
-      </span>`).join("");
-  const agRow = ags.length === 0 ? "" :
-    `<span class="legend__dim">AG</span>` + ags.map((e) => `
-      <span class="legend-item">
-        <span class="legend-tint" style="--ag-color:${e.color}"></span>
-        ${escapeHtml(e.ag)}
-      </span>`).join("");
-  el.innerHTML = clRow + agRow;
-}
 
 function mapToOptions(countMap) {
   return [...countMap.entries()]
@@ -185,6 +167,8 @@ async function populateExamples() {
       // rollout/ examples are RolloutRequests — they belong to rollout.html,
       // not this page's solve/split-and-solve editor.
       if (item.endpoint_hint === "rollout") continue;
+      // compare/ examples are CompareSets — they belong to compare.html.
+      if (item.endpoint_hint === "compare") continue;
       if (!groups.has(dir)) groups.set(dir, []);
       groups.get(dir).push({ ...item, file });
     }
@@ -253,6 +237,30 @@ function showMockStatus(kind, text) {
   el.className = `alert alert--${kind}`;
   el.textContent = text;
   el.classList.remove("hidden");
+}
+
+// Append the current mock configuration to the Compare page's draft set
+// (localStorage): specs / models / node groups go to its catalogs, the rest
+// of the knobs to defaults or the scenario's overrides.
+function addToCompareSet() {
+  let params;
+  try {
+    params = readMockParams();
+    $("#mock-error").classList.add("hidden");
+  } catch (err) {
+    $("#mock-error").classList.remove("hidden");
+    $("#mock-error").textContent = err.message;
+    return;
+  }
+  const set = loadDraft() || { name: "", vm_specs: {}, bm_models: {}, bundles: {}, defaults: {}, scenarios: [] };
+  const name = addMockParams(set, params);
+  saveDraft(set);
+  showMockStatus("ok", `Added scenario "${name}" to the compare set (${set.scenarios.length} total).`);
+  const link = document.createElement("a");
+  link.href = "compare.html";
+  link.textContent = "Open Compare →";
+  link.style.marginLeft = "6px";
+  $("#mock-status").appendChild(link);
 }
 
 // Generate a request from the form. When run=true, immediately solve it too.
@@ -463,6 +471,7 @@ function init() {
   }
 
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
+  $("#add-compare-btn").addEventListener("click", addToCompareSet);
   $("#mock-preset").addEventListener("change", (e) => loadMockPreset(e.target.value));
   $("#generate-btn").addEventListener("click", () => generateRequest({ run: false }));
   $("#generate-run-btn").addEventListener("click", () => generateRequest({ run: true }));

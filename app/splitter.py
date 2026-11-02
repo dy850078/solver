@@ -37,11 +37,11 @@ from .models import (
     SolverConfig,
     SplitDecision,
     VM,
+    res_get,
+    resource_dims,
 )
 
 logger = logging.getLogger(__name__)
-
-RESOURCE_FIELDS = ["cpu_cores", "memory_mib", "storage_gb", "gpu_count"]
 
 
 def has_demand(req: ResourceRequirement) -> bool:
@@ -51,7 +51,10 @@ def has_demand(req: ResourceRequirement) -> bool:
     return (
         req.total_pods > 0
         or (req.min_total_vms or 0) > 0
-        or any(getattr(req.total_resources, f) > 0 for f in RESOURCE_FIELDS)
+        or any(
+            res_get(req.total_resources, d) > 0
+            for d in resource_dims([req.total_resources])
+        )
     )
 
 
@@ -77,9 +80,9 @@ def spec_count_upper_bound(
     (buyable-BM sizing) so the two can never disagree.
     """
     upper = 0
-    for field in RESOURCE_FIELDS:
-        spec_val = getattr(spec, field)
-        total_val = getattr(req.total_resources, field)
+    for dim in resource_dims([spec, req.total_resources]):
+        spec_val = res_get(spec, dim)
+        total_val = res_get(req.total_resources, dim)
         if spec_val > 0 and total_val > 0:
             upper = max(upper, (total_val + spec_val - 1) // spec_val)
 
@@ -269,13 +272,16 @@ class ResourceSplitter:
             )
             return
 
-        # Resource coverage: Σ_s count[s] × spec[s].field ≥ total.field
-        for field in RESOURCE_FIELDS:
-            total_demand = getattr(req.total_resources, field)
+        # Resource coverage: Σ_s count[s] × spec[s].dim ≥ total.dim
+        # (per dimension: the scalars + one per GPU model; only gpu-bearing
+        # specs contribute on a "gpu:<model>" dim, so demand for a model no
+        # spec carries stays uncovered → infeasible, never silently coerced)
+        for dim in resource_dims([req.total_resources, *specs]):
+            total_demand = res_get(req.total_resources, dim)
             if total_demand <= 0:
                 continue
             allocated = sum(
-                self.count_vars[(req_idx, si)] * getattr(specs[si], field)
+                self.count_vars[(req_idx, si)] * res_get(specs[si], dim)
                 for si in range(len(specs))
                 if (req_idx, si) in self.count_vars
             )
@@ -321,12 +327,12 @@ class ResourceSplitter:
         terms = []
         for req_idx, req in enumerate(self.requirements):
             specs = self._req_specs.get(req_idx, [])
-            for field in RESOURCE_FIELDS:
-                total_demand = getattr(req.total_resources, field)
+            for dim in resource_dims([req.total_resources, *specs]):
+                total_demand = res_get(req.total_resources, dim)
                 if total_demand <= 0:
                     continue
                 allocated = sum(
-                    self.count_vars[(req_idx, si)] * getattr(specs[si], field)
+                    self.count_vars[(req_idx, si)] * res_get(specs[si], dim)
                     for si in range(len(specs))
                     if (req_idx, si) in self.count_vars
                 )

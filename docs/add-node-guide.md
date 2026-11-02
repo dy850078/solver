@@ -125,7 +125,8 @@ master 全擠在 2 個 AG)只產生 `spread_below_target` advisory(diagnostics),
    完整終態(給驗證與 UI 用)。
 
 範例請求/回應與逐欄說明見
-[Enhancement Proposal §情境 1](rollout-simulation-and-sizing.md#情境-1add-node加節點)。
+[Enhancement Proposal §情境 1](rollout-simulation-and-sizing.md#情境-1add-node加節點);
+可直接執行的範例:`make cli INPUT=examples/pinned_add_node.json`。
 
 **常見 INPUT_ERROR**:
 
