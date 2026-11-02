@@ -1,7 +1,7 @@
 # Go Scheduler 實作指南：VM Placement Solver API
 
-> **適用版本**: `main`（含 ADR-010～016）
-> **最後更新**: 2026-09-18
+> **適用版本**: `release-to-gitlab`（含 ADR-010～019）
+> **最後更新**: 2026-11-02
 
 ---
 
@@ -14,6 +14,7 @@
 5. [Response 格式說明](#5-response-格式說明)
 6. [Hostname 分配指引（Scheduler 端邏輯）](#6-hostname-分配指引scheduler-端邏輯)
 7. [新舊 endpoint 對照](#7-新舊-endpoint-對照)
+8. [藍圖調度（Blueprint）實作細節](#8-藍圖調度blueprint實作細節)
 
 ---
 
@@ -35,6 +36,10 @@ Scheduler                             Solver
 
 **問題**：若 scheduler 猜錯 VM 數量（例如 anti-affinity 只有 2 個 AG 卻送 3 台 master），
 solver 回傳 INFEASIBLE，scheduler 要自己重試，沒有系統性的最優解。
+
+> 「舊方式」只是指它比 split-and-solve 早出現，**並未淘汰**。VM 的規格與數量已經確定時（例如藍圖調度，
+> 見[第 8 節](#8-藍圖調度blueprint實作細節)），`/solve` 就是正確的端點：`/split-and-solve` 在
+> `requirements` 為空時產生的請求和結果都與 `/solve` 相同，只是多一層空轉。
 
 ---
 
@@ -601,3 +606,272 @@ Solver 是 stateless 最佳化工具，不知道 cluster 目前有哪些 VM 或�
 | INFEASIBLE 重試 | Scheduler 猜錯要自行重試 | Solver 在同一次 solve 內自動找可行解 |
 | Add node 複雜度 | 需自行計算幾台 + 選哪種 spec | 只需填總預算 + 正確的 `used_capacity` |
 | `config.vm_specs` | Slot score 評估用 | 同上，同時也是 splitter 的 spec pool |
+| 適用情境 | VM 已確定（含藍圖調度、add-node 帶 `pinned_to`） | 只知道資源預算、要 solver 決定台數與規格 |
+
+---
+
+## 8. 藍圖調度（Blueprint）實作細節
+
+> 設計決策與取捨見 [ADR-019](decisions/ADR-019-blueprint-scheduler-side-planning.md)，
+> 可操作的流程模擬見 [`blueprint-design.html`](blueprint-design.html)。本節只講 scheduler 要寫的程式。
+
+### 8.1 概念與前提
+
+一批 BM（一個 `bm_group`）事先確定要給哪幾個 cluster 時，scheduler 先對**所有 cluster 一起**求解一次，
+把結果存成藍圖（blueprint），之後逐批建置都照藍圖放，不再每批重新決定位置。
+
+- **solver 不需要任何改動**，全部只用 `POST /v1/placement/solve`。藍圖的狀態（世代、哪些已建）存在
+  inventory DB，solver 維持無狀態。
+- 前提：每台 VM 的 `id`、`hostname`、`demand` 在規劃時就已確定（明確 VM，不經 splitter）。
+- 不要用 `/v1/placement/rollout` 做重規劃：rollout 是逐批貪婪的模擬，會把藍圖要消除的路徑依賴帶回來。
+
+### 8.2 唯一的請求建構器
+
+藍圖流程的四種操作（規劃、逐批執行、動態插單、重規劃）都由**同一個函式**產生請求，差別只在每台 VM
+帶哪種身分。**每次都帶整份 active 藍圖的所有 VM**，不只本批。
+
+| 藍圖中 VM 的狀態 | 請求裡的寫法 | 意義 |
+|---|---|---|
+| 已建（`blueprint_placement.status = placed`） | `"pinned_to": "<實際 BM>"`, `"candidate_baremetals": ["<實際 BM>"]` | 既成事實，solver 固定它並計入 C2–C6 |
+| 未建、鎖定（`planned`） | `"candidate_baremetals": ["<藍圖 BM>"]` | 必須放在藍圖指定的 BM |
+| 自由（規劃、動態插單、重規劃時放開的 VM） | `"candidate_baremetals": [池內所有合格 BM]` | 由 solver 決定 |
+
+為什麼每次都要帶整份藍圖，而不是只帶本批：
+
+1. **auto 規則的上限依請求中的 VM 數計算。** C3 auto 的 cap 是 `⌈群組 VM 數 / bucket 數⌉`。只帶群組的一部分時
+   cap 變小，藍圖裡合法的位置會被誤判 INFEASIBLE（實測：5 台 master 的群組，藍圖讓其中 2 台同住 ag-1，
+   整組時 cap=2 合法；只帶這 2 台時 cap=1，回 INFEASIBLE）。
+2. **failover 規則的 selector 一台都對不到會回 `INPUT_ERROR`**（C3/C4/C6 只會略過或發 advisory）。
+   帶整份藍圖，primary 和 backup 永遠都在。
+3. **規則可以原封不動傳入**，scheduler 不用寫「依批次過濾規則」的邏輯，批次也可以任意切分
+   （例如同一個 cluster 分兩批建）。
+
+成本很低：鎖定和 pinned 的 VM 都只有一個候選，presolve 直接把它們固定。實測 76 台 VM 的整份藍圖，
+每次驗證約 0.02 秒。
+
+其餘欄位的規則：
+
+- `baremetals[].used_capacity` 一律填 **inventory 真值**，包含已建 VM 和任何藍圖外的消耗。solver 會自己扣掉
+  pinned VM 的 demand 再加回來（ADR-012），不要自己先扣。
+- pinned VM 的 `demand` 要填 inventory 記錄的值，不是使用者重新輸入的值，否則扣除會對不上。
+- 四種規則（`anti_affinity_rules` / `max_per_bm_rules` / `exclusive_bm_rules` / `failover_rules`）和 `config`
+  跟規劃時**完全相同**，存在藍圖裡，每次原樣帶入。
+
+### 8.3 四種操作的請求
+
+以下範例：BM 池 3 台（各在一個 AG），cluster-a 和 cluster-b 各 3 台 master（8 核 / 32 GiB / 100 GB）。
+
+**① 規劃**：所有 VM 自由，一次聯合求解。
+
+```json
+{
+  "vms": [
+    {"id": "cluster-a-master-1", "hostname": "cluster-a-master-1", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]},
+    {"id": "cluster-a-master-2", "hostname": "cluster-a-master-2", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]},
+    {"id": "cluster-a-master-3", "hostname": "cluster-a-master-3", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]},
+    {"id": "cluster-b-master-1", "hostname": "cluster-b-master-1", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]},
+    {"id": "cluster-b-master-2", "hostname": "cluster-b-master-2", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]},
+    {"id": "cluster-b-master-3", "hostname": "cluster-b-master-3", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]}
+  ],
+  "baremetals": [
+    {"id": "bm-1", "hostname": "bare-001",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-1", "ag": "ag-1"}},
+    {"id": "bm-2", "hostname": "bare-002",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-2", "ag": "ag-2"}},
+    {"id": "bm-3", "hostname": "bare-003",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 0, "memory_mib": 0, "storage_gb": 0},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-3", "ag": "ag-3"}}
+  ],
+  "config": {"auto_generate_anti_affinity": true, "target_spread": {"ag": 3}, "max_solve_time_seconds": 30}
+}
+```
+
+回應的 `assignments` 就是藍圖。這個範例實際得到：
+
+| VM | 藍圖 BM |
+|---|---|
+| cluster-a-master-1 / -2 / -3 | bm-2 / bm-1 / bm-3 |
+| cluster-b-master-1 / -2 / -3 | bm-2 / bm-1 / bm-3 |
+
+把整個請求、回應和 `config_fingerprint` 存進 `blueprint`，每台 VM 的位置存進 `blueprint_placement`
+（`status = planned`）。
+
+**② 逐批執行**（cluster-a 已建好，現在建 cluster-b）：cluster-a 改成 pinned，cluster-b 鎖在藍圖 BM，
+`used_capacity` 反映 cluster-a 已用掉的資源。
+
+```json
+{
+  "vms": [
+    {"id": "cluster-a-master-1", "hostname": "cluster-a-master-1", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "pinned_to": "bm-2", "candidate_baremetals": ["bm-2"]},
+    {"id": "cluster-a-master-2", "hostname": "cluster-a-master-2", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "pinned_to": "bm-1", "candidate_baremetals": ["bm-1"]},
+    {"id": "cluster-a-master-3", "hostname": "cluster-a-master-3", "node_role": "master",
+     "cluster_id": "cluster-a", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "pinned_to": "bm-3", "candidate_baremetals": ["bm-3"]},
+    {"id": "cluster-b-master-1", "hostname": "cluster-b-master-1", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-2"]},
+    {"id": "cluster-b-master-2", "hostname": "cluster-b-master-2", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-1"]},
+    {"id": "cluster-b-master-3", "hostname": "cluster-b-master-3", "node_role": "master",
+     "cluster_id": "cluster-b", "ip_type": "routable",
+     "demand": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "candidate_baremetals": ["bm-3"]}
+  ],
+  "baremetals": [
+    {"id": "bm-1", "hostname": "bare-001",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-1", "ag": "ag-1"}},
+    {"id": "bm-2", "hostname": "bare-002",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-2", "ag": "ag-2"}},
+    {"id": "bm-3", "hostname": "bare-003",
+     "total_capacity": {"cpu_cores": 64, "memory_mib": 262144, "storage_gb": 2000},
+     "used_capacity": {"cpu_cores": 8, "memory_mib": 32768, "storage_gb": 100},
+     "topology": {"site": "site-a", "room": "room-1", "rack": "rack-3", "ag": "ag-3"}}
+  ],
+  "config": {"auto_generate_anti_affinity": true, "target_spread": {"ag": 3}, "max_solve_time_seconds": 30}
+}
+```
+
+如果本批只建 cluster-b 的一部分，請求**完全一樣**，只是 scheduler 執行時只挑本批的 VM。
+還沒輪到的 VM 也在請求裡鎖著，它們的 assignment 回來後忽略即可。
+
+**③ 動態插單**（mixed 池，藍圖執行中途來了一台藍圖外的 VM）：用 ② 的請求，`vms` 再加一台自由 VM。
+
+```json
+{"id": "adhoc-worker-1", "hostname": "adhoc-worker-1", "node_role": "worker",
+ "cluster_id": "adhoc", "ip_type": "routable",
+ "demand": {"cpu_cores": 16, "memory_mib": 65536, "storage_gb": 200},
+ "candidate_baremetals": ["bm-1", "bm-2", "bm-3"]}
+```
+
+未建的藍圖 VM 都還鎖在藍圖 BM 上，佔著位置，所以 solver 只會把動態 VM 放在**不侵蝕藍圖**的地方。
+放不下就回 INFEASIBLE，代表這張動態單要拒絕或排隊，藍圖不受影響。只執行 `adhoc-worker-1` 的 assignment。
+
+**④ 重規劃**：見 8.5。請求也是 ② 的形狀，差別只在把哪些未建 VM 的 `candidate_baremetals` 放開成池內所有 BM。
+
+### 8.4 回應處理
+
+| `solver_status` | 意義 | scheduler 的處置 |
+|---|---|---|
+| `OPTIMAL` / `FEASIBLE` | 藍圖在當下現實中仍可行 | 先斷言每台鎖定 VM 的 `baremetal_id` 都等於藍圖 BM（候選只有一台，必然成立；不成立代表請求組錯了）。然後只執行**本批、且 `pinned=false`** 的 assignment；其他未建 VM 的結果忽略 |
+| `INFEASIBLE` | 發生 drift：現實和藍圖對不上 | 讀 `diagnostics.vms_with_no_eligible_bm`（沒有地方放的 VM）和 `diagnostics.constraint_check.failed_at`（卡在哪類約束），交給 8.5 的局部重規劃。名單可能包含未來批次的 VM，那也代表藍圖已經過期 |
+| `INPUT_ERROR: …` | 請求違反契約，完整清單在 `diagnostics.input_errors` | 大多是 scheduler 的 bug，見下表；不要重試同一個請求 |
+| `UNKNOWN` | 時間內找不到解（全鎖定的請求不會發生，只可能出現在規劃或重規劃） | 提高 `config.max_solve_time_seconds` 重試，或縮小範圍 |
+
+藍圖流程中常見的 `INPUT_ERROR`：
+
+| 錯誤訊息開頭 | 原因 | 處置 |
+|---|---|---|
+| `VM '…' is pinned to unknown BM` | 已建 VM 所在的 BM 不在 `baremetals` 裡（BM 下架，或請求漏帶） | `baremetals` 要包含所有已建 VM 的宿主；BM 真的下架就把該 VM 視為已失去，走重規劃 |
+| `VM '…' is pinned to '…' but its candidate_baremetals …` | pinned VM 的候選清單不含它的宿主 | pinned VM 的 `candidate_baremetals` 一律設成 `[pinned_to]` |
+| `pinned host '…' is over-committed` / `pinned demand on BM '…' exceeds its used_capacity` | `used_capacity` 沒有包含已建 VM，或 demand 跟 inventory 對不上 | `used_capacity` 用 inventory 真值，pinned VM 的 `demand` 用 inventory 記錄值 |
+| `failover rule '…': primary/backup selector matches no VMs` | 請求只帶了部分藍圖 | 照 8.2，每次帶整份藍圖 |
+| `duplicate VM '…' in vms list` | 動態插單的 id 和藍圖 VM 撞名 | 動態 VM 用不會和藍圖重複的 id |
+
+### 8.5 重規劃：先局部，再全面
+
+觸發條件：驗證回 `INFEASIBLE`（被動），或後續 cluster 的需求改了（主動）。
+
+1. **局部重規劃**：只把 `vms_with_no_eligible_bm` 點名的 VM 放開成自由，其他未建 VM 維持鎖定，已建的
+   維持 pinned。成功就只有這幾台換位置。
+2. **全面重規劃**：局部失敗（例如需要騰出整個 AG）時，才把**所有未建 VM** 放開。
+3. 兩種都失敗：池的容量已經不夠，需要擴池或減少需求，這要人決定。
+
+為什麼要分兩層：solver 沒有「盡量維持原位置」的目標項，全面重規劃會挑另一個等價的最優解。實測同一個
+drift（76 台 VM 的範例，一台 BM 被藍圖外的消耗填滿）：局部重規劃移動 **4** 台未建 VM，全面重規劃移動
+**51 / 57** 台，等於整份藍圖重洗。
+
+已建 VM 永遠帶 `pinned_to`，solver 不會搬它們；C3/C4/C5 對既有分布有 grandfathering（ADR-012），
+所以已建部分本身不會讓重規劃變成 INFEASIBLE。重規劃成功後寫入新世代藍圖（8.7）。
+
+主動重規劃（需求改版）時，把改版後的 VM 清單當作「未建」重新組請求；被刪掉的未建 VM 從藍圖移除，
+新加的 VM 以自由身分加入。
+
+### 8.6 動態插單與 bm_group 政策
+
+建議在 `bm_group` 上設一個 `policy` 欄位，決定這個池接不接受藍圖外的請求：
+
+| policy | 動態單的處理 |
+|---|---|
+| `blueprint` | 拒收動態單 |
+| `mixed` | 照 8.3 ③，把動態 VM 放進整份藍圖請求一起解；放不下就拒單或排隊 |
+| `dynamic` | 沒有藍圖，維持現行的逐筆調度 |
+
+不建議在 mixed 池用「只看剩餘容量、不帶藍圖」的方式放動態單：它會吃掉藍圖預留的位置，等到下一批驗證
+才 INFEASIBLE，觸發重規劃。
+
+### 8.7 DB 寫入與狀態轉換
+
+資料表設計見 ADR-019 附錄與 `blueprint-design.html` 第 4 節。scheduler 要遵守的寫入規則：
+
+- **規劃成功**：同一個交易寫入 `blueprint`（`generation = 1`、`status = active`、請求與回應 JSON、
+  `config_fingerprint`、`bm_snapshot_fingerprint`）和所有 `blueprint_placement`（`status = planned`）。
+  一個 `bm_group` 同時只能有一份 active 藍圖（partial unique index），已有 active 時應拒絕新規劃。
+- **逐批執行成功**：同一個交易寫入 `schedule_request`（`blueprint_id`、批次）、每台 VM 的
+  `schedule_placement`（`blueprint_placement_id` 指向對應的藍圖明細），並把那些明細改成 `placed`。
+- **動態插單成功**：`schedule_request.blueprint_id = NULL`、`mode = dynamic`；`schedule_placement` 的
+  `blueprint_placement_id = NULL`。這樣「計畫內 / 計畫外」用欄位是否為 NULL 就能分辨。
+- **重規劃成功**：同一個交易把舊藍圖改成 `superseded`，寫入新藍圖（`generation + 1`、
+  `parent_blueprint_id` 指向舊版），已建 VM 在新藍圖中以 `pinned = true`、`status = placed` 帶入。
+- **全部建完**：藍圖改成 `completed`。
+
+**同一個 `bm_group` 的請求必須序列化**（例如 per-bm_group 的鎖）。驗證式求解是基於當下的 inventory 快照，
+兩個請求並行時可能都驗證通過、實際卻互相搶同一份容量。從讀 inventory、呼叫 solver 到寫回 DB，要在同一個
+臨界區內完成。
+
+### 8.8 指紋
+
+- **`config_fingerprint`**：每個回應都有。存下規劃時的值；之後任何回應的值不同，代表 solver 的 config 或
+  版本變了，藍圖不再可信，應該重規劃。
+- **`bm_snapshot_fingerprint`**：由 scheduler 自己計算，建議對池內「BM id + `total_capacity` + `topology`」
+  排序後做 hash，**不包含 `used_capacity`**（它每建一批都會變）。每次執行前先比對，不同代表池的成員或
+  硬體變了，可以直接重規劃，不必等驗證失敗。`used_capacity` 的變化交給驗證求解去抓。
+
+### 8.9 實作檢查清單
+
+- [ ] 所有藍圖操作都呼叫 `/v1/placement/solve`，請求由同一個建構器產生
+- [ ] 每次都帶整份 active 藍圖的所有 VM，規則與 `config` 原樣帶入
+- [ ] pinned VM：`pinned_to` 與 `candidate_baremetals: [pinned_to]` 都要設
+- [ ] `used_capacity` 是 inventory 真值，包含已建 VM 和藍圖外的消耗
+- [ ] 只執行本批、`pinned=false` 的 assignment；執行前斷言鎖定 VM 都在藍圖 BM
+- [ ] INFEASIBLE 先局部重規劃，失敗才全面重規劃
+- [ ] 同一個 `bm_group` 的「讀 inventory → 求解 → 寫 DB」序列化
+- [ ] 規則用 `vm_ids` 寫成員時，送出前自查每個 id 都在 `vms` 裡。solver 會**靜默丟掉**不存在的 id，
+      打錯字可能讓 C6 獨占規則整條失效，結果仍是 OPTIMAL
+- [ ] 建置順序盡量讓 failover 的 backup 早建：C5 在 backup 建好之前本來就不成立，這是建置期的暫態

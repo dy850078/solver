@@ -6,6 +6,8 @@
 - **影響範圍**: 無——這是一份「決定不改 solver」的邊界決策記錄
 - **互動討論頁**: [`docs/blueprint-design.html`](../blueprint-design.html)——架構圖、三段協議、
   可操作的模擬器（含混合模式動態插單與 drift/重規劃）、DB schema 與 FAQ;下載後用瀏覽器開啟
+- **scheduler 實作細節**: [`docs/go-scheduler-guide.md` 第 8 節](../go-scheduler-guide.md#8-藍圖調度blueprint實作細節)——
+  請求建構器、四種操作的 JSON、回應處理、兩層重規劃、DB 寫入規則與檢查清單
 
 > 寫作對象:一位正在學習 CP-SAT 與排程系統設計的工程師。
 > 本 ADR 特殊之處:結論是 solver **一行都不用改**。記錄它的價值在於推演過程——
@@ -76,20 +78,23 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
    `parent_blueprint_id` 世代鏈、status、兩個指紋;`blueprint_placement`
    明細:vm/bm/cluster、`pinned` 旗標。與 `schedule_placement` 分表——
    後者是事實、前者是意圖,同一 VM 會出現在多個世代的意圖裡)。
-2. **逐批執行**:Go 切出 cluster k 片段組驗證式 `/solve` 請求(單元素
-   `candidate_baremetals`;已建 VM `pinned_to`;真實 `used_capacity`)→
-   OPTIMAL 則執行,assignments 必等於藍圖。**規則只帶在場 cluster 的**(已建 +
-   本批):C5 failover 規則的 selector 若一台 VM 都對不到,solver 回
-   `INPUT_ERROR`(C3/C4/C6 遇到同樣情況只是略過或發 advisory),所以未建
-   cluster 的 failover 規則必須先濾掉;`schedule_request` 以 nullable
+2. **逐批執行**:Go 每次都送**整份 active 藍圖**的驗證式 `/solve` 請求——已建
+   VM 帶 `pinned_to`,所有未建 VM(不只本批)以單元素 `candidate_baremetals`
+   鎖在藍圖 BM,規則與 config 原樣帶入,`used_capacity` 用 inventory 真值。
+   OPTIMAL 則只執行本批的 assignment,其餘未建 VM 的結果忽略。為什麼不能只送
+   本批,見 §5「auto 上限隨請求變動」。`schedule_request` 以 nullable
    `blueprint_id` 關聯,`schedule_placement` 以 `blueprint_placement_id`
    記錄「事實兌現了哪筆計畫」,VM 粒度的 plan-vs-actual 於是可查
    (reconcile.py 只到容量格粒度)。
 3. **重規劃**(雙觸發、同機制):被動(驗證批 INFEASIBLE / INPUT_ERROR /
-   指紋不一致)或主動(後續 cluster 需求改版)→ 一次 `/solve`:已建 VM 全部
-   帶 `pinned_to`,剩餘 cluster 的 VM 以自由 candidates 一起聯合求解 → 新世代
-   藍圖,舊版 superseded。ADR-012 的 grandfathering 保證已建叢集永不逼出
-   INFEASIBLE。
+   指紋不一致)或主動(後續 cluster 需求改版)→ 分兩層,都是同一個請求形狀:
+   - **局部**:只把 diagnostics `vms_with_no_eligible_bm` 點名的 VM 放開成自由
+     candidates,其餘未建 VM 仍鎖藍圖、已建仍 pinned。
+   - **全面**:局部失敗才把所有未建 VM 放開,聯合求解。
+
+   成功即寫入新世代藍圖,舊版 superseded。ADR-012 的 grandfathering 保證已建叢集
+   永不逼出 INFEASIBLE。分兩層的原因:solver 沒有「維持原位」的目標項,全面
+   重規劃會挑另一個等價最優解,把未建部分整份洗掉(實測見 §7)。
 
 ## 4. 實作走讀(既有縫隙——為何零改動就站得起來)
 
@@ -116,6 +121,12 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
   可行——照藍圖靜態置入,任何建置順序的任何中間狀態自動可行。這與 ADR-013
   的「聯合可行 ≠ 逐批可行」**不矛盾**:那警告針對「每批重新求解」的貪婪
   路徑;藍圖消除了執行期的選擇,也就消除了路徑依賴。
+- **auto 上限隨請求變動(前綴安全性的前提)**:上面的論證要求每條約束的 cap
+  固定不變,但 auto C3 的 cap 是 `⌈請求中群組 VM 數/bucket 數⌉`,只送群組的一部分
+  時 cap 會變小,藍圖裡合法的位置被誤判 INFEASIBLE。failover 規則的 selector
+  若一台 VM 都對不到,更會直接 `INPUT_ERROR`。解法是讓每次請求都帶整份藍圖
+  (§3 第 2 點):群組大小與 selector 永遠和聯合規劃時一致,cap 也就固定了。
+  代價是請求變大,但全鎖定的 VM 在 presolve 就被固定,實測 76 台約 0.02 秒。
 - **C5 例外**:failover N-1 不具前綴安全性——backup 建成之前保護本來就不
   成立。建置期暫態,今日逐批亦然,非新風險,但排程順序宜讓 backup 早建。
 - **drift 分類與處理**:BM 消失/縮容 → 驗證批 INFEASIBLE 或 INPUT_ERROR;
@@ -139,8 +150,9 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 
 ## 6. 你應該帶走的知識
 
-- **約束的方向決定子集可行性**:全是「≤ cap」的模型,可行解的任何前綴都
-  可行——「聯合規劃、分批執行」的安全性是從約束形狀讀出來的,不是測出來的。
+- **約束的方向決定子集可行性,但 cap 必須固定**:全是「≤ cap」的模型,可行解的
+  任何前綴都可行。可是 cap 若由請求內容推導(auto 規則),送一部分就會改變 cap。
+  所以驗證時讓請求保持完整,只改每台 VM 的身分(pinned／鎖定／自由)。
 - **事實/約束二分 + 狀態外置**:`pinned_to`(事實)、單元素 candidate
   (約束)、DB(狀態)三者各就各位,一個純函數 solver 就能服務規劃、驗證、
   重規劃三種用途,不需要任何新模式。
@@ -151,13 +163,16 @@ blueprint 完全落在 inventory DB + scheduler + UI 側;solver 維持無狀態�
 
 無程式碼變更,`make test` 維持全綠即可。設計本身已用既有 solver 實測
 (`examples/2room_3ag_4cluster_failover.json`:4 個 cluster、76 台 VM,含 C3/C4/C5):
-- 前綴安全性:一次 `/solve` 取得聯合解,再依 c1→c4 逐批組驗證式請求重放
-  (本批 = 單元素 candidates、已建 = `pinned_to` 並把消耗計入 `used_capacity`、
-  failover 規則只帶在場 cluster)。結果**四批全部 OPTIMAL,位置與藍圖完全一致**。
-- drift:把 c4 某台藍圖 BM 的 `used_capacity` 填滿再驗證 c4,得 `INFEASIBLE`,
-  diagnostics 直接點名 `vms_with_no_eligible_bm: ['c4-m-1']`。
-- 實測中發現的協議細節:第一次重放把全部 failover 規則原樣帶入,得到
-  `INPUT_ERROR: failover rule 'c2-...': primary selector matches no VMs`——
-  這就是 §3 第 2 點「規則只帶在場 cluster」的由來。
+- **只送本批的請求會出錯(兩種)**:把整份規則原樣帶入、只送 c1,得到
+  `INPUT_ERROR: failover rule 'c2-...': primary selector matches no VMs`。拿掉
+  failover 規則、只送 c1 的 2 台 master(藍圖中同住 ag-1,整組 5 台時每 AG 上限 2),
+  auto C3 重算出上限 1,得到 `INFEASIBLE`——藍圖本身沒錯,是請求不完整。
+- **整份藍圖協議**:每次都送全部 76 台(已建 pinned、未建鎖定、規則原樣),
+  批次刻意切成「c1 的 2 台 master」「c1 其餘」「c2」「c3」「c4」。**五批全部
+  OPTIMAL、每台都在藍圖 BM**,每次約 0.02 秒。
+- **drift**:c1 建完後把一台藍圖 BM 的 `used_capacity` 填滿,驗證得 `INFEASIBLE`,
+  `vms_with_no_eligible_bm` 列出這台 BM 上所有未建 VM(含未來批次的)。
+- **兩層重規劃**:同一個 drift,局部重規劃(只放開被點名的 4 台)OPTIMAL,
+  移動 4 台;全面重規劃(放開全部 57 台未建)也 OPTIMAL,但移動了 51 台。
 - scheduler 側實作時的測試要點:active 藍圖唯一性、世代鏈、
   plan-vs-actual join 的 drift 查詢、合併請求的規則 id 自查。

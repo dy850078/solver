@@ -253,14 +253,14 @@ sequenceDiagram
     rect rgba(26,127,55,0.08)
     note over F,D: Phase 2 — 逐批驗證式執行（cluster k）
     F->>S: 建置 cluster k
-    S->>V: /solve（本批 candidate=[藍圖BM]，已建=pinned_to，真實 used，規則只帶在場 cluster）
+    S->>V: /solve（整份藍圖：已建=pinned_to，所有未建=candidate=[藍圖BM]，規則原樣）
     V-->>S: OPTIMAL（無 drift 時 presolve 秒回）
     S->>D: schedule_request(blueprint_id) + schedule_placement(→blueprint_placement)
     end
     rect rgba(194,43,38,0.08)
     note over F,D: Phase 3 — 重規劃（drift 或需求改版觸發）
     V-->>S: INFEASIBLE / INPUT_ERROR（= 精確 drift 訊號）
-    S->>V: /solve（已建 = pinned_to，剩餘 cluster 自由 candidates，聯合求解）
+    S->>V: /solve（先局部：只放開被點名的 VM；失敗才全面放開所有未建）
     V-->>S: 新解（grandfathering 保證已建不會逼出 INFEASIBLE）
     S->>D: blueprint(gen+1, active)，舊版 superseded
     end
@@ -282,7 +282,7 @@ sequenceDiagram
     <tr><td><code>/rollout</code></td><td>對照工具</td><td>逐批貪婪模擬，每一步只看到自己這批。拿來重規劃會把藍圖要消滅的路徑依賴請回來。留著回答「不用藍圖、照順序逐批建會不會卡住」。</td></tr>
   </table></div>
   <div class="callout warn">
-    逐批驗證時，<strong>規則只帶在場 cluster 的（已建 + 本批）</strong>：C5 failover 規則的 selector 若一台 VM 都對不到，solver 回 <code>INPUT_ERROR</code>。這是用 4 cluster／76 VM 範例實測時發現的；同一實測中四批驗證全部 OPTIMAL、位置與藍圖一致。
+    <strong>每次執行期請求都帶整份 active 藍圖</strong>，不只本批：已建帶 <code>pinned_to</code>，所有未建 VM 鎖在藍圖 BM，規則原樣傳入，scheduler 只執行本批。原因是 auto C3 的上限依請求中的群組 VM 數計算，只送一部分時上限變小，藍圖裡合法的位置會被誤判 INFEASIBLE；failover 規則的 selector 對不到 VM 則直接 <code>INPUT_ERROR</code>。用 4 cluster／76 VM 範例實測，整份藍圖協議連「同一 cluster 分兩批建」在內的五批全部 OPTIMAL、每次約 0.02 秒。
   </div>
 
   <h3>執行期請求裡的三種 VM 身分</h3>
@@ -456,6 +456,8 @@ erDiagram
   <p>受管的不會：幽靈協同求解讓動態 VM 只落在不侵蝕藍圖容量的位置，放不下就拒單，藍圖不動。會弄壞藍圖的是<strong>野 drift</strong>（繞過 scheduler 的消耗），它由逐批驗證兜底發現，觸發重規劃。</p>
   <h3>Q3 重規劃會不會把已建的 cluster 逼成 INFEASIBLE？</h3>
   <p>不會。已建 VM 以 <code>pinned_to</code> 帶入，C3/C4/C5 caps 被 grandfathered（<span class="mono">max(cap, 既有數量)</span>）——既有偏斜凍結、不惡化、永不 INFEASIBLE。代價：最佳性降為「給定凍結前綴下的最優」；若前綴嚴重卡死（占走關鍵 AG），唯一出路是 rebalance（unpin + minimize moves），那是獨立的未來模式，不是重規劃的副作用。</p>
+  <h3>Q3b 重規劃會不會把整份藍圖洗掉？</h3>
+  <p>會，如果直接放開所有未建 VM。solver 沒有「維持原位置」的目標項，會挑另一個等價的最優解。所以重規劃分兩層：<strong>先局部</strong>，只放開 diagnostics 點名沒地方放的 VM，其餘未建 VM 仍鎖在藍圖；<strong>失敗才全面</strong>。實測同一個 drift，局部重規劃移動 4 台，全面重規劃移動 57 台未建 VM 中的 51 台。</p>
   <h3>Q4 drift 怎麼分類處理？</h3>
   <div class="tblwrap"><table class="doc">
     <tr><th>drift 類型</th><th>偵測訊號</th><th>處理</th></tr>
@@ -470,7 +472,7 @@ erDiagram
   <p>drift 率高到藍圖頻繁重規劃時，藍圖失去意義——屆時縮短規劃視窗（一次規劃更少 cluster），或該池退回逐批 rollout。</p>
 </section>
 
-<footer>依 ADR-019（blueprint scheduler-side planning）整理 · 模擬器為簡化示意，非真實 CP-SAT 求解 · 討論回饋請回到原設計文件</footer>
+<footer>依 ADR-019（blueprint scheduler-side planning）整理 · scheduler 實作細節見 docs/go-scheduler-guide.md 第 8 節 · 模擬器為簡化示意，非真實 CP-SAT 求解 · 討論回饋請回到原設計文件</footer>
 </div>
 
 <script>
@@ -565,15 +567,17 @@ function doPlan(){
 function doExec(){
   const cid=S.builtOrder[S.nextBatch]; if(!cid) return;
   const batch=S.blueprint.rows.filter(p=>p.cluster===cid&&p.status==="planned");
-  showApi(execRequestJson(cid,batch));
-  // 驗證：鎖定位置在當下現實中仍可行？
-  const gc=builtGroupCount();
-  const r=place(batch.map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand,lockedTo:p.bm})),
-                zeroLoads(),gc);
+  const unbuilt=S.blueprint.rows.filter(p=>p.status==="planned");
+  showApi(execRequestJson(cid,batch,unbuilt));
+  // 驗證：整份藍圖（全部未建 VM 鎖在藍圖 BM）在當下現實中仍可行？
+  const r=place(unbuilt.map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand,lockedTo:p.bm})),
+                zeroLoads(),builtGroupCount());
   if(!r.ok){
-    S.infeasible={phase:"exec",cluster:cid,reason:r.reason};
-    log(`建置 ${cid}：INFEASIBLE — ${r.reason}`,"bad");
-    setStatus(`驗證批 INFEASIBLE（${cid}）：${r.reason} → 這就是精確的 drift 訊號，按「⑤ 重規劃」。`,"bad");
+    const named=strandedVMs();
+    const inBatch=named.filter(id=>batch.some(p=>p.vm===id)).length;
+    S.infeasible={phase:"exec",cluster:cid,reason:r.reason,named};
+    log(`建置 ${cid}：INFEASIBLE — ${r.reason}；被點名 ${named.length} 台（本批 ${inBatch} 台）`,"bad");
+    setStatus(`驗證 INFEASIBLE：${r.reason}。diagnostics 點名 ${named.length} 台沒地方放的 VM（本批 ${inBatch} 台，其餘屬未來批次）→ 按「⑤ 重規劃」，會先試局部。`,"bad");
     render();return;
   }
   const sr="req-"+String(S.sreq.length+1).padStart(3,"0");
@@ -585,7 +589,7 @@ function doExec(){
     S.splc.push({vm:p.vm,bm:p.bm,req:sr,bpp:p.vm});
   }
   S.nextBatch++;
-  log(`建置 ${cid}：OPTIMAL，${batch.length} 台照藍圖置入（調度單 ${sr}）`,"ok");
+  log(`建置 ${cid}：OPTIMAL（整份藍圖驗證），${batch.length} 台照藍圖置入（調度單 ${sr}）`,"ok");
   setStatus(S.nextBatch>=S.builtOrder.length
     ? "全部批次建置完成 — 藍圖 completed。可再玩動態插單或重設。"
     : `${cid} 建置完成。下一批：${S.builtOrder[S.nextBatch]}。也可以先「③ 動態插單」或注入 drift 觀察行為。`,"ok");
@@ -640,32 +644,53 @@ function doWild(){
   render();
 }
 function doReplan(){
-  const remaining=S.blueprint.rows.filter(p=>p.status==="planned")
-    .map(p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand}));
   const built=S.blueprint.rows.filter(p=>p.status==="placed");
-  showApi(replanRequestJson(built,remaining));
-  const r=place(remaining.map(v=>({...v})),zeroLoads(),builtGroupCount());
+  const unbuilt=S.blueprint.rows.filter(p=>p.status==="planned");
+  const asVm=p=>({id:p.vm,cluster:p.cluster,role:p.role,demand:p.demand});
+  const tryPlan=freeIds=>{ // 鎖定的先放，自由的後放
+    const locked=unbuilt.filter(p=>!freeIds.has(p.vm)).map(p=>({...asVm(p),lockedTo:p.bm}));
+    const free=unbuilt.filter(p=>freeIds.has(p.vm)).map(asVm);
+    return place([...locked,...free],zeroLoads(),builtGroupCount());
+  };
+  // 第一層：局部，只放開被點名的 VM
+  let tier="局部", freeIds=new Set(S.infeasible?.named?.length?S.infeasible.named:strandedVMs());
+  let r=tryPlan(freeIds);
+  if(!r.ok){ // 第二層：全面，放開所有未建 VM
+    log(`局部重規劃失敗（${r.reason}），改為全面重規劃`,"bad");
+    tier="全面"; freeIds=new Set(unbuilt.map(p=>p.vm)); r=tryPlan(freeIds);
+  }
+  showApi(replanRequestJson(built,unbuilt,freeIds,tier));
   if(!r.ok){
-    log(`重規劃 INFEASIBLE：${r.reason} — 池容量已不足，需擴池或縮需求`,"bad");
-    setStatus(`重規劃也 INFEASIBLE：${r.reason}。這模擬「藍圖救不回來」的情境——擴池或砍需求。`,"bad");
+    log(`全面重規劃也 INFEASIBLE：${r.reason} — 池容量已不足，需擴池或縮需求`,"bad");
+    setStatus(`局部與全面重規劃都 INFEASIBLE：${r.reason}。這模擬「藍圖救不回來」的情境——擴池或砍需求。`,"bad");
     render();return;
   }
+  const moved=unbuilt.filter(p=>r.map[p.vm]!==p.bm).length;
   const gen=S.blueprint.gen+1, id="bp-"+String(gen).padStart(3,"0");
   S.gens.find(g=>g.id===S.blueprint.id).status="superseded";
   S.blueprint={id,gen,status:"active",
     rows:[...built.map(p=>({...p,pinned:true})),
-          ...remaining.map(v=>({vm:v.id,cluster:v.cluster,role:v.role,demand:v.demand,
-                                bm:r.map[v.id],status:"planned",pinned:false}))]};
+          ...unbuilt.map(p=>({...p,bm:r.map[p.vm],status:"planned",pinned:false}))]};
   S.gens.push({id,gen,status:"active"});
   S.infeasible=null;
-  log(`重規劃完成：${id} (gen ${gen}) ACTIVE，已建 ${built.length} 台凍結為 pins，重排 ${remaining.length} 台`,"ok");
-  setStatus(`新藍圖 ${id} (gen ${gen}) 生效——舊版 superseded。繼續「② 建置下一批」。`,"ok");
+  log(`${tier}重規劃完成：${id} (gen ${gen})，已建 ${built.length} 台維持 pinned，未建 ${unbuilt.length} 台中移動 ${moved} 台`,"ok");
+  setStatus(`新藍圖 ${id} (gen ${gen}) 生效（${tier}重規劃，移動 ${moved}/${unbuilt.length} 台未建 VM）——舊版 superseded。繼續「② 建置下一批」。`,"ok");
   render();
 }
 function doReset(){S=freshState();evn=0;document.getElementById("log").innerHTML="";
   setStatus("尚未規劃——設定 cluster 後按「① 聯合規劃」。","");showApi("// 尚無請求");render();}
 
 /* ── 輔助 ── */
+function strandedVMs(){ // 模擬 diagnostics.vms_with_no_eligible_bm：鎖在故障或容量不足 BM 上的未建 VM
+  const out=[];
+  for(const b of S.bms){
+    const rows=S.blueprint.rows.filter(p=>p.bm===b.id&&p.status==="planned");
+    if(!rows.length) continue;
+    const need=rows.reduce((a,p)=>({cpu:a.cpu+p.demand.cpu,mem:a.mem+p.demand.mem}),{cpu:0,mem:0});
+    if(!b.alive||!fits(b,{cpu:0,mem:0},need)) out.push(...rows.map(p=>p.vm));
+  }
+  return out;
+}
 function builtGroupCount(){ // 已建 VM 的 (cluster|role|ag) 計數 + base 群組大小
   const gc={base:{}};
   if(!S.blueprint) return gc;
@@ -696,21 +721,24 @@ ${vms.slice(0,4).map(v=>`    {"id":${short(v.id)},"cluster_id":${short(v.cluster
 }
 // → scheduler 將回應存入 blueprint / blueprint_placement`;
 }
-function execRequestJson(cid,batch){
+function execRequestJson(cid,batch,unbuilt){
   const built=S.blueprint.rows.filter(p=>p.status==="placed");
-  return `// POST /v1/placement/solve — 建置 ${cid}（驗證式置入）
+  const later=unbuilt.filter(p=>!batch.includes(p));
+  return `// POST /v1/placement/solve — 建置 ${cid}（驗證式置入，帶整份藍圖）
 {
   "vms": [
-${batch.slice(0,3).map(p=>`    {"id":${short(p.vm)},"cluster_id":${short(p.cluster)},
-     "candidate_baremetals":[${short(p.bm)}]}  // 藍圖鎖定`).join(",\n")},
+${built.slice(0,2).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)},"candidate_baremetals":[${short(p.bm)}]},  // 已建`).join("\n")}
+    ${built.length?`… 已建共 ${built.length} 台（pinned_to）`:"（尚無已建 VM）"}
+${batch.slice(0,2).map(p=>`    {"id":${short(p.vm)},"candidate_baremetals":[${short(p.bm)}]},  // 本批：鎖定藍圖 BM`).join("\n")}
     … 本批共 ${batch.length} 台
-${built.slice(0,2).map(p=>`    ,{"id":${short(p.vm)},"pinned_to":${short(p.bm)}}  // 已建事實`).join("\n")}
-    ${built.length>2?`… 已建共 ${built.length} 台（pinned_to）`:""}
+${later.slice(0,1).map(p=>`    {"id":${short(p.vm)},"candidate_baremetals":[${short(p.bm)}]},  // 未來批次：也鎖著`).join("\n")}
+    ${later.length?`… 未來批次共 ${later.length} 台（結果忽略）`:"（沒有未來批次）"}
   ],
-  "baremetals": [ 真實 used_capacity（含已建與計畫外消耗）],
-  "failover_rules": [ 只帶已建 + 本批 cluster 的規則 ]
+  "baremetals": [ inventory 真值 used_capacity（含已建與計畫外消耗）],
+  "anti_affinity_rules / max_per_bm_rules / failover_rules": [ 與規劃時相同，原樣帶入 ],
+  "config": { 與規劃時相同 }
 }
-// 無 drift → presolve 秒回 OPTIMAL；INFEASIBLE = 精確 drift 訊號`;
+// 只執行本批；無 drift → presolve 秒回 OPTIMAL；INFEASIBLE = drift（diagnostics 點名沒地方放的 VM）`;
 }
 function dynRequestJson(vm,ghosts,protect){
   return `// POST /v1/placement/solve — 動態插單（${protect?"幽靈協同求解":"先到先贏"}）
@@ -724,18 +752,21 @@ ${protect?ghosts.slice(0,3).map(g=>`    ,{"id":${short(g.id)},"candidate_baremet
 }
 // 幽靈的 assignments 由 scheduler 忽略，只執行 ${short(vm.id)}`;
 }
-function replanRequestJson(built,remaining){
-  return `// POST /v1/placement/solve — 重規劃（gen ${S.blueprint.gen} → ${S.blueprint.gen+1}，聯合求解）
+function replanRequestJson(built,unbuilt,freeIds,tier){
+  const free=unbuilt.filter(p=>freeIds.has(p.vm)), locked=unbuilt.filter(p=>!freeIds.has(p.vm));
+  return `// POST /v1/placement/solve — ${tier}重規劃（gen ${S.blueprint.gen} → ${S.blueprint.gen+1}）
 {
   "vms": [
-${built.slice(0,2).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)}},  // 已建：凍結`).join("\n")}
+${built.slice(0,1).map(p=>`    {"id":${short(p.vm)},"pinned_to":${short(p.bm)}},  // 已建：凍結`).join("\n")}
     … 已建共 ${built.length} 台（pinned_to，grandfathered）
-${remaining.slice(0,2).map(v=>`    {"id":${short(v.id)},"candidate_baremetals":["bm-1","…","bm-9"]},  // 剩餘：自由`).join("\n")}
-    … 剩餘共 ${remaining.length} 台，所有未建 cluster 一起解
+${locked.slice(0,1).map(p=>`    {"id":${short(p.vm)},"candidate_baremetals":[${short(p.bm)}]},  // 未建：仍鎖藍圖`).join("\n")}
+    ${locked.length?`… 仍鎖定 ${locked.length} 台`:"（全面重規劃：沒有鎖定的 VM）"}
+${free.slice(0,2).map(p=>`    {"id":${short(p.vm)},"candidate_baremetals":["bm-1","…","bm-9"]},  // 放開：自由`).join("\n")}
+    … 放開共 ${free.length} 台${tier==="局部"?"（diagnostics 點名的 VM）":"（所有未建 VM）"}
   ],
   "baremetals": [ 當下現實：故障 BM 已移除、野 VM 消耗已入 used ]
 }
-// 成功 → 新世代藍圖；已建 cluster 永不搬遷`;
+// 先局部（只放開被點名的），失敗才全面（放開所有未建）；已建 cluster 永不搬遷`;
 }
 
 /* ── render ── */
