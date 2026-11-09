@@ -236,19 +236,47 @@ function renderMatrix() {
 function groupView(g) {
   // Everything the rack diagram needs for one pool: its fleet, the VM
   // objects behind every placement (RolloutStepReport.new_vms), and the
-  // assignments of every step.
+  // assignments of every step. VM ids are namespaced by group because
+  // two pools whose build orders share a step name produce identical
+  // synthetic ids ("A1/split-r0-s0-3"); machine ids already carry the
+  // group prefix.
   const reports = g.rollout?.reports ?? [];
+  const ns = (id) => `${g.name}/${id}`;
   return {
-    request: { baremetals: g.baremetals ?? [], vms: reports.flatMap((r) => r.new_vms ?? []), requirements: [] },
-    result: { assignments: reports.flatMap((r) => r.new_assignments ?? []) },
+    request: {
+      baremetals: g.baremetals ?? [],
+      vms: reports.flatMap((r) => (r.new_vms ?? []).map((v) => ({ ...v, id: ns(v.id) }))),
+      requirements: [],
+    },
+    result: { assignments: reports.flatMap((r) => (r.new_assignments ?? []).map((a) => ({ ...a, vm_id: ns(a.vm_id) }))) },
     reports,
+  };
+}
+
+/** Union of every group's view — for the "All" tab and its filter options. */
+function allGroupsView(groups) {
+  const views = groups.map(groupView);
+  return {
+    request: {
+      baremetals: views.flatMap((v) => v.request.baremetals),
+      vms: views.flatMap((v) => v.request.vms),
+      requirements: [],
+    },
+    result: { assignments: views.flatMap((v) => v.result.assignments) },
+    reports: [],
   };
 }
 
 function renderGroupTabs() {
   const tabs = $("#group-tabs");
   const groups = state.result.groups ?? [];
-  tabs.innerHTML = groups.map((g, i) => `
+  const total = groups.reduce((n, g) => n + (g.required_baremetals || 0), 0);
+  const allTab = groups.length > 1 ? `
+    <label title="Every group side by side">
+      <input type="radio" name="group-tab" value="-1" ${state.group === -1 ? "checked" : ""}>
+      <span>All · ${total}</span>
+    </label>` : "";
+  tabs.innerHTML = allTab + groups.map((g, i) => `
     <label title="${escapeHtml(g.clusters.join(", "))}">
       <input type="radio" name="group-tab" value="${i}" ${i === state.group ? "checked" : ""}>
       <span>${escapeHtml(g.name)} · ${g.required_baremetals || "?"}</span>
@@ -260,7 +288,8 @@ function renderRack() {
   const groups = state.result.groups ?? [];
   if (!groups.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
-  const g = groups[Math.min(state.group, groups.length - 1)];
+  if (state.group === -1 && groups.length > 1) { renderAllGroups(groups); return; }
+  const g = groups[Math.min(Math.max(state.group, 0), groups.length - 1)];
   $("#rack-title").textContent = `Machines — group “${g.name}”`;
   const view = groupView(g);
   $("#step-strip").innerHTML = view.reports.map((rep, i) => `${i ? '<span class="step-arrow">→</span>' : ""}
@@ -280,6 +309,39 @@ function renderRack() {
   updateFilterControls(view);
   const panels = buildPanels(view.request, view.result, state.groupBy, state.filter);
   renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity });
+  renderTopologyLegend($("#ag-legend"));
+}
+
+/* "All" tab: one rack section per group, stacked, sharing one colour scale
+ * and one filter. Groups never share machines, so stacking is the honest
+ * picture — there is no cross-group AG panel to draw. */
+function renderAllGroups(groups) {
+  $("#rack-title").textContent = `Machines — all ${groups.length} groups`;
+  $("#step-strip").innerHTML = "";
+  const rackEl = $("#rack-container");
+  const all = allGroupsView(groups);
+  if (!all.result.assignments.length) {
+    showRackEmpty(rackEl, "No placements.");
+    renderTopologyLegend($("#ag-legend"));
+    return;
+  }
+  const clusterSet = new Set(all.request.vms.map((v) => v.cluster_id).filter(Boolean));
+  rebuildColorScale(collectAgSet(all.request, all.result), clusterSet);
+  updateFilterControls(all);
+  rackEl.innerHTML = "";
+  for (const g of groups) {
+    const view = groupView(g);
+    const section = document.createElement("section");
+    section.className = "rack-group";
+    section.innerHTML = `<h3 class="rack-group__title">${escapeHtml(g.name)}
+      <span class="muted">· ${g.required_baremetals || 0} BM · ${g.clusters.map(escapeHtml).join(", ")}${g.success ? "" : ` · ${escapeHtml(g.solver_status)}`}</span></h3>
+      <div class="rack-group__body"></div>`;
+    rackEl.appendChild(section);
+    const body = section.querySelector(".rack-group__body");
+    if (!view.result.assignments.length) { showRackEmpty(body, g.success ? "No placements." : `Did not place: ${g.solver_status}`); continue; }
+    const panels = buildPanels(view.request, view.result, state.groupBy, state.filter);
+    renderRackDiagram(body, panels, { showCapacity: state.showCapacity });
+  }
   renderTopologyLegend($("#ag-legend"));
 }
 
@@ -341,7 +403,8 @@ function renderAll() {
   renderAdvisories();
   renderCompiled();
   renderMatrix();
-  state.group = Math.max(0, r.groups.findIndex((g) => !g.success));
+  const failed = r.groups.findIndex((g) => !g.success);
+  state.group = failed >= 0 ? failed : (r.groups.length > 1 ? -1 : 0);
   renderGroupTabs();
   renderRack();
   renderLayouts();

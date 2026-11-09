@@ -76,3 +76,13 @@
 }
 .layout-entry b { font-weight: 600; }
 .layout-entry .ip { color: var(--text-subtle); }
+
+/* Group tabs never wrap; "All" view stacks one rack section per group. */
+#group-tabs label { white-space: nowrap; }
+#group-tabs label span { white-space: nowrap; }
+.rack-group + .rack-group { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-base); }
+.rack-group__title {
+  margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text-base);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.rack-group__title .muted { font-weight: 400; font-size: 12px; }

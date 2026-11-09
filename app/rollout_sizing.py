@@ -84,7 +84,10 @@ def build_fleet(fleet: FleetTemplate, n: int) -> list[Baremetal]:
         seq = f"{i + 1:03d}"
         out.append(Baremetal(
             id=f"{fleet.id_prefix}{seq}",
-            hostname=f"bare-{seq}",
+            # A prefixed fleet (one pool among several, ADR-020) keeps the
+            # prefix in the hostname too, so pools stay distinguishable in
+            # any view that shows hostnames side by side.
+            hostname=f"bare-{seq}" if fleet.id_prefix == "bm-" else f"{fleet.id_prefix}{seq}",
             total_capacity=fleet.total_capacity,
             used_capacity=Resources(),
             topology=racks[i % len(racks)],
