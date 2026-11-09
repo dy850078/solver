@@ -41,6 +41,7 @@ class PlacementMatrixRow(BaseModel):
 
 class BmLayoutEntry(BaseModel):
     vm_id: str
+    vm_hostname: str = ""
     cluster_id: str
     node_role: str
     ip_type: str
@@ -132,8 +133,9 @@ def bm_layouts(
     for a, vm, bm in _index(assignments, vms, bms):
         layout = by_bm[bm.id]
         layout.entries.append(BmLayoutEntry(
-            vm_id=vm.id, cluster_id=vm.cluster_id, node_role=vm.node_role,
-            ip_type=vm.ip_type, vm_spec=spec_name_of(vm.demand, spec_catalog),
+            vm_id=vm.id, vm_hostname=vm.hostname or "", cluster_id=vm.cluster_id,
+            node_role=vm.node_role, ip_type=vm.ip_type,
+            vm_spec=spec_name_of(vm.demand, spec_catalog),
         ))
         layout.used = layout.used + vm.demand
     out = list(by_bm.values())

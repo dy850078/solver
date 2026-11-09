@@ -443,22 +443,29 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
 
         # Advisory: spec does not tile the machine → PM gets fewer
         # resources than N × cap (the machine count stays N; ADR-020 D1).
+        # One advisory per demand listing every idle dimension.
+        idle = []
         for dim in resource_dims([spec.resources, cap]):
             cap_d = res_get(cap, dim)
             got = k * res_get(spec.resources, dim)
             if cap_d > 0 and got < cap_d:
-                out.advisories.append({
-                    "type": "spec_does_not_tile_bm", "severity": "warning",
-                    "cluster_id": d.cluster_id, "node_role": d.node_role,
-                    "dimension": dim, "per_machine_capacity": cap_d,
-                    "per_machine_allocated": got,
-                    "message": (
-                        f"demand {label}: {k} × '{d.vm_spec}' uses {got} of "
-                        f"{cap_d} {dim} per machine; {n} machine(s) provide "
-                        f"{n * got} instead of {n * cap_d}"
-                        + (" (exclusive: one VM per machine)" if is_exclusive else "")
-                    ),
-                })
+                idle.append({"dimension": dim, "per_machine_capacity": cap_d,
+                             "per_machine_allocated": got})
+        if idle:
+            parts = ", ".join(
+                f"{i['per_machine_capacity'] - i['per_machine_allocated']} of "
+                f"{i['per_machine_capacity']} {i['dimension']}" for i in idle
+            )
+            out.advisories.append({
+                "type": "spec_does_not_tile_bm", "severity": "warning",
+                "cluster_id": d.cluster_id, "node_role": d.node_role,
+                "dimensions": idle,
+                "message": (
+                    f"demand {label}: {k} × '{d.vm_spec}' per machine leaves idle "
+                    f"{parts} on each of the {n} machine(s)"
+                    + (" (exclusive: one VM per machine)" if is_exclusive else "")
+                ),
+            })
 
         # Advisories: "each cluster takes its own N machines" is always a
         # legal layout under C1/C2/C6 (D1), so sum(N) machines fit — but two
@@ -565,6 +572,33 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+_IP_SHORT = {"routable": "R", "non-routable": "NR"}
+
+
+def _name_vms(rollout: RolloutResult | None) -> None:
+    """
+    Give every placed VM a readable hostname — `{role}-{R|NR}-{nn}`,
+    numbered per (cluster, ip_type, role) across the build order — on both
+    the VM object and its assignment, so the UI chips, the layout table and
+    the legacy template can show it. The splitter's synthetic ids
+    ("split-r0-s0-18") stay as the stable id; they are not for humans.
+    Explicit VMs that already carry a hostname keep it. In place.
+    """
+    if rollout is None:
+        return
+    seq: dict[tuple[str, str, str], int] = {}
+    for rep in rollout.reports:
+        for vm, a in zip(rep.new_vms, rep.new_assignments):
+            if vm.hostname:
+                a.vm_hostname = a.vm_hostname or vm.hostname
+                continue
+            key = (vm.cluster_id, vm.ip_type, vm.node_role)
+            seq[key] = seq.get(key, 0) + 1
+            ip = _IP_SHORT.get(vm.ip_type, vm.ip_type)
+            vm.hostname = "-".join(p for p in (vm.node_role, ip, f"{seq[key]:02d}") if p)
+            a.vm_hostname = vm.hostname
+
+
 def _run_group(cg: CompiledGroup, req: BmDemandPlanRequest) -> GroupPlanResult:
     if cg.fleet_size is None:
         sizing = size_rollout(RolloutSizingRequest(
@@ -572,6 +606,7 @@ def _run_group(cg: CompiledGroup, req: BmDemandPlanRequest) -> GroupPlanResult:
             max_baremetals=req.max_baremetals, max_probes=req.max_probes,
             deadline_seconds=req.deadline_seconds,
         ))
+        _name_vms(sizing.rollout)
         return GroupPlanResult(
             name=cg.name, clusters=cg.clusters, bm_spec=cg.bm_spec,
             success=sizing.success, solver_status=sizing.solver_status,
@@ -584,6 +619,7 @@ def _run_group(cg: CompiledGroup, req: BmDemandPlanRequest) -> GroupPlanResult:
         steps=point_steps_at_fleet(cg.steps, [b.id for b in bms]),
         config=req.config,
     ))
+    _name_vms(rollout)
     status = rollout.solver_status
     if not status:
         failed = next((r for r in rollout.reports if not r.success), None)

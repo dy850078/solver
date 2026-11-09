@@ -17,6 +17,8 @@ import {
   GROUP_BY_OPTIONS, buildPanels, collectAgSet, renderRackDiagram, showRackEmpty,
 } from "./rackdiagram.js";
 import { renderTopologyLegend } from "./summary.js";
+import { buildFilterOptions, isFilterActive } from "./filter.js";
+import { createMultiSelect } from "./multiselect.js";
 import {
   initForm, buildRequest, loadIntoForm, resetForm, state as form,
 } from "./demand-form.js";
@@ -31,7 +33,10 @@ const state = {
   group: 0,        // selected tenancy group index
   groupBy: "rack",
   showCapacity: localStorage.getItem("solver-show-capacity") === "1",
+  filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set() },
 };
+
+let clusterMs, roleMs, ipTypeMs;   // filter multi-selects (built in init)
 
 /* ── small helpers ─────────────────────────────────────────────────── */
 
@@ -272,10 +277,26 @@ function renderRack() {
   }
   const clusterSet = new Set(view.request.vms.map((v) => v.cluster_id).filter(Boolean));
   rebuildColorScale(collectAgSet(view.request, view.result), clusterSet);
-  const filter = { clusters: new Set(), roles: new Set(), ipTypes: new Set() };
-  const panels = buildPanels(view.request, view.result, state.groupBy, filter);
+  updateFilterControls(view);
+  const panels = buildPanels(view.request, view.result, state.groupBy, state.filter);
   renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity });
   renderTopologyLegend($("#ag-legend"));
+}
+
+/* Filter options come from the selected group's own VMs (clusters, roles
+ * and ip types differ per pool); the chosen values persist across groups. */
+function updateFilterControls(view) {
+  const bar = $("#filter-bar");
+  if (!view.result.assignments.length) { bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  const opts = buildFilterOptions(view.request, view.result);
+  const toOptions = (m) => [...m.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([value, count]) => ({ value, count }));
+  clusterMs.update({ options: toOptions(opts.clusters), selected: state.filter.clusters });
+  roleMs.update({ options: toOptions(opts.roles), selected: state.filter.roles });
+  ipTypeMs.update({ options: toOptions(opts.ipTypes), selected: state.filter.ipTypes });
+  $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
 function stockCell(used, total) {
@@ -299,7 +320,7 @@ function renderLayouts() {
         <td class="cell-mono">${escapeHtml(l.bm_id)}</td><td>${escapeHtml(l.pool)}</td>
         <td>${escapeHtml(l.ag)}</td><td>${escapeHtml(l.rack)}</td>
         <td><div class="layout-entries">${l.entries.map((e) =>
-          `<span class="layout-entry" title="${escapeHtml(e.vm_id)}"><b>${escapeHtml(e.cluster_id)}</b> ${escapeHtml(e.node_role)} · ${escapeHtml(e.vm_spec)} <span class="ip">${escapeHtml(ipShort(e.ip_type))}</span></span>`).join("")}</div></td>
+          `<span class="layout-entry" title="${escapeHtml(e.vm_id)}"><b>${escapeHtml(e.cluster_id)}</b> ${escapeHtml(e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`)} · ${escapeHtml(e.vm_spec)}</span>`).join("")}</div></td>
         ${stockCell(l.used.cpu_cores, l.capacity.cpu_cores)}
         ${stockCell(l.used.memory_mib, l.capacity.memory_mib)}
         ${stockCell(l.used.storage_gb, l.capacity.storage_gb)}
@@ -414,6 +435,21 @@ function init() {
   });
   $("#group-tabs").addEventListener("change", (e) => {
     if (e.target.name === "group-tab") { state.group = Number(e.target.value); renderRack(); }
+  });
+  const onFilterChange = (key) => (selected) => {
+    state.filter[key] = selected;
+    $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
+    if (state.result) renderRack();
+  };
+  clusterMs = createMultiSelect({ label: "Cluster", onChange: onFilterChange("clusters") });
+  roleMs    = createMultiSelect({ label: "Role",    onChange: onFilterChange("roles") });
+  ipTypeMs  = createMultiSelect({ label: "IP type", onChange: onFilterChange("ipTypes") });
+  $("#filter-cluster").appendChild(clusterMs.element);
+  $("#filter-role").appendChild(roleMs.element);
+  $("#filter-iptype").appendChild(ipTypeMs.element);
+  $("#filter-clear").addEventListener("click", () => {
+    state.filter.clusters.clear(); state.filter.roles.clear(); state.filter.ipTypes.clear();
+    if (state.result) renderRack();
   });
 
   initForm(onFormChange);

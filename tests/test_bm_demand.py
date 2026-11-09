@@ -153,8 +153,10 @@ class TestCompile:
         d = c.groups[0].demands[0]
         assert d.fits_per_bm == 2 and d.vm_count == 10 and d.bm_equivalents == 5
         kinds = [a for a in c.advisories if a["type"] == "spec_does_not_tile_bm"]
-        cpu = next(a for a in kinds if a["dimension"] == "cpu_cores")
+        assert len(kinds) == 1  # one advisory per demand, every idle dimension inside
+        cpu = next(x for x in kinds[0]["dimensions"] if x["dimension"] == "cpu_cores")
         assert cpu["per_machine_capacity"] == 90 and cpu["per_machine_allocated"] == 80
+        assert "10 of 90 cpu_cores" in kinds[0]["message"]
 
     def test_exclusive_cluster_forces_one_per_machine(self):
         c = self._one(request([D("C1", "half", n=6)], exclusive=["C1"]))
@@ -295,6 +297,21 @@ class TestPlanEndToEnd:
         c1_rows = [rows for bm, rows in t.items() if bm.startswith("c1-own/")]
         assert c1_rows and all(rows == [["worker", "full", "R"]] for rows in c1_rows)
         assert any(["worker", "half", "NR"] in rows for rows in t.values())
+
+    def test_vms_get_readable_hostnames(self, plan):
+        """Synthetic ids are for machines; chips and templates show
+        `{role}-{R|NR}-{nn}`, numbered per (cluster, ip, role)."""
+        for g in plan.groups:
+            names = [v.hostname for rep in g.rollout.reports for v in rep.new_vms]
+            assert names and all(names), names
+            assert len(set(names)) == len(names)  # unique within a group
+            assert all(a.vm_hostname == v.hostname
+                       for rep in g.rollout.reports
+                       for v, a in zip(rep.new_vms, rep.new_assignments))
+        b1 = sorted(e.vm_hostname for l in plan.bm_layouts for e in l.entries if e.cluster_id == "B1")
+        assert b1[0] == "worker-NR-01" and b1[-1] == "worker-NR-10"
+        c1 = [e.vm_hostname for l in plan.bm_layouts for e in l.entries if e.cluster_id == "C1"]
+        assert sorted(c1) == [f"worker-R-{i:02d}" for i in range(1, 7)]
 
     def test_fixed_fleet_one_short_fails(self, plan):
         n = {g.name: g.required_baremetals for g in plan.groups}
