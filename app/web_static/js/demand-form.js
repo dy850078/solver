@@ -39,7 +39,8 @@ export const state = {
   description: "",
   bmSpecs: [],   // {name, cpu, memGiB, disk, gpu:{model:n}}
   vmSpecs: [],   // same shape
-  // {cluster, role, ip, spec(name), basis:"bm"|"vm", n, minDistinct:null|int, step:""}
+  // {cluster, role, ip, spec(name), basis:"bm"|"vm", n, minDistinct:null|int,
+  //  step:"", group:"" ("" = the group that lists the cluster)}
   demands: [],
   // {name, clusters:[...], bmSpec(name), fleetSize:null|int}
   groups: [],
@@ -55,7 +56,7 @@ const blank = {
   vm: () => ({ name: `vm-${state.vmSpecs.length + 1}`, cpu: 45, memGiB: 360, disk: 3000, gpu: {} }),
   demand: () => ({
     cluster: `cluster-${state.demands.length + 1}`, role: "worker", ip: "routable",
-    spec: state.vmSpecs[0]?.name ?? "", basis: "bm", n: 5, minDistinct: null, step: "",
+    spec: state.vmSpecs[0]?.name ?? "", basis: "bm", n: 5, minDistinct: null, step: "", group: "",
   }),
   group: () => ({ name: `pool-${state.groups.length + 1}`, clusters: [], bmSpec: state.bmSpecs[0]?.name ?? "", fleetSize: null }),
 };
@@ -96,6 +97,24 @@ function groupOf(cluster) {
   return state.groups.find((g) => g.clusters.includes(cluster)) ?? null;
 }
 
+/** The group a demand resolves to: its own override, else its cluster's. */
+function groupOfDemand(d) {
+  if (d.group) return state.groups.find((g) => g.name === d.group) ?? null;
+  return groupOf(d.cluster.trim());
+}
+
+/** Σ equivalent machines of the demands that resolve to this group — the
+ * floor the sizing search starts near; C3/C7 may push the answer above it. */
+function groupEquivalents(g) {
+  let n = 0;
+  for (const d of state.demands) {
+    if (groupOfDemand(d) !== g) continue;
+    const p = previewDemand(d);
+    if (p.n) n += p.n;
+  }
+  return n;
+}
+
 /** Keep buildOrder = (existing order ∩ current steps) + new steps. */
 function reconcileOrder() {
   const names = stepNames();
@@ -117,7 +136,7 @@ function propagateClusterRename(oldName, newName) {
  * shown next to the row so "11 machines → 22 VMs" is visible before Run. */
 export function previewDemand(d) {
   const spec = state.vmSpecs.find((s) => s.name === d.spec);
-  const g = groupOf(d.cluster.trim());
+  const g = groupOfDemand(d);
   const bm = state.bmSpecs.find((b) => b.name === (g?.bmSpec ?? state.bmSpecs[0]?.name));
   if (!spec || !bm) return { ok: false, text: spec ? "no machine model" : "pick a spec" };
   const exclusive = state.exclusive.includes(d.cluster.trim());
@@ -144,7 +163,7 @@ const txt = (sec, i, f, v, label, ph = "", extra = "") =>
 
 const combo = (sec, i, f, v, label, listId) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
-    <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}" pattern="[\\w.-]+" ${bind(sec, i, f)}></label>`;
+    <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}" pattern="[\\w.\\-]+" ${bind(sec, i, f)}></label>`;
 
 const num = (sec, i, f, v, label, { min = 0, ph = "" } = {}) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
@@ -179,14 +198,19 @@ function demandRow(d, i) {
   const p = previewDemand(d);
   const preview = p.ok === false && p.text
     ? `<span class="warn">${esc(p.text)}</span>`
-    : `<span><b>k</b> = ${p.k}/machine${p.exclusive ? " (exclusive)" : ""}</span>
+    : `<span><b>${p.k}</b> VM(s) / machine${p.exclusive ? " (exclusive)" : ""}</span>
        <span><b>${p.count}</b> VM(s)</span>
        <span><b>${p.n}</b> equivalent machine(s)</span>
        ${(p.warn || []).map((w) => `<span class="warn">⚠ ${esc(w)}</span>`).join("")}`;
-  const basis = `<div class="segmented segmented--mini" role="radiogroup">
-    <label><input type="radio" name="basis-${i}" value="bm" ${d.basis === "bm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>Machines</span></label>
-    <label><input type="radio" name="basis-${i}" value="vm" ${d.basis === "vm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>VMs</span></label>
-  </div>`;
+  // NOT a <label>: the segmented control holds its own <label>s and a
+  // nested label would re-activate the first radio on every click.
+  const basis = `<div class="mini"><span class="mini__label">Count as</span>
+    <div class="segmented segmented--mini segmented--block" role="radiogroup" aria-label="Sizing basis">
+      <label><input type="radio" name="basis-${i}" value="bm" ${d.basis === "bm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>Machines</span></label>
+      <label><input type="radio" name="basis-${i}" value="vm" ${d.basis === "vm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>VMs</span></label>
+    </div></div>`;
+  const groupOpts = [{ value: "", label: "(cluster's group)" },
+    ...state.groups.map((g) => ({ value: g.name, label: g.name }))];
   return `<div class="frow-card">
     <div class="frow frow--demand-top">
       ${combo("demands", i, "cluster", d.cluster, "Cluster", "cluster-options")}
@@ -195,12 +219,18 @@ function demandRow(d, i) {
       ${act("demand-dup", i, "⧉", "Duplicate")}
       ${act("demand-del", i, "✕", "Delete", "row-act--del")}
     </div>
-    <div class="frow frow--demand-bot">
+    <div class="frow frow--demand-mid">
       ${pick("demands", i, "spec", d.spec, "VM spec", specOpts())}
-      <label class="mini"><span class="mini__label">Basis</span>${basis}</label>
+      ${basis}
       ${num("demands", i, "n", d.n, d.basis === "vm" ? "VM count" : "Machines", { min: 1 })}
+    </div>
+    <div class="frow frow--demand-bot">
       ${num("demands", i, "minDistinct", d.minDistinct, "≥ machines", { min: 0, ph: `default ${state.policy.defaultMinDistinct ?? 0}` })}
-      ${txt("demands", i, "step", d.step, "Step", d.cluster || "cluster")}
+      ${txt("demands", i, "step", d.step, "Step", "= cluster",
+        `title="Rows sharing a step name are placed in ONE solve; different names are built one after another (later steps see earlier placements as pinned). Blank = the cluster id."`)}
+      ${state.groups.length
+        ? pick("demands", i, "group", d.group, "Baremetal group", groupOpts)
+        : `<div class="mini"><span class="mini__label">Baremetal group</span><span class="muted" style="font-size:12px;padding:6px 0">single shared pool</span></div>`}
     </div>
     <div class="demand-preview">${preview}</div>
   </div>`;
@@ -218,14 +248,18 @@ function groupCard(g, i) {
         <span>${esc(c)}</span></label>`;
     }).join("")
     : `<p class="picks-hint">Add demands first — clusters appear here.</p>`;
+  const sigma = groupEquivalents(g);
+  const overrides = state.demands.filter((d) => d.group === g.name && !g.clusters.includes(d.cluster.trim()));
   return `<div class="frow-card step-card">
     <div class="frow frow--group-head">
-      ${txt("groups", i, "name", g.name, "Group / pool")}
+      ${txt("groups", i, "name", g.name, "Group")}
       ${pick("groups", i, "bmSpec", g.bmSpec, "Machine model", bmOpts())}
-      ${num("groups", i, "fleetSize", g.fleetSize, "Machines", { min: 1, ph: "size it" })}
+      ${num("groups", i, "fleetSize", g.fleetSize, "Machines", { min: 1, ph: "auto (min)" })}
       ${act("group-del", i, "✕", "Delete group", "row-act--del")}
     </div>
     <div class="cluster-picks">${picks}</div>
+    <p class="picks-hint">Σ equivalent machines = <b>${sigma}</b> · blank Machines = find the minimum (footprint / AG policies can need more) · a number = check that it fits${
+      overrides.length ? ` · also hosts: ${overrides.map((d) => `${esc(d.cluster)}/${esc(d.role)}`).join(", ")}` : ""}</p>
   </div>`;
 }
 
@@ -346,15 +380,17 @@ function applyFieldEdit(el) {
   const f = el.dataset.f;
   const row = state[sec]?.[i];
   if (!row) return "none";
+  // Typing never rebuilds the input under the cursor (and never touches the
+  // cluster datalist, which an IME composition cannot survive): references
+  // follow a rename continuously, dependent sections refresh on `change`.
   if (sec === "bmSpecs" || sec === "vmSpecs") {
     if (f === "gpu") row.gpu = parseGpu(el.value);
     else if (f === "name") {
       const old = row.name;
       row.name = el.value.trim();
-      // Names are references: follow a rename in demands / groups.
       if (sec === "vmSpecs") for (const d of state.demands) if (d.spec === old) d.spec = row.name;
       if (sec === "bmSpecs") for (const g of state.groups) if (g.bmSpec === old) g.bmSpec = row.name;
-      return "rerender";
+      return "deferred";
     } else row[f] = coerceNum(el);
     return "preview";
   }
@@ -363,20 +399,25 @@ function applyFieldEdit(el) {
       const old = row.cluster;
       row.cluster = el.value.trim();
       propagateClusterRename(old, row.cluster);
-      return "rerender-soft";
+      return "deferred";
     }
     if (f === "n") row.n = Math.max(1, Math.round(coerceNum(el)));
     else if (f === "minDistinct") row.minDistinct = el.value.trim() === "" ? null : Math.max(0, Math.round(coerceNum(el)));
     else if (f === "basis") { row.basis = el.value; return "rerender"; }
-    else if (f === "step") { row.step = el.value.trim(); return "rerender-soft"; }
+    else if (f === "step") { row.step = el.value.trim(); return "deferred"; }
+    else if (f === "group") { row.group = el.value; return "rerender"; }
     else row[f] = el.value;
     return "preview";
   }
   if (sec === "groups") {
     if (f === "fleetSize") row.fleetSize = el.value.trim() === "" ? null : Math.max(1, Math.round(coerceNum(el)));
-    else if (f === "name") row.name = el.value.trim();
-    else row[f] = el.value;
-    return "preview";
+    else if (f === "name") {
+      const old = row.name;
+      row.name = el.value.trim();
+      for (const d of state.demands) if (d.group === old) d.group = row.name;
+      return "deferred";
+    } else row[f] = el.value;
+    return "rerender";
   }
   return "none";
 }
@@ -404,7 +445,12 @@ function handleAction(action, i) {
     case "demand-dup": state.demands.splice(i + 1, 0, { ...state.demands[i] }); break;
     case "demand-del": state.demands.splice(i, 1); break;
     case "group-add": state.groups.push(blank.group()); break;
-    case "group-del": state.groups.splice(i, 1); break;
+    case "group-del": {
+      const gone = state.groups[i]?.name;
+      state.groups.splice(i, 1);
+      for (const d of state.demands) if (d.group === gone) d.group = "";
+      break;
+    }
     case "order-up": if (i > 0) [state.buildOrder[i - 1], state.buildOrder[i]] = [state.buildOrder[i], state.buildOrder[i - 1]]; break;
     case "order-down": if (i < state.buildOrder.length - 1) [state.buildOrder[i + 1], state.buildOrder[i]] = [state.buildOrder[i], state.buildOrder[i + 1]]; break;
     default: return false;
@@ -449,8 +495,9 @@ export function buildRequest({ withMeta = false } = {}) {
     if (!specNames.has(d.spec)) throw new Error(`Demand ${d.cluster}/${d.role}: pick a VM spec.`);
   }
   if (state.groups.length) {
-    for (const c of clusterNames()) {
-      if (!groupOf(c)) throw new Error(`Cluster '${c}' is in no tenancy group — add it to one (or delete every group for a single shared pool).`);
+    for (const d of state.demands) {
+      if (!groupOfDemand(d)) throw new Error(
+        `${d.cluster}/${d.role}: cluster '${d.cluster}' is in no Baremetal group — tick it in a group, pick a group on the row, or delete every group for a single shared pool.`);
     }
   }
   reconcileOrder();
@@ -465,6 +512,7 @@ export function buildRequest({ withMeta = false } = {}) {
       if (d.basis === "vm") out.vm_count = d.n; else out.bm_equivalents = d.n;
       if (d.minDistinct !== null && d.minDistinct !== undefined) out.min_distinct_bms = d.minDistinct;
       if (d.step.trim()) out.step = d.step.trim();
+      if (d.group) out.group = d.group;
       return out;
     }),
     groups: state.groups.map((g) => {
@@ -511,6 +559,7 @@ export function loadIntoForm(req) {
     n: d.vm_count != null && d.bm_equivalents == null ? d.vm_count : (d.bm_equivalents ?? 1),
     minDistinct: d.min_distinct_bms ?? null,
     step: d.step ?? "",
+    group: d.group ?? "",
   }));
   state.groups = (req.groups ?? []).map((g) => ({
     name: g.name, clusters: [...(g.clusters ?? [])], bmSpec: g.bm_spec, fleetSize: g.fleet_size ?? null,
@@ -544,7 +593,7 @@ export function resetForm() {
   state.vmSpecs.push({ name: "full", cpu: 90, memGiB: 720, disk: 6000, gpu: {} });
   state.vmSpecs.push({ name: "half", cpu: 45, memGiB: 360, disk: 3000, gpu: {} });
   state.vmSpecs.push({ name: "third", cpu: 30, memGiB: 240, disk: 2000, gpu: {} });
-  state.demands.push({ cluster: "cluster-1", role: "worker", ip: "routable", spec: "half", basis: "bm", n: 6, minDistinct: null, step: "" });
+  state.demands.push({ cluster: "cluster-1", role: "worker", ip: "routable", spec: "half", basis: "bm", n: 6, minDistinct: null, step: "", group: "" });
   renderForm();
 }
 
@@ -585,26 +634,24 @@ export function initForm(onChange) {
       renderPreviews(); onChange?.(); return;
     }
     if (!el.dataset?.s) return;
+    if (el.type === "radio") return; // handled on `change`
     const how = applyFieldEdit(el);
     if (how === "rerender") renderForm();
-    else if (how === "rerender-soft") {
-      // Cluster / step text is being typed: refresh dependents without
-      // rebuilding the input under the cursor.
-      $("#group-rows").innerHTML = state.groups.length ? state.groups.map(groupCard).join("") : $("#group-rows").innerHTML;
-      $("#policy-card").innerHTML = policyCard();
-      $("#order-rows").innerHTML = orderRows();
-      refreshClusterDatalist();
-      renderPreviews();
-    } else if (how === "preview") renderPreviews();
+    else if (how === "preview" || how === "deferred") renderPreviews();
     onChange?.();
   });
   root.addEventListener("change", (e) => {
     const el = e.target;
-    if (el.dataset?.s && el.tagName === "SELECT") {
+    if (!el.dataset?.s) return;
+    if (el.tagName === "SELECT" || el.type === "radio") {
       const how = applyFieldEdit(el);
       if (how === "rerender") renderForm(); else renderPreviews();
       onChange?.();
+      return;
     }
+    // Text fields commit on blur / Enter: now rebuild the sections that
+    // depend on names (group pickers, exclusive list, build order, datalist).
+    if (el.type === "text") renderForm();
   });
   root.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-act]");

@@ -17,7 +17,9 @@
 
 /* Demand row: two lines + a preview line */
 #builder .frow--demand-top { grid-template-columns: 1.2fr 1.2fr 0.9fr auto auto; align-items: end; }
-#builder .frow--demand-bot { grid-template-columns: 1.4fr 1.1fr 0.8fr 0.9fr 1fr; align-items: end; }
+#builder .frow--demand-mid { grid-template-columns: 1.3fr 1.2fr 0.8fr; align-items: end; }
+#builder .frow--demand-bot { grid-template-columns: 0.9fr 1fr 1.2fr; align-items: end; }
+#builder .frow--demand-mid .segmented { min-width: 0; }
 #builder .demand-preview {
   font-size: 11px; color: var(--text-subtle); font-variant-numeric: tabular-nums;
   display: flex; gap: 10px; flex-wrap: wrap;
@@ -36,6 +38,7 @@
 #builder .cluster-picks label.is-taken { opacity: 0.45; }
 #builder .cluster-picks label.is-taken input { cursor: not-allowed; }
 #builder .picks-hint { font-size: 11px; color: var(--text-subtle); margin: 0; }
+#builder .picks-hint b { color: var(--text-muted); }
 
 /* Policy */
 #builder .frow--policy { grid-template-columns: 1fr 1fr; align-items: end; }

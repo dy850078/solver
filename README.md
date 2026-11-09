@@ -188,8 +188,13 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   VMs per machine, `count = N × k`. A spec that does not tile the machine
   yields a `spec_does_not_tile_bm` advisory, never machine N+1. `vm_count`
   is the other form (N is derived).
-- `groups` partition clusters into pools; each pool is sized on its own
-  (`fleet_size` blank) or checked against a fixed size, and the totals add.
+- `groups` (shown as *Baremetal groups* in the UI) partition clusters into
+  pools; each pool is sized on its own (`fleet_size` blank) or checked
+  against a fixed size, and the totals add. A demand may name its own
+  `group` to put one node type of a cluster on a dedicated pool ("gpu
+  workers only on GPU-tagged machines", exclusive semantics). Pools compile
+  to `candidate_baremetals`, the same mechanism the scheduler uses for its
+  own role filtering; the production `/solve` contract is unchanged.
 - `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and

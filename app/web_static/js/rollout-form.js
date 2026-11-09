@@ -30,7 +30,7 @@ const IP_TYPES = ["routable", "non-routable"];
 const combo = (sec, i, f, v, label, listId) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
     <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}"
-      pattern="[\\w.-]+" ${bind(sec, i, f)}></label>`;
+      pattern="[\\w.\\-]+" ${bind(sec, i, f)}></label>`;
 
 export function renderDatalists(root) {
   const dl = (id, values) =>

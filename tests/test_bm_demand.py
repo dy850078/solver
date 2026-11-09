@@ -356,6 +356,73 @@ class TestFootprintAdvisory:
             a["type"] == "footprint_exceeds_equivalents" for a in c.advisories)
 
 
+class TestDemandGroupOverride:
+    """'These roles may only live on tagged machines' with exclusive
+    semantics IS a separate pool, so a demand may name a different group
+    than its cluster (ADR-020 §2h)."""
+
+    GPU_BM = Resources(cpu_cores=90, memory_mib=720 * GiB, storage_gb=6000, gpu={"h200": 8})
+    GPU_VM = Resources(cpu_cores=45, memory_mib=360 * GiB, storage_gb=3000, gpu={"h200": 4})
+
+    def _req(self, **kw):
+        req = request(
+            [D("A1", "third", n=6), D("A1", "gpu-half", n=4, role="gpu-worker", group="gpu-nodes")],
+            groups=[TenancyGroup(name="shared", clusters=["A1"], bm_spec="bm"),
+                    TenancyGroup(name="gpu-nodes", clusters=[], bm_spec="gpu-bm")],
+            min_distinct=0, **kw,
+        )
+        return req.model_copy(update={
+            "bm_specs": [BmSpec(name="bm", capacity=BM), BmSpec(name="gpu-bm", capacity=self.GPU_BM)],
+            "vm_specs": SPECS + [VmSpec(name="gpu-half", resources=self.GPU_VM)],
+        })
+
+    def test_override_splits_cluster_across_groups(self):
+        c = compile_bm_demands(self._req())
+        assert not c.errors, c.errors
+        by = {g.name: g for g in c.groups}
+        assert by["shared"].clusters == ["A1"] and by["gpu-nodes"].clusters == ["A1"]
+        assert [d.node_role for d in by["gpu-nodes"].demands] == ["gpu-worker"]
+        assert by["gpu-nodes"].demands[0].fits_per_bm == 2 and by["gpu-nodes"].demands[0].vm_count == 8
+        assert by["gpu-nodes"].fleet.id_prefix == "gpu-nodes/bm-"
+
+    def test_plan_reports_both_pools(self):
+        r = plan_bm_demands(self._req())
+        assert r.success, r.solver_status
+        rows = {(x.cluster_id, x.node_role): x for x in r.placement_matrix}
+        assert set(rows) == {("A1", "worker"), ("A1", "gpu-worker")}
+        # Both groups build a step named "A1", so their synthetic ids collide
+        # ("A1/split-r0-s0-k"); the report must keep them apart.
+        assert rows[("A1", "worker")].vm_count == 18
+        assert rows[("A1", "gpu-worker")].vm_count == 8
+        assert rows[("A1", "gpu-worker")].vm_spec == "gpu-half"
+        assert all(e.vm_id.startswith(("shared/", "gpu-nodes/"))
+                   for l in r.bm_layouts for e in l.entries)
+        prefixes = {l.bm_id.split("/")[0] for l in r.bm_layouts}
+        assert prefixes == {"shared", "gpu-nodes"}
+        gpu_layouts = [l for l in r.bm_layouts if l.pool == "gpu-nodes"]
+        assert gpu_layouts and all(e.node_role == "gpu-worker" for l in gpu_layouts for e in l.entries)
+
+    def test_unknown_group_is_input_error(self):
+        req = self._req()
+        req.demands[1].group = "nope"
+        c = compile_bm_demands(req)
+        assert any("unknown group 'nope'" in e for e in c.errors)
+
+    def test_cluster_without_list_membership_but_with_overrides_is_fine(self):
+        req = self._req()
+        req.demands[0].group = "shared"
+        req.groups[0].clusters = []
+        c = compile_bm_demands(req)
+        assert not c.errors, c.errors
+
+    def test_exclusive_cluster_gets_a_rule_in_each_group(self):
+        c = compile_bm_demands(self._req(exclusive=["A1"]))
+        assert not c.errors, c.errors
+        for g in c.groups:
+            assert len(g.steps[0].exclusive_bm_rules) == 1
+            assert g.demands[0].exclusive and g.demands[0].fits_per_bm == 1
+
+
 class TestEndpoints:
 
     def test_compile_endpoint_returns_groups_or_400(self, client):

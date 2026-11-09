@@ -139,14 +139,14 @@
         <div id="demand-rows" class="form-rows"></div>
         <button type="button" class="btn btn--add" data-act="demand-add">+ Demand</button>
 
-        <p class="subhead">Tenancy groups <span class="muted">clusters that may share machines</span></p>
+        <p class="subhead">Baremetal groups <span class="muted">clusters that may share machines · one pool each</span></p>
         <div id="group-rows" class="form-rows"></div>
         <button type="button" class="btn btn--add" data-act="group-add">+ Group</button>
 
         <p class="subhead">Policy</p>
         <div id="policy-card" class="form-rows"></div>
 
-        <p class="subhead">Build order <span class="muted">steps replay sequentially</span></p>
+        <p class="subhead">Build order <span class="muted">rows sharing a step name are placed together; steps replay in order</span></p>
         <div id="order-rows" class="form-rows"></div>
 
         <p class="subhead">Solver</p>
@@ -211,7 +211,7 @@
 
     <section id="groups-card" class="card hidden">
       <header class="card__header">
-        <h2 class="card__title">Tenancy groups</h2>
+        <h2 class="card__title">Baremetal groups</h2>
         <span class="card__hint">each group is its own pool — machines never cross groups, totals add up</span>
         <div class="card__header-right toolbar">
           <button id="dl-template-btn" type="button" class="btn btn--ghost btn--small" title="Download the BM → VM mapping for the legacy provisioning system">Legacy template</button>
@@ -257,7 +257,7 @@
       <header class="card__header">
         <h2 class="card__title" id="rack-title">Machines</h2>
         <div class="card__header-right">
-          <div id="group-tabs" class="segmented" role="radiogroup" aria-label="Tenancy group"></div>
+          <div id="group-tabs" class="segmented" role="radiogroup" aria-label="Baremetal group"></div>
           <label class="field--inline" title="Show CPU / memory / storage usage on every machine">
             <input type="checkbox" id="show-capacity">
             <span>Capacity</span>

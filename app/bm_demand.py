@@ -106,6 +106,11 @@ class ClusterDemand(BaseModel):
     min_distinct_bms: int | None = Field(default=None, ge=0)
     # Build step this demand belongs to; default = its cluster_id.
     step: str | None = None
+    # Tenancy group override: place THIS node type in a different pool than
+    # the rest of its cluster — the "these roles may only live on tagged
+    # machines" policy, with exclusive semantics (nobody else uses that
+    # pool). None = the group that lists the cluster.
+    group: str | None = None
 
     @model_validator(mode="after")
     def _one_basis(self) -> ClusterDemand:
@@ -122,11 +127,16 @@ class TenancyGroup(BaseModel):
     Clusters that may share machines, and the machine model they run on.
     Groups never share machines with each other (pool semantics).
 
+    Membership is per cluster by default; a ClusterDemand.group override
+    moves one node type of a cluster into another group (so a cluster can
+    span groups, e.g. its gpu-workers on a GPU pool).
+
     fleet_size: None → size the group ("how many machines?"); an int →
     place on exactly that many machines ("does it fit?").
     """
     name: str = Field(min_length=1)
-    clusters: list[str] = Field(min_length=1)
+    # May be empty for a group populated only through demand overrides.
+    clusters: list[str] = Field(default_factory=list)
     bm_spec: str = Field(min_length=1)
     fleet_size: int | None = Field(default=None, ge=1)
 
@@ -329,7 +339,11 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                     f"a cluster belongs to exactly one tenancy group"
                 )
             owner[c] = g.name
-            if c not in demand_cluster_set:
+            has_demand = any(
+                d.cluster_id == c and (d.group is None or d.group == g.name)
+                for d in req.demands
+            )
+            if not has_demand:
                 out.advisories.append({
                     "type": "group_cluster_without_demand", "severity": "info",
                     "cluster_id": c, "group": g.name,
@@ -338,11 +352,20 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
     names = [g.name for g in groups]
     if len(set(names)) != len(names):
         out.errors.append("group names must be unique")
-    for c in demand_clusters:
-        if c not in owner:
+
+    def owner_of(d: ClusterDemand) -> str | None:
+        return d.group if d.group is not None else owner.get(d.cluster_id)
+
+    for d in req.demands:
+        label = f"{d.cluster_id}/{d.ip_type or '*'}/{d.node_role}"
+        if d.group is not None and d.group not in names:
+            out.errors.append(f"demand {label}: unknown group '{d.group}'")
+        elif owner_of(d) is None:
             out.errors.append(
-                f"cluster '{c}' is in no tenancy group — list it in groups "
-                f"(or omit groups entirely for a single shared pool)"
+                f"demand {label}: cluster '{d.cluster_id}' is in no tenancy "
+                f"group and the demand names none — list the cluster in a "
+                f"group, set the demand's group, or omit groups entirely for "
+                f"a single shared pool"
             )
 
     # --- build order ----------------------------------------------------
@@ -367,7 +390,7 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
     emitted_exclusive: set[tuple[str, str]] = set()
 
     for d in req.demands:
-        gname = owner[d.cluster_id]
+        gname = owner_of(d)
         g = group_by_name[gname]
         cap = bm_specs[g.bm_spec].capacity
         spec = vm_specs.get(d.vm_spec)
@@ -515,8 +538,13 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
             rooms=t.rooms, racks=t.racks, ags=t.ags, network=t.network,
             pool=g.name, id_prefix=f"{g.name}/bm-",
         )
+        # Report the clusters that actually have demand here (overrides can
+        # pull a cluster in or move all of its demand out).
+        present = list(OrderedDict.fromkeys(
+            cd.cluster_id for cd in per_group_compiled[g.name]
+        ))
         out.groups.append(CompiledGroup(
-            name=g.name, clusters=list(g.clusters), bm_spec=g.bm_spec,
+            name=g.name, clusters=present, bm_spec=g.bm_spec,
             fleet=fleet, fleet_size=g.fleet_size, steps=ordered,
             demands=per_group_compiled[g.name],
         ))
@@ -582,9 +610,14 @@ def plan_bm_demands(req: BmDemandPlanRequest) -> BmDemandPlanResult:
         gr = _run_group(cg, req)
         group_results.append(gr)
         if gr.rollout is not None:
+            # Synthetic ids are only unique within one rollout ("A1/split-r0-
+            # s0-3" exists in every group whose build order has a step A1),
+            # so namespace them by group before pooling the reports — the
+            # machines already carry the group prefix via FleetTemplate.
             for rep in gr.rollout.reports:
-                all_assign.extend(rep.new_assignments)
-                all_vms.extend(rep.new_vms)
+                for a, vm in zip(rep.new_assignments, rep.new_vms):
+                    all_assign.append(a.model_copy(update={"vm_id": f"{gr.name}/{a.vm_id}"}))
+                    all_vms.append(vm.model_copy(update={"id": f"{gr.name}/{vm.id}"}))
             all_bms.extend(gr.baremetals)
 
     layouts = bm_layouts(all_assign, all_vms, all_bms, catalog)

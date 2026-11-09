@@ -108,7 +108,11 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   `ag_spread_exceeds_equivalents`) and C7 (`footprint_exceeds_equivalents`)
   can push one cluster above its N; both are compile-time advisories. The
   demand page's template IS the `BmDemandPlanRequest` JSON (`_name` /
-  `_description` stripped before POST).
+  `_description` stripped before POST). A demand's `group` override moves
+  one node type of a cluster into another pool ("tagged machines",
+  exclusive semantics); pools compile to `candidate_baremetals`, mirroring
+  the Go scheduler's own role filtering — the production contract is
+  unchanged (UI label: Baremetal group; JSON field stays `groups`).
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

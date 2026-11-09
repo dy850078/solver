@@ -132,10 +132,10 @@ function renderBanner() {
   if (r.success) {
     el.classList.add("alert--ok");
     el.innerHTML = `<strong>${r.total_baremetals} machine(s) in total</strong> across ` +
-      `${r.groups.length} pool(s) — every tenancy group places.`;
+      `${r.groups.length} Baremetal group(s) — every group places.`;
   } else {
     el.classList.add("alert--error");
-    el.innerHTML = `<strong>Not every pool places.</strong> ${escapeHtml(r.solver_status)} — ` +
+    el.innerHTML = `<strong>Not every group places.</strong> ${escapeHtml(r.solver_status)} — ` +
       `see the group table and the failing step's diagnostics.`;
   }
 }
@@ -164,9 +164,9 @@ function renderGroups() {
   }).join("");
   $("#groups-content").innerHTML = `
     <table class="table group-table">
-      <thead><tr><th>Pool</th><th>Clusters</th><th>Machine model</th><th class="num">Machines</th><th>Status</th><th>How</th></tr></thead>
+      <thead><tr><th>Group</th><th>Clusters</th><th>Machine model</th><th class="num">Machines</th><th>Status</th><th>How</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${r.total_baremetals}</strong></td><td colspan="2" class="muted">pools never share machines, so the totals add</td></tr></tfoot>
+      <tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${r.total_baremetals}</strong></td><td colspan="2" class="muted">groups never share machines, so the totals add</td></tr></tfoot>
     </table>`;
 }
 
@@ -195,8 +195,8 @@ function renderCompiled() {
   card.classList.remove("hidden");
   $("#compiled-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Pool</th><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
-        <th class="num">k / machine</th><th class="num">Machines</th><th class="num">VMs</th><th class="num">≥ machines</th><th>Step</th></tr></thead>
+      <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
+        <th class="num">VMs / machine</th><th class="num">Machines</th><th class="num">VMs</th><th class="num">≥ machines</th><th>Step</th></tr></thead>
       <tbody>${rows.map((d) => `<tr>
         <td>${escapeHtml(d.pool)}</td><td>${escapeHtml(d.cluster_id)}</td><td>${escapeHtml(d.node_role)}</td>
         <td class="muted">${escapeHtml(d.ip_type || "—")}</td>
@@ -255,7 +255,7 @@ function renderRack() {
   if (!groups.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
   const g = groups[Math.min(state.group, groups.length - 1)];
-  $("#rack-title").textContent = `Machines — pool “${g.name}”`;
+  $("#rack-title").textContent = `Machines — group “${g.name}”`;
   const view = groupView(g);
   $("#step-strip").innerHTML = view.reports.map((rep, i) => `${i ? '<span class="step-arrow">→</span>' : ""}
     <div class="step-cell">
@@ -293,7 +293,7 @@ function renderLayouts() {
   const ipShort = (ip) => ({ routable: "R", "non-routable": "NR" }[ip] ?? ip ?? "");
   $("#layout-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Machine</th><th>Pool</th><th>AG</th><th>Rack</th><th>VMs</th><th>CPU</th><th>Memory (MiB)</th><th>Storage (GB)</th></tr></thead>
+      <thead><tr><th>Machine</th><th>Group</th><th>AG</th><th>Rack</th><th>VMs</th><th>CPU</th><th>Memory (MiB)</th><th>Storage (GB)</th></tr></thead>
       <tbody>${layouts.map((l) => `<tr>
         <td class="cell-mono">${escapeHtml(l.bm_id)}</td><td>${escapeHtml(l.pool)}</td>
         <td>${escapeHtml(l.ag)}</td><td>${escapeHtml(l.rack)}</td>

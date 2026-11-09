@@ -120,6 +120,43 @@ fleet」的假設差太多。
    spread 警示),讓「11 台 → 22 顆」在按 Run 前就看得到;真值仍以回傳的
    `compiled` 為準。
 
+### 2h. 「某幾個 role 只能住有標籤的 BM」:需求層級的 group 覆寫,與 Go scheduler 的分工
+
+需求:同一個 Baremetal group、同一個 cluster,**某幾個 role** 只能落在有特定標籤
+(例如 GPU、大儲存)的機器上。
+
+1. **可借住語意**(標籤機器有空位時其他 role 也能用)——同一個 fleet 內的異質子集,
+   `FleetTemplate` 要支援多個子 fleet、`rollout_sizing` 的遞增搜尋要變成二維
+   (標籤台數 × 一般台數)。**排除(本輪)**:屬於核心改動,等真的有需求再開一輪。
+2. **專屬語意**(採用):貼標籤的機器**就是一個獨立 pool**,別人不借住。這在
+   模型上等於「拆 Baremetal group」,只是 group 成員要從 per-cluster 鬆成
+   per-(cluster, role):`ClusterDemand.group` 覆寫該列的所屬 group,
+   `TenancyGroup.clusters` 允許空(純靠覆寫成員)。編譯器 `owner_of(d) = d.group
+   or owner[d.cluster_id]`;驗證「每列需求恰解析到一個 group」;報表的
+   `clusters` 改為「該組實際有需求的 cluster 聯集」,同一個 cluster 因此可以
+   出現在兩個 group 的矩陣列與 BM 前綴裡。實務上特殊硬體本來就不想被普通
+   worker 佔掉,專屬語意通常就是對的語意。
+
+**與 Go scheduler 的分工**(使用者的疑問:調度端已用 candidate baremetal 做
+「control-plane BM 只住 control-plane VM」,規劃端這樣做會不會互相影響?):
+
+- 規劃端把 group / 覆寫編譯成 `ResourceRequirement.candidate_baremetals`(只含該
+  pool 的機器)。這和 scheduler 的 step-3 篩選是**同一個機制的兩端**:規劃端在
+  **模仿**調度端的分割,讓模擬出的計畫能在真實調度時重現;身分(哪台 BM 是
+  control-plane BM)永遠是 scheduler 的事,規劃端不定義它。
+- `/v1/placement/solve`、`/split-and-solve` 契約不變;新增的 `min_distinct_bm_rules`
+  選填、預設空,scheduler 不送就沒有 C7。PM Demand 路徑(`/bm-demand/*`)完全不碰
+  生產路徑。
+- 一致性風險:規劃端假設標籤 pool 專屬;若調度端允許其他 role 借住標籤機器,
+  實際使用率會與計畫漂移。這交給 `reconcile.py` 與 consistency replay(ADR-006),
+  不是規劃端的 bug。要嘛兩邊一致,要嘛接受計畫偏保守。
+- 需要動 scheduler 的只有兩種情況:想讓生產調度也強制「至少分散 N 台」(帶
+  `min_distinct_bm_rules`),或想讓 scheduler 直接吃規劃端的 BM 版面(legacy
+  template)當施工圖——那是輸入資料,不是程式改動。
+
+UI 上 group 顯示為「Baremetal group」(使用者用語);JSON 欄位 `groups` 與類別名
+`TenancyGroup` 不改,避免動 API 契約。
+
 ## 3. 最終決策
 
 `app/bm_demand.py`:`BmSpec` / `VmSpec` 目錄、`ClusterDemand`、`TenancyGroup`、
@@ -202,6 +239,10 @@ key 只發一次,否則後面的 step 會收到重複約束(無害但浪費)。
 
 ## 7. 驗證方式
 
+- `tests/test_bm_demand.py::TestDemandGroupOverride`:A1 worker 在 shared、A1
+  gpu-worker 覆寫到 gpu-nodes → 兩組、矩陣兩列 A1、BM 前綴分開、GPU pool 只有
+  gpu-worker;未知 group → INPUT_ERROR;純覆寫成員的 group 合法;獨佔 cluster
+  跨兩組各一條 C6。範例 `examples/bm_demand/tagged_gpu_roles.json`。
 - `tests/test_bm_demand.py`:`fits_per_bm`(整除、向下取整、跨維度 min、GPU、
   不合)、編譯(slot 語意、`vm_count` 反推、不一致、`count < N`、不整除 advisory、
   獨佔、分組、build_order)、端到端三 cluster 情境(shared 18 / c1-own 6 /

@@ -1,0 +1,103 @@
+{
+  "_name": "tagged-gpu-roles",
+  "_description": "One cluster, two Baremetal groups (ADR-020 s2h): cluster A1's ordinary workers share the 'shared' pool with B1, while A1's gpu-workers may only live on GPU-tagged machines - a demand-level `group` override puts that node type in the 'gpu-nodes' pool (exclusive semantics: nobody else uses those machines). Compiles to candidate_baremetals restricted per pool, the same mechanism the scheduler uses for its own role filtering.",
+  "bm_specs": [
+    {
+      "name": "bm-90-720",
+      "capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 6000
+      }
+    },
+    {
+      "name": "bm-gpu-h200x8",
+      "capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 6000,
+        "gpu": {
+          "h200": 8
+        }
+      }
+    }
+  ],
+  "vm_specs": [
+    {
+      "name": "third",
+      "resources": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 2000
+      }
+    },
+    {
+      "name": "half",
+      "resources": {
+        "cpu_cores": 45,
+        "memory_mib": 368640,
+        "storage_gb": 3000
+      }
+    },
+    {
+      "name": "gpu-half",
+      "resources": {
+        "cpu_cores": 45,
+        "memory_mib": 368640,
+        "storage_gb": 3000,
+        "gpu": {
+          "h200": 4
+        }
+      }
+    }
+  ],
+  "demands": [
+    {
+      "cluster_id": "A1",
+      "node_role": "worker",
+      "ip_type": "routable",
+      "vm_spec": "third",
+      "bm_equivalents": 6
+    },
+    {
+      "cluster_id": "A1",
+      "node_role": "gpu-worker",
+      "ip_type": "routable",
+      "vm_spec": "gpu-half",
+      "bm_equivalents": 4,
+      "min_distinct_bms": 4,
+      "group": "gpu-nodes"
+    },
+    {
+      "cluster_id": "B1",
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "vm_spec": "half",
+      "bm_equivalents": 4
+    }
+  ],
+  "groups": [
+    {
+      "name": "shared",
+      "clusters": [
+        "A1",
+        "B1"
+      ],
+      "bm_spec": "bm-90-720"
+    },
+    {
+      "name": "gpu-nodes",
+      "clusters": [],
+      "bm_spec": "bm-gpu-h200x8"
+    }
+  ],
+  "default_min_distinct_bms": 6,
+  "topology": {
+    "racks": 6,
+    "ags": 3
+  },
+  "config": {
+    "max_solve_time_seconds": 10,
+    "w_headroom": 0
+  }
+}
