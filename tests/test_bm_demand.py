@@ -182,6 +182,21 @@ class TestCompile:
         assert any("exactly one tenancy group" in e for e in errs)
         assert any("in no tenancy group" in e for e in errs)
 
+    def test_duplicate_cluster_within_one_group_is_harmless(self):
+        """A UI rename can list a cluster twice in the same group; that is
+        not "two groups" and must compile."""
+        req = request([D("C1", "third", n=6)],
+                      groups=[TenancyGroup(name="pool-ap", clusters=["C1", "C1"], bm_spec="bm")])
+        c = self._one(req)
+        assert c.groups[0].clusters == ["C1"]
+
+    def test_duplicate_group_names_reported_as_such(self):
+        req = request([D("A1", "third", n=6), D("B1", "half", n=3)],
+                      groups=[TenancyGroup(name="p", clusters=["A1"], bm_spec="bm"),
+                              TenancyGroup(name="p", clusters=["B1"], bm_spec="bm")])
+        errs = compile_bm_demands(req).errors
+        assert errs == ["group names must be unique"]
+
     def test_build_order_and_step_override(self):
         req = request([D("A1", "third", n=6), D("B1", "half", n=3),
                        D("A1", "third", n=3, role="master", ip="routable", step="B1")],

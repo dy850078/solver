@@ -9,6 +9,7 @@
 import { listExamples, getExample, planCapacity } from "./api.js";
 import { initForm, buildRequest, loadIntoForm } from "./report-form.js";
 import { buildXlsx } from "./xlsx.js";
+import { initSidebarChrome } from "./sidebar.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -674,6 +675,7 @@ async function run() {
 }
 
 async function init() {
+  initSidebarChrome();
   initForm();
   $("run-btn").addEventListener("click", run);
   $("export-xlsx").addEventListener("click", () => {

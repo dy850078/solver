@@ -9,6 +9,7 @@
 
 import { listExamples, getExample, rollout, rolloutSize } from "./api.js";
 import { escapeHtml } from "./util.js";
+import { initSidebarChrome } from "./sidebar.js";
 import { rebuildColorScale } from "./colors.js";
 import {
   GROUP_BY_OPTIONS,
@@ -575,6 +576,7 @@ async function runSimulation() {
 }
 
 function init() {
+  initSidebarChrome();
   const groupSel = $("#group-by");
   for (const { value, label } of GROUP_BY_OPTIONS) {
     const opt = document.createElement("option");

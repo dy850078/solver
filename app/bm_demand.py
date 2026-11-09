@@ -328,11 +328,18 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
         name="shared", clusters=list(OrderedDict.fromkeys(demand_clusters)),
         bm_spec=req.bm_specs[0].name,
     )]
+    names = [g.name for g in groups]
+    if len(set(names)) != len(names):
+        out.errors.append("group names must be unique")
+        return out  # the ownership scan below would blame the wrong group
     owner: dict[str, str] = {}
     for g in groups:
         if g.bm_spec not in bm_specs:
             out.errors.append(f"group '{g.name}': unknown bm_spec '{g.bm_spec}'")
-        for c in g.clusters:
+        # A cluster listed twice in the SAME group is harmless (a UI rename
+        # can produce it); only membership in two different groups is a
+        # contract error.
+        for c in OrderedDict.fromkeys(g.clusters):
             if c in owner:
                 out.errors.append(
                     f"cluster '{c}' is in groups '{owner[c]}' and '{g.name}' — "
@@ -349,10 +356,6 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                     "cluster_id": c, "group": g.name,
                     "message": f"group '{g.name}' lists cluster '{c}' which has no demand",
                 })
-    names = [g.name for g in groups]
-    if len(set(names)) != len(names):
-        out.errors.append("group names must be unique")
-
     def owner_of(d: ClusterDemand) -> str | None:
         return d.group if d.group is not None else owner.get(d.cluster_id)
 

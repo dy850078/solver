@@ -11,6 +11,7 @@
 
 import { listExamples, getExample, bmDemandPlan } from "./api.js";
 import { escapeHtml } from "./util.js";
+import { initSidebarChrome } from "./sidebar.js";
 import { rebuildColorScale } from "./colors.js";
 import {
   GROUP_BY_OPTIONS, buildPanels, collectAgSet, renderRackDiagram, showRackEmpty,
@@ -396,6 +397,7 @@ async function populateExamples() {
 }
 
 function init() {
+  initSidebarChrome();
   const gb = $("#group-by");
   for (const o of GROUP_BY_OPTIONS) {
     const opt = document.createElement("option");

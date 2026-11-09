@@ -125,11 +125,14 @@ function reconcileOrder() {
 
 /** Cluster rename: follow it in groups / exclusive when no other demand
  * still carries the old name (otherwise both names are live). */
+const uniq = (xs) => [...new Set(xs)];
+
 function propagateClusterRename(oldName, newName) {
   if (!oldName || oldName === newName) return;
   if (state.demands.some((d) => d.cluster === oldName)) return;
-  for (const g of state.groups) g.clusters = g.clusters.map((c) => (c === oldName ? newName : c));
-  state.exclusive = state.exclusive.map((c) => (c === oldName ? newName : c));
+  // Renaming onto a name the group already lists must not leave it twice.
+  for (const g of state.groups) g.clusters = uniq(g.clusters.map((c) => (c === oldName ? newName : c)));
+  state.exclusive = uniq(state.exclusive.map((c) => (c === oldName ? newName : c)));
 }
 
 /** Compile preview for one demand — the same arithmetic the server runs,
@@ -249,7 +252,10 @@ function groupCard(g, i) {
     }).join("")
     : `<p class="picks-hint">Add demands first — clusters appear here.</p>`;
   const sigma = groupEquivalents(g);
-  const overrides = state.demands.filter((d) => d.group === g.name && !g.clusters.includes(d.cluster.trim()));
+  const hosted = state.demands.filter((d) => groupOfDemand(d) === g);
+  const viaOverride = hosted.filter((d) => d.group === g.name && !g.clusters.includes(d.cluster.trim()));
+  const byDefault = hosted.filter((d) => !viaOverride.includes(d));
+  const rowLabel = (d) => `${esc(d.cluster || "?")}/${esc(d.role || "?")}`;
   return `<div class="frow-card step-card">
     <div class="frow frow--group-head">
       ${txt("groups", i, "name", g.name, "Group")}
@@ -258,8 +264,11 @@ function groupCard(g, i) {
       ${act("group-del", i, "✕", "Delete group", "row-act--del")}
     </div>
     <div class="cluster-picks">${picks}</div>
-    <p class="picks-hint">Σ equivalent machines = <b>${sigma}</b> · blank Machines = find the minimum (footprint / AG policies can need more) · a number = check that it fits${
-      overrides.length ? ` · also hosts: ${overrides.map((d) => `${esc(d.cluster)}/${esc(d.role)}`).join(", ")}` : ""}</p>
+    <p class="picks-hint">Hosts: ${hosted.length
+      ? `<b>${byDefault.map(rowLabel).join(", ")}</b>${viaOverride.length
+          ? `${byDefault.length ? " · " : ""}via row override: <b>${viaOverride.map(rowLabel).join(", ")}</b>` : ""}`
+      : "<b>nothing yet</b> — tick a cluster or pick this group on a demand row"}</p>
+    <p class="picks-hint">Σ equivalent machines = <b>${sigma}</b> · blank Machines = find the minimum (footprint / AG policies can need more) · a number = check that it fits</p>
   </div>`;
 }
 
@@ -495,6 +504,16 @@ export function buildRequest({ withMeta = false } = {}) {
     if (!specNames.has(d.spec)) throw new Error(`Demand ${d.cluster}/${d.role}: pick a VM spec.`);
   }
   if (state.groups.length) {
+    const seen = new Map();
+    for (const g of state.groups) {
+      g.clusters = uniq(g.clusters);
+      for (const c of g.clusters) {
+        if (seen.has(c) && seen.get(c) !== g.name) {
+          throw new Error(`Cluster '${c}' is ticked in groups '${seen.get(c)}' and '${g.name}' — a cluster's default group is exactly one; move single node types with the row's Baremetal group instead.`);
+        }
+        seen.set(c, g.name);
+      }
+    }
     for (const d of state.demands) {
       if (!groupOfDemand(d)) throw new Error(
         `${d.cluster}/${d.role}: cluster '${d.cluster}' is in no Baremetal group — tick it in a group, pick a group on the row, or delete every group for a single shared pool.`);
@@ -562,9 +581,9 @@ export function loadIntoForm(req) {
     group: d.group ?? "",
   }));
   state.groups = (req.groups ?? []).map((g) => ({
-    name: g.name, clusters: [...(g.clusters ?? [])], bmSpec: g.bm_spec, fleetSize: g.fleet_size ?? null,
+    name: g.name, clusters: uniq(g.clusters ?? []), bmSpec: g.bm_spec, fleetSize: g.fleet_size ?? null,
   }));
-  state.exclusive = [...(req.exclusive_clusters ?? [])];
+  state.exclusive = uniq(req.exclusive_clusters ?? []);
   state.policy.defaultMinDistinct = req.default_min_distinct_bms ?? 0;
   const t = req.topology ?? {};
   for (const [k] of TOPO_DIMS) state.topo[k] = Number(t[k] ?? (k === "racks" ? 6 : k === "ags" ? 3 : 1)) || 1;
