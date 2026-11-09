@@ -83,7 +83,7 @@ def build_fleet(fleet: FleetTemplate, n: int) -> list[Baremetal]:
     for i in range(n):
         seq = f"{i + 1:03d}"
         out.append(Baremetal(
-            id=f"bm-{seq}",
+            id=f"{fleet.id_prefix}{seq}",
             hostname=f"bare-{seq}",
             total_capacity=fleet.total_capacity,
             used_capacity=Resources(),
@@ -197,6 +197,12 @@ def _validate(request: RolloutSizingRequest) -> list[str]:
                     )
                     break
     return errors
+
+
+def point_steps_at_fleet(steps: list[RolloutStep], bm_ids: list[str]) -> list[RolloutStep]:
+    """Point every VM and requirement at a generated fleet (public twin of
+    the per-probe helper, used by bm_demand's fixed-fleet mode)."""
+    return _strip_candidates(steps, bm_ids)
 
 
 def _strip_candidates(steps: list[RolloutStep], bm_ids: list[str]) -> list[RolloutStep]:

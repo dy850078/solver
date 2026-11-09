@@ -20,6 +20,8 @@ app/
 ├── rollout.py       # Rollout simulation — replays a build order, folding placements forward as pins (ADR-013)
 ├── rollout_sizing.py    # "How many BMs does this build order need?" — fleet template + ascending search (ADR-014)
 ├── sizing_floors.py     # Analytic lower bounds on fleet size (strict under-estimates)
+├── bm_demand.py         # PM "N equivalent BMs" demand → per-tenancy-group rollout/sizing requests + reports (ADR-020)
+├── placement_report.py  # Pure aggregation: cluster×role×AG matrix, per-BM layouts, legacy BM-VM template (ADR-020)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
 ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
 ├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
@@ -62,7 +64,11 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   - **C6** — exclusive occupancy: members of an `exclusive_bm_rules` group
     occupy their BM alone (appliance semantics — no outsiders AND no group
     siblings; reified via `add_max_equality`, see ADR-011).
-  - New constraints get the next label (C7, C8, …), a `CONSTRAINT Cn:` comment
+  - **C7** — minimum footprint: members of a `min_distinct_bm_rules` group
+    land on at least `min_distinct_bms` distinct BMs (a LOWER bound, so no
+    grandfathering; one-sided indicator link `host[g,b] ≤ Σ assign`, see
+    ADR-019). Static group smaller than N → INPUT_ERROR. No auto-generation.
+  - New constraints get the next label (C8, C9, …), a `CONSTRAINT Cn:` comment
     with the math in the builder method, and dedicated tests.
 - **Pinned VMs** (`VM.pinned_to`, ADR-012): existing VMs carried into a request
   as facts — forced assignments that give C2–C6 global vision for add-node /
@@ -89,6 +95,16 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
 - **Splitter** shares one `CpModel` with the placement solver so split and
   placement are optimized jointly — never split first and place second
   (that reintroduces the two-step infeasibility bug it was built to avoid).
+- **BM-equivalent demand** (`app/bm_demand.py`, ADR-020): "cluster X needs N
+  machines of model M, VMs of spec S" uses **machine-count semantics** —
+  `k = fits_per_bm(spec, cap) = min_d ⌊cap_d/spec_d⌋`, `count = N×k`, pinned
+  exactly (min = max). N is the PM's purchase number and is hard; a spec that
+  does not tile the machine yields a `spec_does_not_tile_bm` advisory, never
+  machine N+1. **Tenancy groups are pools**: clusters that may co-reside
+  share one fleet, groups never share machines, each group is sized
+  independently and the totals add. Exclusive clusters force k=1 + C6. The
+  plan path defaults `w_headroom=0` (headroom fights "fill the machine").
+  Auto C3 can push a cluster above its N machines (`ag_spread_exceeds_equivalents`).
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

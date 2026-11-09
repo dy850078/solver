@@ -974,6 +974,7 @@ html[data-theme="dark"] .vm-chip:hover { filter: brightness(1.15); }
   letter-spacing: 0.02em;
 }
 .table tr:last-child td { border-bottom: none; }
+.table th.num, .table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .table tr:hover td { background: var(--bg-hover); }
 .table .cell-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;

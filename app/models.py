@@ -900,6 +900,10 @@ class FleetTemplate(BaseModel):
     ags: int = Field(default=3, ge=1)
     network: str = ""
     pool: str = ""
+    # Prefix for generated machine ids ("bm-" → bm-001, bm-002, …). Lets a
+    # caller that sizes several independent fleets (one per tenancy pool,
+    # ADR-020) merge them without id collisions.
+    id_prefix: str = Field(default="bm-", min_length=1)
 
 
 class RolloutSizingRequest(BaseModel):

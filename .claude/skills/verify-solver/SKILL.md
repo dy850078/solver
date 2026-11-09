@@ -27,7 +27,9 @@ request JSONs. Run it after core-logic changes, before declaring done.
    - per-BM summed demand ≤ available capacity for all four resource
      fields (C2);
    - anti-affinity groups respect the per-bucket cap (C3);
-   - any rule types touched by the current change (C4/C5) hold.
+   - any rule types touched by the current change (C4/C5/C6/C7) hold —
+     for C7, `len({bm for members})` ≥ `min_distinct_bms` per rule
+     (`examples/min_distinct_bms.json`).
    Do this with a short throwaway script in the scratchpad (read the output
    JSON + request JSON), not by eyeballing.
 4. If the current change added or altered behavior not covered by any

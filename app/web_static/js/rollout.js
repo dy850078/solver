@@ -73,6 +73,14 @@ function buildVmIndex(request, result) {
   const stepByName = new Map((request.steps ?? []).map((s) => [s.name, s]));
   for (const s of request.steps ?? []) vms.push(...(s.vms ?? []));
   for (const rep of result.reports ?? []) {
+    // Servers that report new_vms (ADR-020) hand us the real VM objects —
+    // cluster/role/ip AND demand — so synthetics get capacity micro-bars
+    // too. Older payloads fall back to the id-parsing stub below.
+    if (rep.new_vms?.length) {
+      const explicit = new Set(vms.map((v) => v.id));
+      for (const v of rep.new_vms) if (!explicit.has(v.id)) vms.push(v);
+      continue;
+    }
     const step = stepByName.get(rep.name);
     for (const a of rep.new_assignments ?? []) {
       const cut = a.vm_id.indexOf("/");
@@ -273,6 +281,58 @@ function stockCell(used, total) {
     </td>`;
 }
 
+/* Cluster × node type matrix, cumulative through the selected step: VM
+ * count per AG plus the distinct-machine footprint (what a C7 rule bounds).
+ * Pure client-side aggregation over new_assignments + the VM index — the
+ * same facts the rack diagram draws, tabulated the way a PM reads them. */
+function renderMatrix() {
+  const card = $("#matrix-card");
+  const assignments = cumulativeAssignments(state.selected);
+  if (!assignments.length) { card.classList.add("hidden"); return; }
+  const vmById = new Map(state.vmIndex.vms.map((v) => [v.id, v]));
+  const bmById = new Map((state.request.baremetals ?? []).map((b) => [b.id, b]));
+  const rows = new Map();
+  const agSet = new Set();
+  for (const a of assignments) {
+    const vm = vmById.get(a.vm_id);
+    if (!vm) continue;
+    const ag = a.ag || bmById.get(a.baremetal_id)?.topology?.ag || "";
+    agSet.add(ag);
+    const key = `${vm.cluster_id}\u0000${vm.node_role}\u0000${vm.ip_type ?? ""}`;
+    let row = rows.get(key);
+    if (!row) {
+      row = { cluster: vm.cluster_id, role: vm.node_role, ip: vm.ip_type ?? "",
+              n: 0, bms: new Set(), perAg: new Map() };
+      rows.set(key, row);
+    }
+    row.n += 1;
+    row.bms.add(a.baremetal_id);
+    row.perAg.set(ag, (row.perAg.get(ag) ?? 0) + 1);
+  }
+  const ags = [...agSet].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
+  const sorted = [...rows.values()].sort((x, y) =>
+    x.cluster.localeCompare(y.cluster) || x.role.localeCompare(y.role) || x.ip.localeCompare(y.ip));
+  const body = sorted.map((r) => `
+    <tr>
+      <td>${escapeHtml(r.cluster)}</td>
+      <td>${escapeHtml(r.role)}</td>
+      <td class="muted">${escapeHtml(r.ip || "—")}</td>
+      ${ags.map((ag) => `<td class="num">${r.perAg.get(ag) ?? 0}</td>`).join("")}
+      <td class="num"><strong>${r.n}</strong></td>
+      <td class="num">${r.bms.size}</td>
+    </tr>`).join("");
+  card.classList.remove("hidden");
+  $("#matrix-content").innerHTML = `
+    <table class="table">
+      <thead><tr>
+        <th>Cluster</th><th>Node type</th><th>IP</th>
+        ${ags.map((ag) => `<th class="num">${escapeHtml(ag || "—")}</th>`).join("")}
+        <th class="num">VMs</th><th class="num">Distinct BMs</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>`;
+}
+
 function renderStock() {
   const bms = state.result.final_baremetals ?? [];
   $("#stock-card").classList.remove("hidden");
@@ -301,6 +361,7 @@ function selectStep(i) {
   state.selected = i;
   markStripSelection();
   renderStepDetail();
+  renderMatrix();
   renderRack();
 }
 
@@ -314,6 +375,7 @@ function renderAll() {
       `<p class="muted" style="margin:0">Nothing simulated — fix the request and retry.</p>`;
     $("#step-stats").classList.add("hidden");
     $("#detail-card").classList.add("hidden");
+    $("#matrix-card").classList.add("hidden");
     $("#rack-card").classList.add("hidden");
     $("#stock-card").classList.add("hidden");
     $("#filter-bar").classList.add("hidden");
@@ -426,6 +488,7 @@ function renderSizingOnly(sized) {
     : `<p class="muted" style="margin:0">No fleet size was found within the budget.</p>`;
   $("#step-stats").classList.add("hidden");
   $("#detail-card").classList.add("hidden");
+  $("#matrix-card").classList.add("hidden");
   $("#rack-card").classList.add("hidden");
   $("#stock-card").classList.add("hidden");
   $("#filter-bar").classList.add("hidden");

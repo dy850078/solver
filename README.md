@@ -34,6 +34,8 @@ solver/
 │   ├── solver.py            # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
 │   ├── splitter.py          # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 │   ├── split_solver.py      # Orchestrates splitter + solver joint solve (split-and-solve)
+│   ├── bm_demand.py         # PM-level BM-equivalent demand → rollout/sizing + reports (ADR-020)
+│   ├── placement_report.py  # cluster×role×AG matrix, per-BM layouts, legacy BM-VM template
 │   ├── rollout.py           # Rollout simulation — replays a build order, folding placements forward as pins
 │   ├── rollout_sizing.py    # "How many BMs does this build order need?" — fleet template + search
 │   ├── sizing_floors.py     # Analytic lower bounds on fleet size
@@ -59,6 +61,8 @@ solver/
 | POST | `/v1/placement/split-and-solve` | Split resource budgets into VMs and place them jointly |
 | POST | `/v1/placement/rollout` | Replay a step-by-step build order, carrying placements forward as pins |
 | POST | `/v1/placement/rollout/size` | Estimate the smallest fleet that lets a whole build order place |
+| POST | `/v1/placement/bm-demand/compile` | Compile PM "N equivalent BMs" demand into per-tenancy-group rollout steps (no solve) |
+| POST | `/v1/placement/bm-demand/plan` | Compile + size/place every tenancy group; returns cluster×role×AG matrix, per-BM layouts, legacy template |
 | POST | `/v1/capacity/procure` | Procurement sizing: how many BMs of each type to buy |
 | POST | `/v1/capacity/plan` | Multi-period capacity plan (demand book → per-fab monthly report) |
 | POST | `/v1/capacity/reconcile` | Plan-vs-actual drift report |

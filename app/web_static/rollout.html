@@ -202,6 +202,16 @@
 
     <div id="step-stats" class="stats hidden"></div>
 
+    <section id="matrix-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Placement matrix</h2>
+        <span class="card__hint">cluster × node type → VMs per AG, distinct machines (cumulative through the selected step)</span>
+      </header>
+      <div class="card__body">
+        <div id="matrix-content"></div>
+      </div>
+    </section>
+
     <section id="rack-card" class="card viz-card hidden">
       <header class="card__header">
         <h2 class="card__title" id="rack-title">Stock after step</h2>
