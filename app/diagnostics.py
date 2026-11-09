@@ -21,6 +21,7 @@ from .models import (
     ExclusiveBaremetalRule,
     FailoverRule,
     MaxPerBaremetalRule,
+    MinDistinctBaremetalRule,
     VM,
     SolverConfig,
 )
@@ -57,8 +58,10 @@ class DiagnosticsBuilder:
         failover_resolved: list[tuple[FailoverRule, list[str], list[str]]],
         config: SolverConfig,
         num_variables: int,
+        min_distinct_rules: list[MinDistinctBaremetalRule] | None = None,
     ):
         self.request = request
+        self.min_distinct_rules = min_distinct_rules or []
         self.vm_map = vm_map
         self.bm_map = bm_map
         self.dim_to_bms = dim_to_bms
@@ -114,6 +117,12 @@ class DiagnosticsBuilder:
         if infeasible_exclusive:
             diag["infeasible_exclusive_rules"] = infeasible_exclusive
 
+        # 2c''. Minimum-footprint rules (C7) — a group whose members can
+        # reach fewer than N distinct BMs can never spread over N.
+        infeasible_min_distinct = self._check_min_distinct_feasibility()
+        if infeasible_min_distinct:
+            diag["infeasible_min_distinct_bm_rules"] = infeasible_min_distinct
+
         # 2c. Failover rules — flag structurally infeasible cases (e.g.
         # |primary in worst bucket| > |backup outside that bucket|).
         infeasible_failover_rules = self._check_failover_feasibility()
@@ -132,6 +141,7 @@ class DiagnosticsBuilder:
             "rules": len(self.effective_rules),
             "max_per_bm_rules": len(self.max_per_bm_rules),
             "exclusive_rules": len(self.exclusive_rules),
+            "min_distinct_bm_rules": len(self.min_distinct_rules),
         }
 
         return diag
@@ -319,6 +329,28 @@ class DiagnosticsBuilder:
                 })
         return infeasible
 
+    def _check_min_distinct_feasibility(self) -> list[dict]:
+        """
+        C7 counting bound: Σ_b host ≥ N needs at least N reachable BMs AND
+        at least N members (one machine cannot be "distinct" twice). Pure
+        counting, capacity-free — the fleet-side twin of the solver's
+        pre-flight on static groups.
+        """
+        infeasible = []
+        for rule in self.min_distinct_rules:
+            reachable: set[str] = set()
+            for vm_id in rule.vm_ids:
+                if vm_id in self.vm_map:
+                    reachable.update(self._eligible(self.vm_map[vm_id]))
+            if len(reachable) < rule.min_distinct_bms or len(rule.vm_ids) < rule.min_distinct_bms:
+                infeasible.append({
+                    "group_id": rule.group_id,
+                    "vm_count": len(rule.vm_ids),
+                    "reachable_bms": len(reachable),
+                    "bms_needed": rule.min_distinct_bms,
+                })
+        return infeasible
+
     def _constraint_layer_check(self) -> dict[str, object]:
         """
         Incrementally add constraint layers and solve each to pinpoint
@@ -443,6 +475,21 @@ class DiagnosticsBuilder:
                         if (vid, bm_id) in assign:
                             model.add(assign[(vid, bm_id)] + z <= 1)
 
+        def add_min_distinct(model, assign):
+            for rule in self.min_distinct_rules:
+                if not rule.vm_ids:
+                    continue
+                hosts = []
+                for bm_id in self.bm_map:
+                    mvars = [assign[(vid, bm_id)] for vid in rule.vm_ids
+                             if (vid, bm_id) in assign]
+                    if not mvars:
+                        continue
+                    h = model.new_bool_var(f"lh_{rule.group_id}__{bm_id}")
+                    model.add(h <= sum(mvars))
+                    hosts.append(h)
+                model.add(sum(hosts) >= rule.min_distinct_bms)
+
         def quick_solve(model) -> str:
             s = cp_model.CpSolver()
             s.parameters.max_time_in_seconds = 5.0
@@ -456,6 +503,7 @@ class DiagnosticsBuilder:
             ("failover", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover]),
             ("max_per_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm]),
             ("exclusive", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm, add_exclusive]),
+            ("min_distinct_bm", [add_one_bm_per_vm, add_capacity, add_anti_affinity, add_failover, add_max_per_bm, add_exclusive, add_min_distinct]),
         ]
 
         results: dict[str, object] = {}

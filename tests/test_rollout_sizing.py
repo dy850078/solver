@@ -407,3 +407,85 @@ class TestSizingExample:
         assert r.required_baremetals >= r.analytic_floor
         assert sum(r.per_ag.values()) == r.required_baremetals
         assert r.rollout is not None and r.rollout.success
+
+
+# ===========================================================================
+# C7 in sizing: floor + exactness vs the C4 approximation
+# ===========================================================================
+
+class TestSizingMinDistinct:
+
+    def _rule(self, n, cluster="c1"):
+        from app.models import MinDistinctBaremetalRule
+        return MinDistinctBaremetalRule(
+            group_id=f"mdb/{cluster}",
+            selector=GroupSelector(cluster_id=cluster, node_role="worker"),
+            min_distinct_bms=n,
+        )
+
+    def test_distinct_floor_raises_start(self):
+        """2 tiny VMs would fit one machine; C7(6) puts the floor at 6 and
+        the search lands exactly there."""
+        steps = [RolloutStep(name="s", vms=[vm("v0"), vm("v1"), vm("v2"),
+                                            vm("v3"), vm("v4"), vm("v5")],
+                             min_distinct_bm_rules=[self._rule(6)])]
+        r = sizing(steps, fleet=FleetTemplate(total_capacity=BM, racks=6, ags=3))
+        assert r.success, r.solver_status
+        assert r.floor_breakdown["distinct"] == 6
+        assert r.required_baremetals == 6 == r.analytic_floor
+
+    def test_floor_counts_requirement_groups(self):
+        """A selector rule whose only members are splitter requirements
+        still contributes N — the splitter will create ≥1 VM for it."""
+        req = ResourceRequirement(
+            total_resources=Resources(cpu_cores=80, memory_mib=320 * GiB, storage_gb=2000),
+            node_role="worker", cluster_id="c1", ip_type="routable",
+            vm_specs=[Resources(cpu_cores=8, memory_mib=32 * GiB, storage_gb=200)],
+        )
+        steps = [RolloutStep(name="s", requirements=[req],
+                             min_distinct_bm_rules=[self._rule(6)])]
+        floor, breakdown = fleet_floor(steps, BM, SolverConfig(), ags=3)
+        assert breakdown["distinct"] == 6
+        assert floor >= 6
+
+    def test_groups_take_max_not_sum(self):
+        steps = [RolloutStep(name="s",
+                             vms=[vm(f"a{i}") for i in range(6)] +
+                                 [vm(f"b{i}", cluster="c2") for i in range(6)],
+                             min_distinct_bm_rules=[self._rule(6), self._rule(6, "c2")])]
+        _, breakdown = fleet_floor(steps, BM, SolverConfig(), ags=3)
+        assert breakdown["distinct"] == 6
+
+    def test_ten_half_machine_vms_need_exactly_six(self):
+        """The case that separates C7 from the C4 approximation: 10 VMs of
+        half a machine, N=6. C4 would need max_per_bm=1 (→ 10 machines) to
+        guarantee 6 distinct; C7 settles on 6 (4 pairs + 2 singles)."""
+        half = dict(cpu=32, mem=128, disk=1000)
+        steps = [RolloutStep(name="s", vms=[vm(f"v{i}", **half) for i in range(10)],
+                             min_distinct_bm_rules=[self._rule(6)])]
+        r = sizing(steps, fleet=FleetTemplate(total_capacity=BM, racks=6, ags=3))
+        assert r.success, r.solver_status
+        assert r.required_baremetals == 6
+        assert not rollout_at(steps, 5, fleet=FleetTemplate(total_capacity=BM, racks=6, ags=3)).success
+
+    def test_preflight_rejects_unreachable_n(self):
+        steps = [RolloutStep(name="s", vms=[vm(f"v{i}") for i in range(6)],
+                             min_distinct_bm_rules=[self._rule(6)])]
+        r = size_rollout(RolloutSizingRequest(
+            fleet=FleetTemplate(total_capacity=BM, racks=3, ags=3),
+            steps=steps, max_baremetals=5,
+            config=SolverConfig(max_solve_time_seconds=5),
+        ))
+        assert r.solver_status.startswith("INPUT_ERROR")
+
+    def test_floor_never_exceeds_answer_with_c7(self):
+        fixtures = [
+            [RolloutStep(name="s", vms=[vm(f"v{i}") for i in range(7)],
+                         min_distinct_bm_rules=[self._rule(4)])],
+            [RolloutStep(name="s", vms=[vm(f"v{i}", cpu=40) for i in range(3)],
+                         min_distinct_bm_rules=[self._rule(2)])],
+        ]
+        for steps in fixtures:
+            r = sizing(steps, fleet=FleetTemplate(total_capacity=BM, racks=4, ags=2))
+            assert r.success, r.solver_status
+            assert r.analytic_floor <= r.required_baremetals

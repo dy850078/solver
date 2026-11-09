@@ -24,7 +24,8 @@ from .conftest import make_bm, make_vm
 
 
 def make_step(name, vms=None, requirements=None, rules=None,
-              max_per_bm_rules=None, exclusive_rules=None, failover_rules=None):
+              max_per_bm_rules=None, exclusive_rules=None, failover_rules=None,
+              min_distinct_rules=None):
     return RolloutStep(
         name=name,
         vms=vms or [],
@@ -33,6 +34,7 @@ def make_step(name, vms=None, requirements=None, rules=None,
         max_per_bm_rules=max_per_bm_rules or [],
         exclusive_bm_rules=exclusive_rules or [],
         failover_rules=failover_rules or [],
+        min_distinct_bm_rules=min_distinct_rules or [],
     )
 
 
@@ -433,3 +435,93 @@ class TestRolloutEndpoint:
         assert len(out["reports"]) == 2
         import re
         assert re.fullmatch(r"[0-9a-f]{12}", out["config_fingerprint"])
+
+
+# ===========================================================================
+# C7 across steps + new_vms attribution (ADR-019 / ADR-020)
+# ===========================================================================
+
+class TestRolloutMinDistinct:
+
+    def _rule(self, n):
+        from app.models import MinDistinctBaremetalRule
+        return MinDistinctBaremetalRule(
+            group_id="mdb/c1/worker",
+            selector=GroupSelector(cluster_id="cluster-1", node_role="worker"),
+            min_distinct_bms=n,
+        )
+
+    def test_step1_rule_still_binds_step2_add_node(self):
+        """Step 1 places 4 workers under C7(4); step 2 adds 2 more of the
+        same group with NO rule of its own — the union still applies, and
+        the pins from step 1 count toward N, so step 2 is free to
+        consolidate (the bound is already met)."""
+        bms = [make_bm(f"bm-{i}") for i in range(6)]
+        steps = [
+            make_step("s1", vms=[make_vm(f"w-{i}") for i in range(4)],
+                      min_distinct_rules=[self._rule(4)]),
+            make_step("s2", vms=[make_vm(f"w-{i}") for i in range(4, 6)]),
+        ]
+        r = rollout(bms, steps)
+        assert r.success, r.reports[-1].solver_status
+        s1_hosts = {a.baremetal_id for a in r.reports[0].new_assignments}
+        assert len(s1_hosts) == 4
+
+    def test_step2_rule_counts_step1_pins(self):
+        """Rule introduced in step 2 with N=6: step 1's 4 pinned workers
+        count, so step 2's 2 new VMs must each take a fresh machine."""
+        bms = [make_bm(f"bm-{i}") for i in range(6)]
+        steps = [
+            make_step("s1", vms=[make_vm(f"w-{i}") for i in range(4)],
+                      min_distinct_rules=[self._rule(4)]),
+            make_step("s2", vms=[make_vm(f"w-{i}") for i in range(4, 6)],
+                      min_distinct_rules=[self._rule(6)]),
+        ]
+        r = rollout(bms, steps)
+        assert r.success, r.reports[-1].solver_status
+        all_hosts = {a.baremetal_id for rep in r.reports for a in rep.new_assignments}
+        assert len(all_hosts) == 6
+
+    def test_vm_ids_rule_unknown_ids_rejected(self):
+        from app.models import MinDistinctBaremetalRule
+        bms = [make_bm("bm-1")]
+        steps = [make_step("s1", vms=[make_vm("w-0")],
+                           min_distinct_rules=[MinDistinctBaremetalRule(
+                               group_id="x", vm_ids=["ghost"], min_distinct_bms=1)])]
+        r = rollout(bms, steps)
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "min_distinct_bm" in r.solver_status
+
+
+class TestRolloutNewVms:
+
+    def test_new_vms_mirror_new_assignments(self):
+        """Explicit + synthetic in one step: new_vms has the same ids in
+        the same order as new_assignments, synthetic ids namespaced, and
+        carries the concrete demand / identity the matrix report needs."""
+        bms = [make_bm(f"bm-{i}") for i in range(3)]
+        req = ResourceRequirement(
+            total_resources=Resources(cpu_cores=16, memory_mib=32_000, storage_gb=200),
+            node_role="worker", cluster_id="cluster-2", ip_type="non-routable",
+            vm_specs=[Resources(cpu_cores=8, memory_mib=16_000, storage_gb=100)],
+        )
+        steps = [make_step("s1", vms=[make_vm("w-0")], requirements=[req])]
+        r = rollout(bms, steps)
+        assert r.success, r.reports[0].solver_status
+        rep = r.reports[0]
+        assert [v.id for v in rep.new_vms] == [a.vm_id for a in rep.new_assignments]
+        synth = [v for v in rep.new_vms if v.id.startswith("s1/")]
+        assert len(synth) == 2
+        assert all(v.cluster_id == "cluster-2" and v.ip_type == "non-routable"
+                   for v in synth)
+        assert all(v.demand.cpu_cores == 8 for v in synth)
+
+    def test_new_vms_empty_on_blocked_step(self):
+        bms = [make_bm("bm-1", cpu=4, mem=16_000)]
+        steps = [
+            make_step("s1", vms=[make_vm("w-0", cpu=8)]),
+            make_step("s2", vms=[make_vm("w-1")]),
+        ]
+        r = rollout(bms, steps)
+        assert not r.success
+        assert r.reports[0].new_vms == [] and r.reports[1].new_vms == []

@@ -978,3 +978,79 @@ class TestSplitWithSynthetics:
         assert placed_ids <= set(by_id)
         for vid in placed_ids:
             assert by_id[vid].demand == spec
+
+
+# ===========================================================================
+# C7 on the split path
+# ===========================================================================
+
+class TestSplitWithMinDistinctBm:
+    """Regression guard for the ADR-013 class of bug: a rule field that
+    exists on SplitPlacementRequest but is never forwarded to the solver
+    would make this test pass vacuously — so the first assertion checks
+    that the baseline (no rule) really consolidates."""
+
+    def _req_and_bms(self):
+        # 10 × 8-core VMs worth of demand; 9 BMs of 64 cores → baseline packs
+        # onto 2 machines; C7(6) must push to ≥6.
+        req = make_req(cpu=80, mem=160_000, vm_specs=[
+            Resources(cpu_cores=8, memory_mib=16_000, storage_gb=100),
+        ])
+        bms = [make_bm(f"bm-{i}") for i in range(9)]
+        return req, bms
+
+    def test_synthetic_group_spans_n_bms(self):
+        from app.models import GroupSelector, MinDistinctBaremetalRule
+        req, bms = self._req_and_bms()
+        base = split_solve(req, bms)
+        assert base.success
+        assert len({a.baremetal_id for a in base.assignments}) < 6
+
+        ids = [b.id for b in bms]
+        request = SplitPlacementRequest(
+            requirements=[req.model_copy(update={"candidate_baremetals": ids})],
+            baremetals=bms,
+            min_distinct_bm_rules=[MinDistinctBaremetalRule(
+                group_id="mdb",
+                selector=GroupSelector(cluster_id="cluster-1", node_role="worker"),
+                min_distinct_bms=6,
+            )],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(request)
+        assert r.success, r.solver_status
+        assert len({a.baremetal_id for a in r.assignments}) >= 6
+        assert sum(d.count for d in r.split_decisions) == 10
+
+    def test_split_decisions_carry_cluster_identity(self):
+        req, bms = self._req_and_bms()
+        r = split_solve(req, bms)
+        assert r.success
+        assert r.split_decisions[0].cluster_id == "cluster-1"
+        assert r.split_decisions[0].ip_type == "routable"
+
+    def test_synthetic_group_is_not_preflight_rejected(self):
+        """The static pre-flight (|group| < N → INPUT_ERROR) must ignore
+        splitter slots: their count is a decision, not a census. Here the
+        slot upper bound (10) exceeds N anyway; the point is the status is
+        INFEASIBLE-or-success, never INPUT_ERROR, when only synthetics are
+        named."""
+        from app.models import GroupSelector, MinDistinctBaremetalRule
+        req, _ = self._req_and_bms()
+        bms = [make_bm(f"bm-{i}") for i in range(4)]
+        ids = [b.id for b in bms]
+        request = SplitPlacementRequest(
+            requirements=[req.model_copy(update={"candidate_baremetals": ids})],
+            baremetals=bms,
+            min_distinct_bm_rules=[MinDistinctBaremetalRule(
+                group_id="mdb",
+                selector=GroupSelector(cluster_id="cluster-1", node_role="worker"),
+                min_distinct_bms=6,
+            )],
+            config=SolverConfig(max_solve_time_seconds=10,
+                                auto_generate_anti_affinity=False),
+        )
+        r = solve_split_placement(request)
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"

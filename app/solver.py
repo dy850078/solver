@@ -44,6 +44,7 @@ from .models import (
     FailoverRule,
     GroupSelector,
     MaxPerBaremetalRule,
+    MinDistinctBaremetalRule,
     PlacementAssignment,
     PlacementRequest,
     PlacementResult,
@@ -220,6 +221,12 @@ class VMPlacementSolver:
         # contract problem, reported explicitly instead of an opaque
         # INFEASIBLE from the model.
         self._validate_pinned_exclusive()
+
+        # Resolve minimum-footprint rules (C7) to canonical vm_ids form.
+        # Pre-flight (static group smaller than N → INPUT_ERROR) lives there.
+        self.min_distinct_rules: list[MinDistinctBaremetalRule] = (
+            self._resolve_min_distinct_rules()
+        )
 
         # Advisory: legacy pinned hosts can inflate the C3 default-cap
         # denominator with buckets no free member can reach.
@@ -519,6 +526,8 @@ class VMPlacementSolver:
                 )
         for ex_rule in self.request.exclusive_bm_rules:
             check(ex_rule, "exclusive_bm")
+        for md_rule in self.request.min_distinct_bm_rules:
+            check(md_rule, "min_distinct_bm")
 
     def _expand_vm_ids(self, rule) -> list[str]:
         """
@@ -842,6 +851,53 @@ class VMPlacementSolver:
                         f"the rule has no effect."
                     ),
                 })
+        return rules
+
+    # ------------------------------------------------------------------
+    # Step B (cont.): Minimum-footprint rules — C7 resolve
+    # ------------------------------------------------------------------
+
+    def _resolve_min_distinct_rules(self) -> list[MinDistinctBaremetalRule]:
+        """Materialize C7 rules to canonical vm_ids form (mirrors C6's
+        resolve). No auto-generation — a footprint floor is a policy the
+        caller states, never inferred from grouping.
+
+        Pre-flight: a group whose members are all explicit (no splitter
+        slot among them) and fewer than N can never touch N machines, at
+        ANY fleet size — Σ_b host ≤ |members| < N. That is a contract error
+        (INPUT_ERROR, like C5's |primary| > |backup| check), not a fleet
+        problem; left to the model it would read as INFEASIBLE and send
+        rollout sizing climbing to max_baremetals for nothing. Synthetic
+        members are excluded from the check because their active count is
+        the splitter's decision (the slot upper bound is not a census).
+        """
+        rules: list[MinDistinctBaremetalRule] = []
+        for r in self.request.min_distinct_bm_rules:
+            resolved_ids = self._expand_vm_ids(r)
+            group_id = r.group_id or self._auto_group_id_for_selector(r.selector)
+            rules.append(MinDistinctBaremetalRule(
+                group_id=group_id,
+                vm_ids=resolved_ids,
+                min_distinct_bms=r.min_distinct_bms,
+            ))
+            if not resolved_ids:
+                self.advisories.append({
+                    "type": "min_distinct_bm_rule_empty",
+                    "severity": "warning",
+                    "group_id": group_id,
+                    "message": (
+                        f"min_distinct_bm rule '{group_id}' resolved to 0 VMs — "
+                        f"the rule has no effect."
+                    ),
+                })
+                continue
+            static = [vid for vid in resolved_ids if vid not in self.active_vars]
+            if len(static) == len(resolved_ids) and len(static) < r.min_distinct_bms:
+                self._input_errors.append(
+                    f"min_distinct_bm rule '{group_id}': {len(static)} VM(s) "
+                    f"cannot occupy {r.min_distinct_bms} distinct baremetals — "
+                    f"unsatisfiable at any fleet size"
+                )
         return rules
 
     # ------------------------------------------------------------------
@@ -1226,6 +1282,61 @@ class VMPlacementSolver:
                     key = (vm.id, bm_id)
                     if key in self.assign:
                         self.model.add(self.assign[key] + z <= 1)
+
+    def _add_min_distinct_constraints(self):
+        """
+        CONSTRAINT C7: Minimum footprint — the members of a group must land
+        on at least `min_distinct_bms` distinct baremetals.
+
+        "Number of BMs with ≥1 member" is Σ_b [Σ_v assign[v,b] ≥ 1], an
+        indicator sum CP-SAT cannot take directly, so one auxiliary Boolean
+        per (group, BM) stands in for the indicator:
+
+          host[g,b] ∈ {0,1}
+          host[g,b] <= Σ assign[v,b]  (v ∈ G, eligible)   -- (a) no phantom hosts
+          Σ_b host[g,b] >= N
+
+        Only the one-sided link (a) is posted. The target is a LOWER bound
+        on Σ host, so the only way the solver could cheat is by raising
+        host on a machine that holds no member — exactly what (a) forbids.
+        The other direction (host >= assign[v,b], "a member forces host=1")
+        would only push Σ host UP, which never tightens a ≥ constraint:
+        the projection onto assign is identical either way (same argument
+        as ADR-011 §4 for C6). C6 nevertheless keeps full reification
+        because its z is read by the outsiders-barred constraint; nobody
+        reads host, and it stays out of the objective. If either changes,
+        or the bound ever flips to "at most N", add the second direction.
+
+        Synthetic VMs need no special handling: an inactive slot has every
+        assign var forced to 0 by C1, so (a) pins its host to 0 too.
+
+        Pinned members are NOT grandfathered: a pin fixes assign[v,b]=1 on
+        one machine, which can only help reach N. C3/C4/C5 relax because a
+        legacy layout may already exceed their caps; a lower bound has no
+        such failure mode (ADR-019).
+
+        host vars are created only where some member has an assign var on
+        that BM — a BM no member can reach contributes 0 regardless.
+        """
+        for rule in self.min_distinct_rules:
+            if not rule.vm_ids:
+                continue
+            hosts = []
+            for bm_id in self.bm_map:
+                member_vars = [
+                    self.assign[(vm_id, bm_id)]
+                    for vm_id in rule.vm_ids
+                    if (vm_id, bm_id) in self.assign
+                ]
+                if not member_vars:
+                    continue
+                host = self.model.new_bool_var(f"host_{rule.group_id}__{bm_id}")
+                self.model.add(host <= sum(member_vars))
+                hosts.append(host)
+            # Fewer reachable BMs than N can never satisfy the bound; posting
+            # the (trivially false) constraint keeps the failure inside the
+            # model so diagnostics name the rule instead of a silent pass.
+            self.model.add(sum(hosts) >= rule.min_distinct_bms)
 
     # ------------------------------------------------------------------
     # Step C (cont.): Objective function helpers
@@ -1633,6 +1744,7 @@ class VMPlacementSolver:
             self._add_failover_constraints()
             self._add_max_per_bm_constraints()
             self._add_exclusive_constraints()
+            self._add_min_distinct_constraints()
             self._add_bm_group_cap_constraints()
 
             # Objective: consolidation + headroom (+ partial placement priority)
@@ -1709,6 +1821,7 @@ class VMPlacementSolver:
             failover_resolved=self.failover_resolved,
             config=self.config,
             num_variables=len(self.assign),
+            min_distinct_rules=self.min_distinct_rules,
         ).build()
 
     def _extract_solution(

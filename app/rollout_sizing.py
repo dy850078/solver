@@ -172,6 +172,21 @@ def _validate(request: RolloutSizingRequest) -> list[str]:
                     f"'{rule.fault_domain}', which this fleet template "
                     f"collapses to one bucket — unsatisfiable at any size"
                 )
+        for rule in step.min_distinct_bm_rules:
+            if rule.min_distinct_bms > request.max_baremetals:
+                errors.append(
+                    f"min_distinct_bm rule '{rule.group_id}' in step "
+                    f"'{step.name}' needs {rule.min_distinct_bms} machines but "
+                    f"max_baremetals={request.max_baremetals} — unsatisfiable "
+                    f"within the search budget"
+                )
+            if rule.vm_ids and len(set(rule.vm_ids)) < rule.min_distinct_bms:
+                errors.append(
+                    f"min_distinct_bm rule '{rule.group_id}' in step "
+                    f"'{step.name}' names {len(set(rule.vm_ids))} VM(s) but "
+                    f"requires {rule.min_distinct_bms} distinct machines — "
+                    f"unsatisfiable at any size"
+                )
         for rule in step.anti_affinity_rules:
             for dim in rule.spread_on:
                 if dim in collapsed and len(rule.vm_ids or []) > 1:
