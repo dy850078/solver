@@ -1,0 +1,75 @@
+/* PM Demand page — loaded after theme.css + styles.css. Only what this page
+   adds on top of the shared builder (#builder rules live in styles.css):
+   the demand row grid, the tenancy-group cluster picker, the build-order
+   list, the derive shortcut and the result tables. */
+
+#builder .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+#builder .toolbar .btn { height: 28px; padding: 0 10px; font-size: 12px; }
+.card__header-right.toolbar { gap: 6px; }
+
+/* Catalog rows: name / vCore / Mem / Disk / GPU / ✕ */
+#builder .frow--cat { grid-template-columns: 1.3fr 0.7fr 0.8fr 0.8fr 1fr auto; align-items: end; }
+#builder .derive-row {
+  display: grid; grid-template-columns: 1.4fr 0.9fr auto; gap: 8px; align-items: end;
+  margin: 6px 0 8px;
+}
+#builder .derive-row .btn--add { width: auto; height: 30px; }
+
+/* Demand row: two lines + a preview line */
+#builder .frow--demand-top { grid-template-columns: 1.2fr 1.2fr 0.9fr auto auto; align-items: end; }
+#builder .frow--demand-bot { grid-template-columns: 1.4fr 1.1fr 0.8fr 0.9fr 1fr; align-items: end; }
+#builder .demand-preview {
+  font-size: 11px; color: var(--text-subtle); font-variant-numeric: tabular-nums;
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+#builder .demand-preview b { color: var(--text-muted); font-weight: 600; }
+#builder .demand-preview .warn { color: var(--warning, #b7791f); }
+#builder .segmented--mini label { padding: 4px 8px; font-size: 11px; }
+
+/* Tenancy group card */
+#builder .frow--group-head { grid-template-columns: 1.2fr 1.2fr 0.8fr auto; align-items: end; }
+#builder .cluster-picks { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+#builder .cluster-picks label {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted);
+}
+#builder .cluster-picks input { accent-color: var(--accent); width: 13px; height: 13px; }
+#builder .cluster-picks label.is-taken { opacity: 0.45; }
+#builder .cluster-picks label.is-taken input { cursor: not-allowed; }
+#builder .picks-hint { font-size: 11px; color: var(--text-subtle); margin: 0; }
+
+/* Policy */
+#builder .frow--policy { grid-template-columns: 1fr 1fr; align-items: end; }
+#builder .excl-picks { margin-top: 4px; }
+
+/* Build order list */
+#builder .order-row {
+  display: grid; grid-template-columns: 22px 1fr auto auto; gap: 6px; align-items: center;
+  padding: 6px 8px; border: 1px solid var(--border-base); border-radius: var(--radius-sm);
+  background: var(--bg-inset); font-size: 12.5px;
+}
+#builder .order-row .step-card__seq { justify-self: start; }
+#builder .order-row .muted { font-size: 11px; }
+
+/* Results */
+.group-table td.pool { font-weight: 600; }
+.group-table .clusters { color: var(--text-muted); font-size: 12px; }
+.adv-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.adv-list li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; font-size: 12.5px; }
+.adv-chip {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: var(--radius-full); font-size: 11px; font-weight: 600; white-space: nowrap;
+}
+.adv-chip--warning { background: var(--warning-soft, #fdf3dc); color: var(--warning, #b7791f); }
+.adv-chip--info { background: var(--accent-soft); color: var(--accent); }
+.step-strip--mini { margin-bottom: 12px; }
+.step-strip--mini .step-cell { cursor: default; }
+.layout-entries { display: flex; flex-wrap: wrap; gap: 4px; }
+#layout-content td.cell-mono { white-space: nowrap; }
+#layout-content td:nth-child(3), #layout-content td:nth-child(4) { white-space: nowrap; }
+.layout-entry {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; white-space: nowrap;
+  border-radius: var(--radius-full); font-size: 11px; background: var(--bg-subtle);
+  border: 1px solid var(--border-base); font-variant-numeric: tabular-nums;
+}
+.layout-entry b { font-weight: 600; }
+.layout-entry .ip { color: var(--text-subtle); }

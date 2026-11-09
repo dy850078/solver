@@ -333,6 +333,29 @@ class TestAgSpreadAdvisory:
         assert not any(a["type"] == "ag_spread_exceeds_equivalents" for a in c.advisories)
 
 
+class TestFootprintAdvisory:
+    """B1: 5 machines of halves (10 VMs) under a ≥6-machine policy. Legal,
+    but the plan will use 6 machines, not 5 — say so before solving."""
+
+    def test_advisory_and_actual_requirement(self):
+        req = request([D("B1", "half", n=5)])
+        c = compile_bm_demands(req)
+        adv = [a for a in c.advisories if a["type"] == "footprint_exceeds_equivalents"]
+        assert adv and adv[0]["machines_needed_for_footprint"] == 6
+        assert adv[0]["bm_equivalents"] == 5
+        r = plan_bm_demands(req)
+        assert r.success and r.total_baremetals == 6
+
+    def test_no_advisory_when_n_meets_policy(self):
+        c = compile_bm_demands(request([D("B1", "half", n=6)]))
+        assert not any(a["type"] == "footprint_exceeds_equivalents" for a in c.advisories)
+
+    def test_exclusive_cluster_is_input_error_not_advisory(self):
+        c = compile_bm_demands(request([D("C1", "full", n=5)], exclusive=["C1"]))
+        assert c.errors and not any(
+            a["type"] == "footprint_exceeds_equivalents" for a in c.advisories)
+
+
 class TestEndpoints:
 
     def test_compile_endpoint_returns_groups_or_400(self, client):
@@ -357,10 +380,25 @@ class TestEndpoints:
 
 
 class TestExample:
+    """examples/bm_demand/*.json double as UI templates: `_name` /
+    `_description` ride along and pydantic ignores them."""
+
+    EX = Path(__file__).parent.parent / "examples" / "bm_demand"
 
     def test_pm_three_clusters_example(self):
-        path = Path(__file__).parent.parent / "examples" / "bm_demand" / "pm_three_clusters.json"
-        req = BmDemandPlanRequest.model_validate_json(path.read_text())
+        req = BmDemandPlanRequest.model_validate_json((self.EX / "pm_three_clusters.json").read_text())
         c = compile_bm_demands(req)
         assert not c.errors, c.errors
         assert {g.name for g in c.groups} == {"shared", "c1-own"}
+
+    def test_single_pool_example_plans(self):
+        req = BmDemandPlanRequest.model_validate_json((self.EX / "single_pool_two_clusters.json").read_text())
+        r = plan_bm_demands(req)
+        assert r.success, r.solver_status
+        assert [g.name for g in r.groups] == ["shared"]
+        assert all(row.distinct_bms >= 6 for row in r.placement_matrix)
+
+    def test_examples_api_hint(self, client):
+        items = client.get("/api/examples").json()
+        hints = {i["name"]: i["endpoint_hint"] for i in items}
+        assert hints["bm_demand/pm_three_clusters.json"] == "bm-demand"

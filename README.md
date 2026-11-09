@@ -167,6 +167,34 @@ each other's BMs while anti-affinity still spreads each role independently.
 
 ---
 
+## PM demand → placement plan (`POST /v1/placement/bm-demand/plan`)
+
+Procurement input is not a VM list but "cluster X needs **N machines** of
+model M, VMs of spec S" plus policy: which clusters may share machines
+(tenancy groups = pools), which own their machines outright (exclusive) and
+how many distinct machines each node type must spread over (C7). The
+request is compiled onto the rollout / sizing engines and answered with per
+pool machine counts, a cluster × node type × AG matrix, per-machine layouts
+and the legacy BM → VM template (ADR-020).
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
+  -H "Content-Type: application/json" \
+  -d @examples/bm_demand/pm_three_clusters.json \
+  | jq '{total: .total_baremetals, groups: [.groups[] | {name, required_baremetals}], matrix: .placement_matrix}'
+```
+
+- `bm_equivalents: N` means N machines: `k = fits_per_bm(spec, capacity)`
+  VMs per machine, `count = N × k`. A spec that does not tile the machine
+  yields a `spec_does_not_tile_bm` advisory, never machine N+1. `vm_count`
+  is the other form (N is derived).
+- `groups` partition clusters into pools; each pool is sized on its own
+  (`fleet_size` blank) or checked against a fixed size, and the totals add.
+- `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
+- UI: `/ui/demand.html` builds the same request from a form, saves / loads
+  it as a template (the template **is** the request JSON), runs it and
+  hands any pool to the Rollout page.
+
 ## Split-and-Solve (`POST /v1/placement/split-and-solve`)
 
 Instead of pre-specifying exact VM counts, send a total resource budget and let the solver decide how many VMs of which spec to create, then place them — all in a single solve.

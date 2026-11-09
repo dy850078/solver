@@ -31,6 +31,7 @@ _DIR_HINTS = {
     "rollout": "rollout",
     "rollout_sizing": "rollout-size",
     "compare": "compare",
+    "bm_demand": "bm-demand",
 }
 
 

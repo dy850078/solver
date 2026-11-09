@@ -97,6 +97,29 @@ caller 傳完整 `SolverConfig` 即可覆寫。權重仍住在 `SolverConfig`,�
 落選方案:(i) 保留預設 → 多買 33%;(ii) 把所有 cluster 放同一個 step 共解
 → 也得 18,但慢 3–5 倍,且不再模擬 sequential build。
 
+### 2g. UI:獨立頁面 vs rollout 側欄(D7–D9)
+
+PM 流程的輸入(目錄、需求、共住組、政策)與輸出(多個 pool 各有 fleet 與 rollout、
+總台數、advisories、template 下載)和 rollout 頁「單一 `RolloutResult` + 單一
+fleet」的假設差太多。
+
+1. **rollout 側欄加 segmented「Build order | PM demand」**——`state.request /
+   result / sizing` 全部要變成陣列、每個 render 函數要 group-aware。**排除。**
+2. **獨立頁 `demand.html`**(採用,D7):`demand-form.js` 比照 `rollout-form.js`
+   的 template-string + `data-s/i/f` 委派模式;結果區重用 `rackdiagram.js` 的
+   `buildPanels/renderRackDiagram`、`.table`、`.segmented`、`.step-strip`;
+   「Open in Rollout」把選中 pool 的 fleet + compiled steps 以 localStorage
+   交接給 rollout 頁(rollout 頁啟動時消費一次)。兩頁各自單一職責。
+3. **範本格式**(D8):範本 = `BmDemandPlanRequest` JSON 本身,加 `_name` /
+   `_description`(pydantic 預設忽略未知欄位,前端 POST 前 strip)。匯出的檔案
+   可直接 `curl -d @`,`examples/bm_demand/*.json` 同時就是內建範本。草稿存
+   localStorage `solver-demand-draft`(compare 頁的慣例)。落選:自訂精簡格式
+   ——多一層轉換、多一種 schema。
+4. **表單單位 GiB**(D9),存檔時 ×1024;與 rollout-form 一致、是 PM 的語言。
+5. 表單列尾即時顯示編譯預覽(`fitsPerBm` 與後端同公式,含 footprint / AG
+   spread 警示),讓「11 台 → 22 顆」在按 Run 前就看得到;真值仍以回傳的
+   `compiled` 為準。
+
 ## 3. 最終決策
 
 `app/bm_demand.py`:`BmSpec` / `VmSpec` 目錄、`ClusterDemand`、`TenancyGroup`、
@@ -125,9 +148,16 @@ k / count / N,攔 `count < min_distinct_bms`(B1 切一 ×5 vs 6 → 直接告訴
 
 **`ag_spread_exceeds_equivalents` advisory**。寫性質測試「ΣN 台一定擺得下」
 時失敗,原因是 auto C3:1 台等效 BM 切三 = 3 顆,cap ⌈3/3⌉=1 per AG,必須跨
-3 個 AG → **至少 3 台**。機器數語意對 C1/C2/C6/C7 成立,但 C3 可以把答案推到
-N 以上。編譯器在 `N < min(count, ags)` 時發 advisory(`tests/test_bm_demand.py::TestAgSpreadAdvisory`),
-性質測試改成關掉 auto AA 才成立(`TestSumOfMachinesAlwaysFits`)。
+3 個 AG → **至少 3 台**。精確的說法是:機器數語意的「每個 cluster 各拿自己的
+N 台」對 **C1 / C2 / C6** 永遠合法(C2 由 `fits_per_bm` 的定義保證,C6 由 k=1
+保證),但有兩個約束可以要求比 N 台更多:**C3** 在 `N < min(count, ags)` 時
+(上例),**C7** 在 `N < min_distinct_bms` 時(B1:5 台切二 = 10 顆、政策 ≥ 6 台
+→ 6 台,這就是參考情境 shared 組 18 vs floor 17 的那 1 台)。編譯器對兩者各發
+一條 advisory——`ag_spread_exceeds_equivalents` 與 `footprint_exceeds_equivalents`
+(`tests/test_bm_demand.py::TestAgSpreadAdvisory` / `::TestFootprintAdvisory`)——
+性質測試則同時關掉 auto AA 與分散下限才成立(`TestSumOfMachinesAlwaysFits`)。
+獨佔 cluster 的 count = N,`count < min_distinct_bms` 已是 INPUT_ERROR,不會再發
+footprint advisory。
 
 **rules 的發放**:每個 demand 一條 `MinDistinctBaremetalRule`(selector
 `{cluster_id, ip_type, node_role}`),每個獨佔 cluster **一條** `ExclusiveBaremetalRule`
@@ -164,7 +194,10 @@ key 只發一次,否則後面的 step 會收到重複約束(無害但浪費)。
    資源總量語意會為了湊量多買一台,機器數語意把差額變成 advisory。
 2. **目標函數有情境。** headroom 在生產排程是美德,在「刻意填滿」的採購模擬
    是 33% 的多買。換用途時要重新審視每一個 objective 權重,不是只看約束。
-3. **分解(decomposition)是免費的約束。** 「組間不共機」用分 pool 各自求解
+3. **「一定擺得下」要說清楚對哪些約束成立。** ΣN 的保證來自 C1/C2/C6 的
+   trivial 解;任何「至少要跨幾個 bucket / 幾台機器」的下界(C3、C7)都可能把
+   需求推到 N 以上,而且應該在求解前就告訴需求方。
+4. **分解(decomposition)是免費的約束。** 「組間不共機」用分 pool 各自求解
    就精確成立,完全不用進 CP-SAT——能用資料切開的,不要用約束綁住。
 
 ## 7. 驗證方式
@@ -176,6 +209,10 @@ key 只發一次,否則後面的 step 會收到重複約束(無害但浪費)。
   `fleet_size = required − 1` 失敗)、ΣN 性質測試、AG advisory、endpoint。
 - `tests/test_placement_report.py`:矩陣、版面、template、spec 名退路。
 - `tests/test_rollout.py::TestRolloutNewVms`:`new_vms` 與 `new_assignments` 對齊。
+- UI(無 JS 測試框架,以 scratchpad 的 Playwright 腳本驗證):載入
+  `pm_three_clusters` 範例 → Save 的 JSON 與範例語意等價 → Run → 24 台、矩陣 4 列、
+  版面 24 列、template 24 個 key → 切換 pool → Open in Rollout 後 rollout 頁矩陣
+  卡片出現 → 重新整理後草稿還原。
 - 親手驗證:`make dev` 後
   `curl -s -X POST localhost:50051/v1/placement/bm-demand/plan -H 'content-type: application/json' -d @examples/bm_demand/pm_three_clusters.json | jq '.total_baremetals, .placement_matrix'`;
   UI:rollout 頁載入 `/compile` 的輸出,看「Placement matrix」卡片。

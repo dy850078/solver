@@ -432,12 +432,25 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                     ),
                 })
 
-        # Advisory: auto anti-affinity (C3) spreads the group over every AG
-        # with cap ceil(count/ags), so it must touch min(count, ags) AGs —
-        # and therefore that many machines. When that exceeds N, the PM's
-        # "N machines" cannot hold this cluster alone, whatever the specs:
-        # the machine-count semantics (D1) hold for C1/C2/C6/C7 but C3 can
-        # push the answer above N. Say so before the solve does.
+        # Advisories: "each cluster takes its own N machines" is always a
+        # legal layout under C1/C2/C6 (D1), so sum(N) machines fit — but two
+        # LOWER-bound constraints can demand more than N for one cluster:
+        #   * C3 (auto anti-affinity) spreads the group over every AG with
+        #     cap ceil(count/ags), so it must touch min(count, ags) AGs and
+        #     hence that many machines;
+        #   * C7 (min_distinct_bms) asks for N' distinct machines outright.
+        # Say so before the solve does; the sizing answer will show it anyway.
+        if min_distinct and n < min_distinct:
+            out.advisories.append({
+                "type": "footprint_exceeds_equivalents", "severity": "warning",
+                "cluster_id": d.cluster_id, "node_role": d.node_role,
+                "bm_equivalents": n, "machines_needed_for_footprint": min_distinct,
+                "message": (
+                    f"demand {label}: policy requires at least {min_distinct} "
+                    f"distinct machines, more than the {n} equivalent machine(s) "
+                    f"requested — expect the plan to use {min_distinct}"
+                ),
+            })
         if req.config.auto_generate_anti_affinity:
             ag_floor = min(count, req.topology.ags)
             if n < ag_floor:

@@ -104,7 +104,11 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   share one fleet, groups never share machines, each group is sized
   independently and the totals add. Exclusive clusters force k=1 + C6. The
   plan path defaults `w_headroom=0` (headroom fights "fill the machine").
-  Auto C3 can push a cluster above its N machines (`ag_spread_exceeds_equivalents`).
+  "Sum of N machines always fits" holds for C1/C2/C6 only: C3 (AG spread,
+  `ag_spread_exceeds_equivalents`) and C7 (`footprint_exceeds_equivalents`)
+  can push one cluster above its N; both are compile-time advisories. The
+  demand page's template IS the `BmDemandPlanRequest` JSON (`_name` /
+  `_description` stripped before POST).
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

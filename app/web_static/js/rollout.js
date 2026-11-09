@@ -624,6 +624,20 @@ function init() {
   initForm(syncJson);
   syncJson();
 
+  // Hand-off from the PM Demand page: a fixed-fleet RolloutRequest for one
+  // tenancy pool. Consumed once, then dropped.
+  try {
+    const raw = localStorage.getItem("solver-rollout-handoff");
+    if (raw) {
+      localStorage.removeItem("solver-rollout-handoff");
+      const parsed = JSON.parse(raw);
+      setJsonEditor(parsed);
+      $("#json-override").checked = true;
+      document.querySelector("details.adv").open = true;
+      showFormError("Loaded from the PM Demand page — simulating from the JSON below.");
+    }
+  } catch { /* ignore a malformed hand-off */ }
+
   $("#example-select").addEventListener("change", (e) => loadExample(e.target.value));
   $("#upload-btn").addEventListener("click", () => $("#upload-input").click());
   $("#upload-input").addEventListener("change", (e) => {

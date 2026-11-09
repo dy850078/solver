@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VM Placement Solver — PM Demand</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%233987e5%27/%3E%3Cpath d=%27M4 12V7M8 12V4M12 12V9%27 stroke=%27white%27 stroke-width=%271.6%27 stroke-linecap=%27round%27/%3E%3C/svg%3E">
+<script>
+/* Apply the theme before first paint: saved choice, else system preference. */
+(function () {
+  var t = null;
+  try { t = localStorage.getItem("solver-theme"); } catch (e) {}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", t);
+})();
+</script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="demand.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="app-header__brand">
+    <div class="app-header__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+    </div>
+    <div>
+      <span class="app-header__title">VM Placement Solver</span>
+      <span class="app-header__subtitle">PM Demand</span>
+    </div>
+  </div>
+  <div class="app-header__actions">
+    <a class="app-header__link" href="./" title="Topology Visualizer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="2" width="5" height="5" rx="0.8"/>
+        <rect x="2" y="9" width="5" height="5" rx="0.8"/>
+        <rect x="9" y="9" width="5" height="5" rx="0.8"/>
+      </svg>
+      Topology
+    </a>
+    <a class="app-header__link" href="report.html" title="Capacity Report">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 13.5V8M6 13.5V5M10 13.5V9.5M14 13.5V3"/>
+      </svg>
+      Capacity Report
+    </a>
+    <a class="app-header__link" href="rollout.html" title="Rollout Simulation">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 8h3M7 8h3M12 8h2"/>
+        <circle cx="5.5" cy="8" r="1.5"/>
+        <circle cx="11" cy="8" r="1.5"/>
+      </svg>
+      Rollout
+    </a>
+    <a class="app-header__link" href="compare.html" title="Compare sizing scenarios">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="12" height="10" rx="1"/>
+        <path d="M2 7h12M6.5 3v10M10.5 3v10"/>
+      </svg>
+      Compare
+    </a>
+    <a class="app-header__link" href="/docs" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 2.5h6.5L13 6v7.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1Z"/>
+        <path d="M9 2.5V6h4"/>
+      </svg>
+      API Docs
+    </a>
+    <button id="theme-toggle" class="app-header__link theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Light / Dark">
+      <svg class="theme-icon theme-icon--sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="8" cy="8" r="3.2"/>
+        <path d="M8 1.5v1.8M8 12.7v1.8M1.5 8h1.8M12.7 8h1.8M3.4 3.4l1.3 1.3M11.3 11.3l1.3 1.3M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3"/>
+      </svg>
+      <svg class="theme-icon theme-icon--moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7Z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<main class="app-main">
+
+  <aside class="sidebar">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">PM demand</h2>
+        <span class="card__hint">Machines per cluster → placement plan · saved as one JSON template</span>
+      </header>
+      <div class="card__body" id="builder">
+
+        <div class="toolbar">
+          <button id="load-btn" type="button" class="btn btn--ghost" title="Load a demand template JSON">Load…</button>
+          <input id="load-input" type="file" accept=".json" hidden>
+          <button id="save-btn" type="button" class="btn btn--ghost" title="Download this template as JSON">Save template</button>
+          <button id="new-btn" type="button" class="btn btn--ghost" title="Start from a blank template">New</button>
+        </div>
+
+        <div class="field" style="margin-top:8px">
+          <label class="field-label" for="example-select">Example template</label>
+          <select id="example-select" class="select">
+            <option value="">— Choose an example —</option>
+          </select>
+        </div>
+
+        <div class="field" style="margin-top:8px">
+          <label class="field-label" for="tpl-name">Template name</label>
+          <input id="tpl-name" class="input" type="text" placeholder="e.g. 2026Q4 site-A procurement">
+        </div>
+
+        <p class="subhead">Machine models <span class="muted">usable capacity per BM</span></p>
+        <div id="bm-rows" class="form-rows"></div>
+        <button type="button" class="btn btn--add" data-act="bm-add">+ Machine model</button>
+
+        <p class="subhead">VM specs <span class="muted">what a cluster's VMs look like</span></p>
+        <div id="vm-rows" class="form-rows"></div>
+        <div class="derive-row">
+          <label class="mini"><span class="mini__label">From model</span>
+            <select id="derive-model" class="select"></select></label>
+          <label class="mini"><span class="mini__label">÷</span>
+            <select id="derive-k" class="select">
+              <option value="1">1 (whole)</option>
+              <option value="2" selected>2 (half)</option>
+              <option value="3">3 (third)</option>
+              <option value="4">4 (quarter)</option>
+            </select></label>
+          <button type="button" class="btn btn--add" data-act="vm-derive" title="Add a spec equal to the model's capacity divided by k">+ Derive</button>
+        </div>
+        <button type="button" class="btn btn--add" data-act="vm-add">+ Custom VM spec</button>
+
+        <p class="subhead">Cluster demands <span class="muted">one row per cluster × node type</span></p>
+        <div id="demand-rows" class="form-rows"></div>
+        <button type="button" class="btn btn--add" data-act="demand-add">+ Demand</button>
+
+        <p class="subhead">Tenancy groups <span class="muted">clusters that may share machines</span></p>
+        <div id="group-rows" class="form-rows"></div>
+        <button type="button" class="btn btn--add" data-act="group-add">+ Group</button>
+
+        <p class="subhead">Policy</p>
+        <div id="policy-card" class="form-rows"></div>
+
+        <p class="subhead">Build order <span class="muted">steps replay sequentially</span></p>
+        <div id="order-rows" class="form-rows"></div>
+
+        <p class="subhead">Solver</p>
+        <div class="frow frow--2">
+          <label class="mini"><span class="mini__label">Max solve seconds</span>
+            <input id="cfg-max-solve" class="input" type="number" min="1" value="10"></label>
+          <label class="mini" title="0 = fill machines (recommended for procurement); the production default 8 leaves ~10% free on every machine and fragments the rollout">
+            <span class="mini__label">Headroom weight</span>
+            <input id="cfg-headroom" class="input" type="number" min="0" value="0"></label>
+        </div>
+        <div class="frow frow--2">
+          <label class="mini mini--check">
+            <input id="cfg-auto-aa" type="checkbox" checked>
+            <span class="mini__label">Auto anti-affinity (AG spread)</span>
+          </label>
+        </div>
+        <details class="adv">
+          <summary>Search budget</summary>
+          <div class="frow frow--topo">
+            <label class="mini"><span class="mini__label">Max machines</span>
+              <input id="cfg-max-bm" class="input" type="number" min="1" value="200"></label>
+            <label class="mini"><span class="mini__label">Max probes</span>
+              <input id="cfg-max-probes" class="input" type="number" min="1" value="12"></label>
+            <label class="mini"><span class="mini__label">Deadline s</span>
+              <input id="cfg-deadline" class="input" type="number" min="1" value="120"></label>
+          </div>
+        </details>
+
+        <div id="builder-summary" class="builder-summary"></div>
+        <div id="form-error" class="alert alert--error hidden"></div>
+
+        <button id="run-btn" type="button" class="btn btn--primary btn--block">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="4 3 13 8 4 13 4 3" fill="currentColor" stroke="none"/>
+          </svg>
+          <span class="btn__label">Plan placement</span>
+        </button>
+
+        <details class="adv">
+          <summary>Advanced — request JSON</summary>
+          <p class="form-empty" style="margin-bottom:8px">
+            Generated from the form; this is exactly what <code>POST /v1/placement/bm-demand/plan</code>
+            receives and what “Save template” downloads. Edit it to use fields the form
+            doesn't cover, then tick the box.
+          </p>
+          <textarea id="json-editor" class="editor" spellcheck="false"
+            placeholder="BmDemandPlanRequest JSON…"></textarea>
+          <label class="mini mini--check" style="margin-top:6px">
+            <input id="json-override" type="checkbox">
+            <span class="mini__label">Use this JSON instead of the form</span>
+          </label>
+          <div id="json-error" class="alert alert--error hidden"></div>
+        </details>
+
+      </div>
+    </section>
+  </aside>
+
+  <div class="content">
+
+    <div id="overall-banner" class="alert hidden"></div>
+
+    <section id="groups-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Tenancy groups</h2>
+        <span class="card__hint">each group is its own pool — machines never cross groups, totals add up</span>
+        <div class="card__header-right toolbar">
+          <button id="dl-template-btn" type="button" class="btn btn--ghost btn--small" title="Download the BM → VM mapping for the legacy provisioning system">Legacy template</button>
+          <button id="dl-result-btn" type="button" class="btn btn--ghost btn--small" title="Download the full plan result JSON">Result JSON</button>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="groups-content"></div>
+      </div>
+    </section>
+
+    <section id="advisory-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Advisories</h2>
+        <span class="card__hint">not errors — things the PM should know before signing</span>
+      </header>
+      <div class="card__body">
+        <div id="advisory-content"></div>
+      </div>
+    </section>
+
+    <section id="compiled-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Compiled demands</h2>
+        <span class="card__hint">how each “N machines of spec S” became VMs: k = VMs per machine, count = N × k</span>
+      </header>
+      <div class="card__body">
+        <div id="compiled-content"></div>
+      </div>
+    </section>
+
+    <section id="matrix-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Placement matrix</h2>
+        <span class="card__hint">cluster × node type → VMs per AG, distinct machines</span>
+      </header>
+      <div class="card__body">
+        <div id="matrix-content"></div>
+      </div>
+    </section>
+
+    <section id="rack-card" class="card viz-card hidden">
+      <header class="card__header">
+        <h2 class="card__title" id="rack-title">Machines</h2>
+        <div class="card__header-right">
+          <div id="group-tabs" class="segmented" role="radiogroup" aria-label="Tenancy group"></div>
+          <label class="field--inline" title="Show CPU / memory / storage usage on every machine">
+            <input type="checkbox" id="show-capacity">
+            <span>Capacity</span>
+          </label>
+          <label class="field--inline">
+            <span>Group by</span>
+            <select id="group-by" class="select select--compact"></select>
+          </label>
+        </div>
+      </header>
+      <div class="card__body">
+        <div id="step-strip" class="step-strip step-strip--mini"></div>
+        <div id="rack-container" class="rack-area"></div>
+        <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="layout-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Machine layouts</h2>
+        <span class="card__hint">what lands on each machine — the plan the legacy template is cut from</span>
+      </header>
+      <div class="card__body">
+        <div id="layout-content"></div>
+      </div>
+    </section>
+
+  </div>
+
+</main>
+
+<div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
+
+<script type="module" src="js/theme.js"></script>
+<script type="module" src="js/demand.js"></script>
+</body>
+</html>
