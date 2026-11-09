@@ -196,6 +196,12 @@ N 台」對 **C1 / C2 / C6** 永遠合法(C2 由 `fits_per_bm` 的定義保證,C
 獨佔 cluster 的 count = N,`count < min_distinct_bms` 已是 INPUT_ERROR,不會再發
 footprint advisory。
 
+**兩條 advisory 只在 `bm_equivalents` 形式發出。** `vm_count` 形式的 N 不是 PM 簽的
+數字,是我們推估「這些 VM 會佔幾台」;對自己的推估發警告沒有意義。所以該形式
+把兩個下限直接摺進 N:`bm_equivalents = max(⌈count/k⌉, min_distinct_bms, min(count, ags))`
+——「5 顆 control-plane、≥5 台」就是 5 台,不會出現「policy ≥5 > 2」這種
+把打包推估(⌈5/3⌉=2)拿來和政策比的噪音。
+
 **rules 的發放**:每個 demand 一條 `MinDistinctBaremetalRule`(selector
 `{cluster_id, ip_type, node_role}`),每個獨佔 cluster **一條** `ExclusiveBaremetalRule`
 (selector 只有 `cluster_id`,涵蓋它所有 role),掛在該 cluster 第一次出現的

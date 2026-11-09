@@ -114,6 +114,20 @@ class TestCompile:
         assert a.groups[0].demands[0].bm_equivalents == 11
         assert a.groups[0].steps[0].requirements == b.groups[0].steps[0].requirements
 
+    def test_vm_count_form_folds_policy_floors_into_equivalents(self):
+        """5 control-plane VMs at 3 per machine under a ">=5 machines"
+        policy simply take 5 machines: the derived equivalents say so and
+        no advisory second-guesses the user's own numbers."""
+        c = self._one(request([D("C1", "third", count=5, role="control-plane", min_distinct_bms=5)]))
+        d = c.groups[0].demands[0]
+        assert d.vm_count == 5 and d.fits_per_bm == 3 and d.bm_equivalents == 5
+        assert not any(a["type"] in ("footprint_exceeds_equivalents", "ag_spread_exceeds_equivalents")
+                       for a in c.advisories)
+
+    def test_vm_count_form_folds_ag_floor(self):
+        c = self._one(request([D("A1", "third", count=3)], min_distinct=0))
+        assert c.groups[0].demands[0].bm_equivalents == 3  # 3 VMs over 3 AGs
+
     def test_inconsistent_basis_is_input_error(self):
         c = compile_bm_demands(request([D("A1", "half", n=11, count=20)]))
         assert any("make them agree" in e for e in c.errors)

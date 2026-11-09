@@ -423,9 +423,11 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                 )
                 continue
             n = derived_n
+            budget_given = d.bm_equivalents is not None
         else:
             n = d.bm_equivalents
             count = n * k
+            budget_given = True
 
         min_distinct = (
             d.min_distinct_bms if d.min_distinct_bms is not None
@@ -466,7 +468,14 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
         #     hence that many machines;
         #   * C7 (min_distinct_bms) asks for N' distinct machines outright.
         # Say so before the solve does; the sizing answer will show it anyway.
-        if min_distinct and n < min_distinct:
+        # Only when N is the PM's number: in the vm_count form N is OUR
+        # estimate of "how many machines these VMs take", so fold the two
+        # floors into it instead of warning about our own arithmetic
+        # ("5 control-plane VMs over >=5 machines" simply takes 5 machines).
+        ag_floor = min(count, req.topology.ags) if req.config.auto_generate_anti_affinity else 0
+        if not budget_given:
+            n = max(n, min_distinct or 0, ag_floor)
+        if budget_given and min_distinct and n < min_distinct:
             out.advisories.append({
                 "type": "footprint_exceeds_equivalents", "severity": "warning",
                 "cluster_id": d.cluster_id, "node_role": d.node_role,
@@ -477,19 +486,17 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                     f"requested — expect the plan to use {min_distinct}"
                 ),
             })
-        if req.config.auto_generate_anti_affinity:
-            ag_floor = min(count, req.topology.ags)
-            if n < ag_floor:
-                out.advisories.append({
-                    "type": "ag_spread_exceeds_equivalents", "severity": "warning",
-                    "cluster_id": d.cluster_id, "node_role": d.node_role,
-                    "bm_equivalents": n, "machines_needed_for_spread": ag_floor,
-                    "message": (
-                        f"demand {label}: {count} VM(s) spread over "
-                        f"{req.topology.ags} AGs need at least {ag_floor} machines, "
-                        f"more than the {n} equivalent machine(s) requested"
-                    ),
-                })
+        if budget_given and n < ag_floor:
+            out.advisories.append({
+                "type": "ag_spread_exceeds_equivalents", "severity": "warning",
+                "cluster_id": d.cluster_id, "node_role": d.node_role,
+                "bm_equivalents": n, "machines_needed_for_spread": ag_floor,
+                "message": (
+                    f"demand {label}: {count} VM(s) spread over "
+                    f"{req.topology.ags} AGs need at least {ag_floor} machines, "
+                    f"more than the {n} equivalent machine(s) requested"
+                ),
+            })
 
         step_name = d.step or d.cluster_id
         step = per_group_steps[gname].get(step_name)

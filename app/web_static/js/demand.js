@@ -165,7 +165,7 @@ function renderGroups() {
   }).join("");
   $("#groups-content").innerHTML = `
     <table class="table group-table">
-      <thead><tr><th>Group</th><th>Clusters</th><th>Machine model</th><th class="num">Machines</th><th>Status</th><th>How</th></tr></thead>
+      <thead><tr><th>Group</th><th>Clusters</th><th>Machine model</th><th class="num">BMs</th><th>Status</th><th>How</th></tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${r.total_baremetals}</strong></td><td colspan="2" class="muted">groups never share machines, so the totals add</td></tr></tfoot>
     </table>`;
@@ -197,7 +197,7 @@ function renderCompiled() {
   $("#compiled-content").innerHTML = `
     <table class="table">
       <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
-        <th class="num">VMs / machine</th><th class="num">Machines</th><th class="num">VMs</th><th class="num">≥ machines</th><th>Step</th></tr></thead>
+        <th class="num">VMs / BM</th><th class="num">BMs</th><th class="num">VMs</th><th class="num">≥ BMs</th><th>Step</th></tr></thead>
       <tbody>${rows.map((d) => `<tr>
         <td>${escapeHtml(d.pool)}</td><td>${escapeHtml(d.cluster_id)}</td><td>${escapeHtml(d.node_role)}</td>
         <td class="muted">${escapeHtml(d.ip_type || "—")}</td>

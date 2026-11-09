@@ -146,13 +146,22 @@ export function previewDemand(d) {
   const kPhys = fitsPerBm(spec, bm);
   if (kPhys === 0) return { ok: false, text: `'${spec.name}' does not fit '${bm.name}'` };
   const k = exclusive ? 1 : kPhys;
-  const n = d.basis === "vm" ? ceilDiv(d.n, k) : d.n;
   const count = d.basis === "vm" ? d.n : d.n * k;
   const minD = d.minDistinct ?? state.policy.defaultMinDistinct ?? 0;
+  const agFloor = state.cfg.autoAA ? Math.min(count, state.topo.ags) : 0;
+  let n = d.basis === "vm" ? ceilDiv(d.n, k) : d.n;
   const warn = [];
-  if (minD && count < minD) warn.push(`${count} VM(s) can't span ${minD} machines`);
-  else if (minD && n < minD) warn.push(`policy ≥${minD} machines > ${n}`);
-  if (state.cfg.autoAA && n < Math.min(count, state.topo.ags)) warn.push(`AG spread needs ${Math.min(count, state.topo.ags)} machines`);
+  if (minD && count < minD) {
+    warn.push(`only ${count} VM(s) — cannot spread over ${minD} BMs (will be rejected)`);
+  } else if (d.basis === "vm") {
+    // VM-count mode: N is OUR estimate of the machines these VMs take, so
+    // fold the footprint / AG floors in instead of warning about them.
+    n = Math.max(n, minD, agFloor);
+  } else {
+    // BM mode: N is the PM's number — say when policy pushes above it.
+    if (minD && n < minD) warn.push(`footprint ≥${minD} BMs: plan will use ≥${minD}, not ${n}`);
+    if (n < agFloor) warn.push(`AG spread over ${state.topo.ags} AGs: plan will use ≥${agFloor}, not ${n}`);
+  }
   return { ok: warn.length === 0 || count >= minD, k, n, count, exclusive, warn };
 }
 
@@ -201,15 +210,15 @@ function demandRow(d, i) {
   const p = previewDemand(d);
   const preview = p.ok === false && p.text
     ? `<span class="warn">${esc(p.text)}</span>`
-    : `<span><b>${p.k}</b> VM(s) / machine${p.exclusive ? " (exclusive)" : ""}</span>
+    : `<span><b>${p.k}</b> VM(s) / BM${p.exclusive ? " (exclusive)" : ""}</span>
        <span><b>${p.count}</b> VM(s)</span>
-       <span><b>${p.n}</b> equivalent machine(s)</span>
+       <span><b>${p.n}</b> equivalent BM(s)</span>
        ${(p.warn || []).map((w) => `<span class="warn">⚠ ${esc(w)}</span>`).join("")}`;
   // NOT a <label>: the segmented control holds its own <label>s and a
   // nested label would re-activate the first radio on every click.
   const basis = `<div class="mini"><span class="mini__label">Count as</span>
     <div class="segmented segmented--mini segmented--block" role="radiogroup" aria-label="Sizing basis">
-      <label><input type="radio" name="basis-${i}" value="bm" ${d.basis === "bm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>Machines</span></label>
+      <label><input type="radio" name="basis-${i}" value="bm" ${d.basis === "bm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>BMs</span></label>
       <label><input type="radio" name="basis-${i}" value="vm" ${d.basis === "vm" ? "checked" : ""} ${bind("demands", i, "basis")}><span>VMs</span></label>
     </div></div>`;
   const groupOpts = [{ value: "", label: "(cluster's group)" },
@@ -225,10 +234,10 @@ function demandRow(d, i) {
     <div class="frow frow--demand-mid">
       ${pick("demands", i, "spec", d.spec, "VM spec", specOpts())}
       ${basis}
-      ${num("demands", i, "n", d.n, d.basis === "vm" ? "VM count" : "Machines", { min: 1 })}
+      ${num("demands", i, "n", d.n, d.basis === "vm" ? "VM count" : "BM count", { min: 1 })}
     </div>
     <div class="frow frow--demand-bot">
-      ${num("demands", i, "minDistinct", d.minDistinct, "≥ machines", { min: 0, ph: `default ${state.policy.defaultMinDistinct ?? 0}` })}
+      ${num("demands", i, "minDistinct", d.minDistinct, "≥ BMs", { min: 0, ph: `default ${state.policy.defaultMinDistinct ?? 0}` })}
       ${txt("demands", i, "step", d.step, "Step", "= cluster",
         `title="Rows sharing a step name are placed in ONE solve; different names are built one after another (later steps see earlier placements as pinned). Blank = the cluster id."`)}
       ${state.groups.length
@@ -260,7 +269,7 @@ function groupCard(g, i) {
     <div class="frow frow--group-head">
       ${txt("groups", i, "name", g.name, "Group")}
       ${pick("groups", i, "bmSpec", g.bmSpec, "Machine model", bmOpts())}
-      ${num("groups", i, "fleetSize", g.fleetSize, "Machines", { min: 1, ph: "auto (min)" })}
+      ${num("groups", i, "fleetSize", g.fleetSize, "BMs", { min: 1, ph: "auto (min)" })}
       ${act("group-del", i, "✕", "Delete group", "row-act--del")}
     </div>
     <div class="cluster-picks">${picks}</div>
@@ -268,7 +277,7 @@ function groupCard(g, i) {
       ? `<b>${byDefault.map(rowLabel).join(", ")}</b>${viaOverride.length
           ? `${byDefault.length ? " · " : ""}via row override: <b>${viaOverride.map(rowLabel).join(", ")}</b>` : ""}`
       : "<b>nothing yet</b> — tick a cluster or pick this group on a demand row"}</p>
-    <p class="picks-hint">Σ equivalent machines = <b>${sigma}</b> · blank Machines = find the minimum (footprint / AG policies can need more) · a number = check that it fits</p>
+    <p class="picks-hint">Σ equivalent BMs = <b>${sigma}</b> · blank BMs = find the minimum (footprint / AG policies can need more) · a number = check that it fits</p>
   </div>`;
 }
 
@@ -282,7 +291,7 @@ function policyCard() {
   return `<div class="frow-card">
     <div class="frow frow--policy">
       <label class="mini" title="Every node type of every cluster must land on at least this many distinct machines (C7). 0 = off. A demand row can override it.">
-        <span class="mini__label">Default footprint ≥ machines</span>
+        <span class="mini__label">Default footprint ≥ BMs</span>
         <input class="input" type="number" min="0" value="${state.policy.defaultMinDistinct ?? 0}" data-policy="defaultMinDistinct"></label>
       <div></div>
     </div>
@@ -361,7 +370,7 @@ function renderSummary() {
   }
   const groups = state.groups.length || 1;
   $("#builder-summary").textContent =
-    `${state.demands.length} demand(s) · ${clusterNames().length} cluster(s) · ${groups} pool(s) · ≈${vms} VM(s) on ≥${machines} machine(s)`;
+    `${state.demands.length} demand(s) · ${clusterNames().length} cluster(s) · ${groups} group(s) · ≈${vms} VM(s) on ≥${machines} BM(s)`;
 }
 
 function renderPreviews() {
