@@ -83,8 +83,11 @@ def build_fleet(fleet: FleetTemplate, n: int) -> list[Baremetal]:
     for i in range(n):
         seq = f"{i + 1:03d}"
         out.append(Baremetal(
-            id=f"bm-{seq}",
-            hostname=f"bare-{seq}",
+            id=f"{fleet.id_prefix}{seq}",
+            # A prefixed fleet (one pool among several, ADR-020) keeps the
+            # prefix in the hostname too, so pools stay distinguishable in
+            # any view that shows hostnames side by side.
+            hostname=f"bare-{seq}" if fleet.id_prefix == "bm-" else f"{fleet.id_prefix}{seq}",
             total_capacity=fleet.total_capacity,
             used_capacity=Resources(),
             topology=racks[i % len(racks)],
@@ -172,6 +175,21 @@ def _validate(request: RolloutSizingRequest) -> list[str]:
                     f"'{rule.fault_domain}', which this fleet template "
                     f"collapses to one bucket — unsatisfiable at any size"
                 )
+        for rule in step.min_distinct_bm_rules:
+            if rule.min_distinct_bms > request.max_baremetals:
+                errors.append(
+                    f"min_distinct_bm rule '{rule.group_id}' in step "
+                    f"'{step.name}' needs {rule.min_distinct_bms} machines but "
+                    f"max_baremetals={request.max_baremetals} — unsatisfiable "
+                    f"within the search budget"
+                )
+            if rule.vm_ids and len(set(rule.vm_ids)) < rule.min_distinct_bms:
+                errors.append(
+                    f"min_distinct_bm rule '{rule.group_id}' in step "
+                    f"'{step.name}' names {len(set(rule.vm_ids))} VM(s) but "
+                    f"requires {rule.min_distinct_bms} distinct machines — "
+                    f"unsatisfiable at any size"
+                )
         for rule in step.anti_affinity_rules:
             for dim in rule.spread_on:
                 if dim in collapsed and len(rule.vm_ids or []) > 1:
@@ -182,6 +200,12 @@ def _validate(request: RolloutSizingRequest) -> list[str]:
                     )
                     break
     return errors
+
+
+def point_steps_at_fleet(steps: list[RolloutStep], bm_ids: list[str]) -> list[RolloutStep]:
+    """Point every VM and requirement at a generated fleet (public twin of
+    the per-probe helper, used by bm_demand's fixed-fleet mode)."""
+    return _strip_candidates(steps, bm_ids)
 
 
 def _strip_candidates(steps: list[RolloutStep], bm_ids: list[str]) -> list[RolloutStep]:

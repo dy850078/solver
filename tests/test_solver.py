@@ -2005,3 +2005,116 @@ class TestDuplicateVmIds:
         assert not r.success
         assert r.solver_status.startswith("INPUT_ERROR")
         assert "duplicate VM 'vm-1'" in r.solver_status
+
+
+# ===========================================================================
+# C7: Minimum footprint — a group must touch at least N distinct BMs
+# ===========================================================================
+
+class TestMinDistinctBaremetal:
+    """C7 is a LOWER bound on how many machines a group touches. The
+    consolidation objective pulls the other way (fewest BMs), so every
+    success here is the constraint actually binding."""
+
+    def _rule(self, n, cluster="cluster-1", role=NodeRole.WORKER, **kw):
+        from app.models import MinDistinctBaremetalRule
+        return MinDistinctBaremetalRule(
+            group_id=f"mdb/{cluster}/{role}",
+            selector=GroupSelector(cluster_id=cluster, node_role=role),
+            min_distinct_bms=n, **kw,
+        )
+
+    def _distinct(self, r, prefix="w-"):
+        return len({a.baremetal_id for a in r.assignments if a.vm_id.startswith(prefix)})
+
+    def test_group_spans_at_least_n_bms(self):
+        """11 small VMs, 9 BMs: consolidation alone would use 1 BM; C7(6)
+        forces ≥6."""
+        vms = [make_vm(f"w-{i}", cpu=1, mem=1000, disk=10) for i in range(11)]
+        bms = [make_bm(f"bm-{i}") for i in range(9)]
+        base = solve(vms, bms)
+        assert base.success and self._distinct(base) < 6  # objective wants few
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6)])
+        assert r.success, r.solver_status
+        assert self._distinct(r) >= 6
+
+    def test_uneven_packing_is_allowed(self):
+        """What the C4 approximation (max_per_bm=ceil(11/6)=2) would forbid:
+        with only 6 BMs, one of which has room for 6 VMs and five of which
+        have room for exactly 1, the only layout is 6+1+1+1+1+1 — C7 must
+        accept it."""
+        vms = [make_vm(f"w-{i}", cpu=4, mem=16_000, disk=100) for i in range(11)]
+        bms = [make_bm("bm-big", cpu=64, mem=256_000)] + [
+            make_bm(f"bm-{i}", cpu=4, mem=16_000) for i in range(5)
+        ]
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6)])
+        assert r.success, r.solver_status
+        assert self._distinct(r) == 6
+        on_big = sum(1 for a in r.assignments if a.baremetal_id == "bm-big")
+        assert on_big == 6
+
+    def test_static_group_smaller_than_n_is_input_error(self):
+        vms = [make_vm(f"w-{i}") for i in range(3)]
+        bms = [make_bm(f"bm-{i}") for i in range(6)]
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6)])
+        assert not r.success
+        assert r.solver_status.startswith("INPUT_ERROR")
+        assert "min_distinct_bm" in r.solver_status
+
+    def test_fewer_reachable_bms_than_n_is_infeasible_with_diagnostics(self):
+        """6 VMs but only 5 BMs: not an input error (a bigger fleet would
+        do), INFEASIBLE with the rule named and the layer pinpointed."""
+        vms = [make_vm(f"w-{i}") for i in range(6)]
+        bms = [make_bm(f"bm-{i}") for i in range(5)]
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6)])
+        assert not r.success
+        assert r.solver_status == "INFEASIBLE"
+        bad = r.diagnostics["infeasible_min_distinct_bm_rules"]
+        assert bad[0]["reachable_bms"] == 5 and bad[0]["bms_needed"] == 6
+        assert r.diagnostics["constraint_check"]["failed_at"] == "min_distinct_bm"
+
+    def test_pinned_members_count_toward_n(self):
+        """3 pinned on 3 BMs + 3 new VMs, N=6 → the 3 new ones must each
+        take a fresh BM; no grandfather needed because pins only help."""
+        bms = [_pinned_host(f"bm-{i}", 1) for i in range(3)] + [
+            make_bm(f"bm-{i}") for i in range(3, 6)
+        ]
+        vms = [make_vm(f"w-{i}", pinned_to=f"bm-{i}") for i in range(3)] + [
+            make_vm(f"w-{i}") for i in range(3, 6)
+        ]
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6)])
+        assert r.success, r.solver_status
+        assert self._distinct(r) == 6
+
+    def test_role_list_selector(self):
+        """ADR-016 role union: control-plane ∪ learner spread over 4 BMs."""
+        from app.models import MinDistinctBaremetalRule
+        vms = [make_vm(f"w-cp{i}", role="control-plane") for i in range(2)] + [
+            make_vm(f"w-ln{i}", role="control-plane-learner") for i in range(2)
+        ]
+        bms = [make_bm(f"bm-{i}") for i in range(5)]
+        rule = MinDistinctBaremetalRule(
+            group_id="cp-union",
+            selector=GroupSelector(node_role=["control-plane", "control-plane-learner"]),
+            min_distinct_bms=4,
+        )
+        r = solve(vms, bms, min_distinct_rules=[rule])
+        assert r.success, r.solver_status
+        assert self._distinct(r) == 4
+
+    def test_empty_group_is_advisory_only(self):
+        vms = [make_vm("w-0")]
+        bms = [make_bm("bm-0")]
+        r = solve(vms, bms, min_distinct_rules=[self._rule(6, cluster="nobody")])
+        assert r.success
+        kinds = {a["type"] for a in r.diagnostics.get("advisories", [])}
+        assert "min_distinct_bm_rule_empty" in kinds
+
+    def test_both_vm_ids_and_selector_rejected(self):
+        from app.models import MinDistinctBaremetalRule
+        rule = MinDistinctBaremetalRule(
+            group_id="bad", vm_ids=["w-0"],
+            selector=GroupSelector(cluster_id="cluster-1"), min_distinct_bms=1,
+        )
+        r = solve([make_vm("w-0")], [make_bm("bm-0")], min_distinct_rules=[rule])
+        assert r.solver_status.startswith("INPUT_ERROR")

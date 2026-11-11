@@ -1,0 +1,104 @@
+{
+  "_name": "pm-three-clusters",
+  "_description": "PM-level BM-equivalent demand (ADR-020). Three clusters on 90vC/720GiB machines: A1 wants 11 machines' worth of one-third VMs (+3 masters), B1 wants 5 machines' worth of half VMs, C1 wants 6 machines and owns them outright (exclusive). A1 and B1 may share machines (group 'shared'); C1 has its own pool. Every node type must spread over at least 6 machines (C7). Each group is sized independently and the totals add up; the result carries the cluster x role x AG matrix, per-machine layouts and the legacy BM-VM template. POST /v1/placement/bm-demand/plan (or /compile to get the rollout steps only).",
+  "bm_specs": [
+    {
+      "name": "bm-90-720",
+      "capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 6000
+      }
+    }
+  ],
+  "vm_specs": [
+    {
+      "name": "full",
+      "resources": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 6000
+      }
+    },
+    {
+      "name": "half",
+      "resources": {
+        "cpu_cores": 45,
+        "memory_mib": 368640,
+        "storage_gb": 3000
+      }
+    },
+    {
+      "name": "third",
+      "resources": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 2000
+      }
+    }
+  ],
+  "demands": [
+    {
+      "cluster_id": "A1",
+      "node_role": "worker",
+      "ip_type": "routable",
+      "vm_spec": "third",
+      "bm_equivalents": 11
+    },
+    {
+      "cluster_id": "A1",
+      "node_role": "master",
+      "ip_type": "routable",
+      "vm_spec": "third",
+      "vm_count": 3,
+      "min_distinct_bms": 3
+    },
+    {
+      "cluster_id": "B1",
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "vm_spec": "half",
+      "bm_equivalents": 5
+    },
+    {
+      "cluster_id": "C1",
+      "node_role": "worker",
+      "ip_type": "routable",
+      "vm_spec": "full",
+      "bm_equivalents": 6
+    }
+  ],
+  "groups": [
+    {
+      "name": "shared",
+      "clusters": [
+        "A1",
+        "B1"
+      ],
+      "bm_spec": "bm-90-720"
+    },
+    {
+      "name": "c1-own",
+      "clusters": [
+        "C1"
+      ],
+      "bm_spec": "bm-90-720"
+    }
+  ],
+  "exclusive_clusters": [
+    "C1"
+  ],
+  "default_min_distinct_bms": 6,
+  "topology": {
+    "racks": 6,
+    "ags": 3
+  },
+  "build_order": [
+    "A1",
+    "B1"
+  ],
+  "config": {
+    "max_solve_time_seconds": 10,
+    "w_headroom": 0
+  }
+}

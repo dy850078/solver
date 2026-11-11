@@ -90,6 +90,7 @@ def _solve_split_placement(
         max_per_bm_rules=request.max_per_bm_rules,
         exclusive_bm_rules=request.exclusive_bm_rules,
         failover_rules=request.failover_rules,
+        min_distinct_bm_rules=request.min_distinct_bm_rules,
         config=request.config,
     )
 

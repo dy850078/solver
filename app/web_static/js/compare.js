@@ -7,6 +7,7 @@
 
 import { listExamples, getExample, compareRun } from "./api.js";
 import { escapeHtml } from "./util.js";
+import { initSidebarChrome } from "./sidebar.js";
 import { buildXlsx } from "./xlsx.js";
 import { blankSet, loadDraft, saveDraft, clearDraft, normalizeSet, modelsOf, bundleLabel } from "./compare-set.js";
 import { initForm, renderForm, readSet, setScenarioStatus, clearScenarioStatus } from "./compare-form.js";
@@ -495,6 +496,7 @@ function initDetailControls() {
 }
 
 function init() {
+  initSidebarChrome();
   initForm({ onChange: scheduleDraft });
   initDetailControls();
   populateExamples();

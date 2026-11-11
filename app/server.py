@@ -37,6 +37,13 @@ from .models import (
     SplitPlacementRequest,
     SplitPlacementResult,
 )
+from .bm_demand import (
+    BmDemandPlanRequest,
+    BmDemandPlanResult,
+    CompiledGroup,
+    compile_bm_demands,
+    plan_bm_demands,
+)
 from .capacity_planner import solve_capacity_horizon, solve_capacity_plan
 from .reconcile import reconcile as run_reconcile
 from .rollout import solve_rollout
@@ -171,6 +178,25 @@ def rollout(request: RolloutRequest) -> RolloutResult:
 def rollout_size(request: RolloutSizingRequest) -> RolloutSizingResult:
     """Estimate the smallest fleet that lets a whole build order place."""
     return size_rollout(request)
+
+
+@api.post("/v1/placement/bm-demand/compile", response_model=list[CompiledGroup])
+def bm_demand_compile(request: BmDemandPlanRequest) -> list[CompiledGroup]:
+    """Compile PM-level BM-equivalent demand into per-tenancy-group rollout
+    steps without solving (paste the steps into the rollout page)."""
+    from fastapi import HTTPException
+
+    compiled = compile_bm_demands(request)
+    if compiled.errors:
+        raise HTTPException(status_code=400, detail={"input_errors": compiled.errors})
+    return compiled.groups
+
+
+@api.post("/v1/placement/bm-demand/plan", response_model=BmDemandPlanResult)
+def bm_demand_plan(request: BmDemandPlanRequest) -> BmDemandPlanResult:
+    """Compile BM-equivalent demand, size or place every tenancy group, and
+    return the cluster × role × AG matrix, per-BM layouts and legacy template."""
+    return plan_bm_demands(request)
 
 
 @api.post("/v1/capacity/procure", response_model=ProcurementResult)

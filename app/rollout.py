@@ -74,7 +74,7 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
     bm_by_id = {bm.id: bm for bm in rolling_bms}
     carried: list[VM] = [_normalize_existing(vm) for vm in request.existing_vms]
 
-    acc_aa, acc_mpb, acc_excl, acc_fo = [], [], [], []
+    acc_aa, acc_mpb, acc_excl, acc_fo, acc_mdb = [], [], [], [], []
     reports: list[RolloutStepReport] = []
     failed_step: str | None = None
 
@@ -93,6 +93,7 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
         acc_mpb.extend(step.max_per_bm_rules)
         acc_excl.extend(step.exclusive_bm_rules)
         acc_fo.extend(step.failover_rules)
+        acc_mdb.extend(step.min_distinct_bm_rules)
 
         step_request = SplitPlacementRequest(
             requirements=step.requirements,
@@ -102,6 +103,7 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
             max_per_bm_rules=acc_mpb,
             exclusive_bm_rules=acc_excl,
             failover_rules=acc_fo,
+            min_distinct_bm_rules=acc_mdb,
             config=request.config,
         )
         result, synthetics = solve_split_placement_with_synthetics(step_request)
@@ -120,22 +122,25 @@ def solve_rollout(request: RolloutRequest) -> RolloutResult:
         ]
 
         new_assignments: list[PlacementAssignment] = []
+        new_vms: list[VM] = []
         for a in result.assignments:
             if a.pinned:
                 continue  # carried from an earlier step / existing_vms
             if a.vm_id in explicit_of:
                 new_assignments.append(a)
+                new_vms.append(explicit_of[a.vm_id])
             else:
                 # synthetic: namespace the id for rollout-wide uniqueness
-                new_assignments.append(
-                    a.model_copy(update={"vm_id": f"{step.name}/{a.vm_id}"})
-                )
+                new_id = f"{step.name}/{a.vm_id}"
+                new_assignments.append(a.model_copy(update={"vm_id": new_id}))
+                new_vms.append(synth_of[a.vm_id].model_copy(update={"id": new_id}))
 
         reports.append(RolloutStepReport(
             name=step.name,
             success=result.success,
             solver_status=result.solver_status,
             new_assignments=new_assignments,
+            new_vms=new_vms,
             split_decisions=result.split_decisions,
             unplaced_vms=unplaced,
             bm_used_count=result.bm_used_count,
@@ -247,6 +252,7 @@ def _validate(request: RolloutRequest) -> list[str]:
             ("anti_affinity", step.anti_affinity_rules),
             ("max_per_bm", step.max_per_bm_rules),
             ("exclusive_bm", step.exclusive_bm_rules),
+            ("min_distinct_bm", step.min_distinct_bm_rules),
         ):
             for rule in rules:
                 unknown = [v for v in rule.vm_ids if v not in known_ids]

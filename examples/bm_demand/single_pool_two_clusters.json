@@ -1,0 +1,57 @@
+{
+  "_name": "single-pool-two-clusters",
+  "_description": "Minimal PM demand template: two clusters sharing one pool on one machine model, no exclusive clusters, no explicit groups (the server builds a single 'shared' pool). Sizing mode: how many 90vC/720GiB machines do 6 machines' worth of halves plus 4 machines' worth of thirds need when every node type must spread over 6 machines?",
+  "bm_specs": [
+    {
+      "name": "bm-90-720",
+      "capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 6000
+      }
+    }
+  ],
+  "vm_specs": [
+    {
+      "name": "half",
+      "resources": {
+        "cpu_cores": 45,
+        "memory_mib": 368640,
+        "storage_gb": 3000
+      }
+    },
+    {
+      "name": "third",
+      "resources": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 2000
+      }
+    }
+  ],
+  "demands": [
+    {
+      "cluster_id": "web",
+      "node_role": "worker",
+      "ip_type": "routable",
+      "vm_spec": "half",
+      "bm_equivalents": 6
+    },
+    {
+      "cluster_id": "batch",
+      "node_role": "worker",
+      "ip_type": "non-routable",
+      "vm_spec": "third",
+      "bm_equivalents": 4
+    }
+  ],
+  "default_min_distinct_bms": 6,
+  "topology": {
+    "racks": 6,
+    "ags": 3
+  },
+  "config": {
+    "max_solve_time_seconds": 10,
+    "w_headroom": 0
+  }
+}

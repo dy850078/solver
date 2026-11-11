@@ -353,5 +353,7 @@ class ResourceSplitter:
                         node_role=req.node_role,
                         vm_spec=spec,
                         count=count,
+                        cluster_id=req.cluster_id,
+                        ip_type=req.ip_type,
                     ))
         return decisions

@@ -89,3 +89,21 @@ export async function compareResolve(body) {
   });
   return jsonOrThrow(res);
 }
+
+export async function bmDemandCompile(body) {
+  const res = await fetch("/v1/placement/bm-demand/compile", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
+export async function bmDemandPlan(body) {
+  const res = await fetch("/v1/placement/bm-demand/plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}

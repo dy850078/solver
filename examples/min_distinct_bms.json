@@ -1,0 +1,472 @@
+{
+  "_description": "C7 minimum footprint: 11 one-third-machine workers of cluster-a1 on 9 BMs. Consolidation alone would pack them onto 4 machines; the rule demands the group touch at least 6 distinct BMs (while auto anti-affinity still balances them over the 3 AGs). Uneven packing such as 3+2+2+2+1+1 is allowed \u2014 that is what separates C7 from a max_per_bm cap.",
+  "vms": [
+    {
+      "id": "vm-a1-worker-01",
+      "hostname": "a1-worker-01",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-02",
+      "hostname": "a1-worker-02",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-03",
+      "hostname": "a1-worker-03",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-04",
+      "hostname": "a1-worker-04",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-05",
+      "hostname": "a1-worker-05",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-06",
+      "hostname": "a1-worker-06",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-07",
+      "hostname": "a1-worker-07",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-08",
+      "hostname": "a1-worker-08",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-09",
+      "hostname": "a1-worker-09",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-10",
+      "hostname": "a1-worker-10",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    },
+    {
+      "id": "vm-a1-worker-11",
+      "hostname": "a1-worker-11",
+      "demand": {
+        "cpu_cores": 30,
+        "memory_mib": 245760,
+        "storage_gb": 1000
+      },
+      "node_role": "worker",
+      "ip_type": "routable",
+      "cluster_id": "cluster-a1",
+      "candidate_baremetals": [
+        "bm-01",
+        "bm-02",
+        "bm-03",
+        "bm-04",
+        "bm-05",
+        "bm-06",
+        "bm-07",
+        "bm-08",
+        "bm-09"
+      ]
+    }
+  ],
+  "baremetals": [
+    {
+      "id": "bm-01",
+      "hostname": "bare-01",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-1",
+        "rack": "rack-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-02",
+      "hostname": "bare-02",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-2",
+        "rack": "rack-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-03",
+      "hostname": "bare-03",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-1",
+        "rack": "rack-3",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-04",
+      "hostname": "bare-04",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-2",
+        "rack": "rack-4",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-05",
+      "hostname": "bare-05",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-1",
+        "rack": "rack-5",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-06",
+      "hostname": "bare-06",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-2",
+        "rack": "rack-6",
+        "ag": "ag-3"
+      }
+    },
+    {
+      "id": "bm-07",
+      "hostname": "bare-07",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-1",
+        "rack": "rack-1",
+        "ag": "ag-1"
+      }
+    },
+    {
+      "id": "bm-08",
+      "hostname": "bare-08",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-2",
+        "rack": "rack-2",
+        "ag": "ag-2"
+      }
+    },
+    {
+      "id": "bm-09",
+      "hostname": "bare-09",
+      "total_capacity": {
+        "cpu_cores": 90,
+        "memory_mib": 737280,
+        "storage_gb": 4000
+      },
+      "used_capacity": {
+        "cpu_cores": 0,
+        "memory_mib": 0,
+        "storage_gb": 0
+      },
+      "topology": {
+        "site": "site-a",
+        "phase": "p1",
+        "datacenter": "dc-1",
+        "room": "room-1",
+        "rack": "rack-3",
+        "ag": "ag-3"
+      }
+    }
+  ],
+  "min_distinct_bm_rules": [
+    {
+      "group_id": "footprint/cluster-a1/worker",
+      "selector": {
+        "cluster_id": "cluster-a1",
+        "node_role": "worker"
+      },
+      "min_distinct_bms": 6
+    }
+  ],
+  "config": {
+    "auto_generate_anti_affinity": true,
+    "max_solve_time_seconds": 10
+  }
+}

@@ -471,6 +471,30 @@ class ExclusiveBaremetalRule(BaseModel):
     selector: GroupSelector | None = None
 
 
+class MinDistinctBaremetalRule(BaseModel):
+    """
+    "This group's VMs must land on at least N distinct baremetals."
+
+    C7 — a LOWER bound on footprint (contrast C4, an upper bound per BM).
+    It states "spread over at least N machines" without dictating how
+    evenly: 11 VMs with min_distinct_bms=6 may sit 3+2+2+2+1+1. The C4
+    approximation max_per_bm=ceil(11/6)=2 would forbid that layout, and
+    cannot be computed at all when the member count is a splitter decision.
+
+    Machines are counted, not topology buckets — this is orthogonal to C3
+    (which caps VMs per AG/room/rack) and typically used together with it
+    ("spread over 3 AGs AND at least 6 machines").
+
+    Group membership: provide exactly one of `vm_ids` or `selector`.
+    Pinned members count toward N (a lower bound can only be helped by a
+    pin, never violated), so no grandfathering is needed (ADR-019).
+    """
+    group_id: str = ""
+    vm_ids: list[str] = Field(default_factory=list)
+    selector: GroupSelector | None = None
+    min_distinct_bms: int = Field(ge=1)
+
+
 # ---------------------------------------------------------------------------
 # Solver config: tuning knobs
 # ---------------------------------------------------------------------------
@@ -612,6 +636,7 @@ class PlacementRequest(BaseModel):
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
+    min_distinct_bm_rules: list[MinDistinctBaremetalRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
@@ -711,14 +736,21 @@ class SplitPlacementRequest(BaseModel):
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
+    min_distinct_bm_rules: list[MinDistinctBaremetalRule] = Field(default_factory=list)
     config: SolverConfig = Field(default_factory=SolverConfig)
 
 
 class SplitDecision(BaseModel):
-    """How many VMs of a given spec the solver chose for one role."""
+    """How many VMs of a given spec the solver chose for one requirement.
+
+    cluster_id / ip_type echo the requirement's identity so two
+    requirements sharing a role (e.g. one per cluster) stay distinguishable
+    in the output; "" for pre-upgrade payloads."""
     node_role: str
     vm_spec: Resources
     count: int
+    cluster_id: str = ""
+    ip_type: str = ""
 
 
 class SplitPlacementResult(BaseModel):
@@ -768,6 +800,7 @@ class RolloutStep(BaseModel):
     max_per_bm_rules: list[MaxPerBaremetalRule] = Field(default_factory=list)
     exclusive_bm_rules: list[ExclusiveBaremetalRule] = Field(default_factory=list)
     failover_rules: list[FailoverRule] = Field(default_factory=list)
+    min_distinct_bm_rules: list[MinDistinctBaremetalRule] = Field(default_factory=list)
 
 
 class RolloutRequest(BaseModel):
@@ -802,6 +835,12 @@ class RolloutStepReport(BaseModel):
     success: bool
     solver_status: str = ""
     new_assignments: list[PlacementAssignment] = Field(default_factory=list)
+    # The VM objects behind new_assignments (same ids, same order), explicit
+    # and synthetic alike, so downstream reports can read cluster_id /
+    # node_role / ip_type / demand without parsing synthetic ids — the
+    # splitter's id format is private and its spec index is post-filter
+    # (ADR-020). Empty on a failed or BLOCKED step.
+    new_vms: list[VM] = Field(default_factory=list)
     split_decisions: list[SplitDecision] = Field(default_factory=list)
     unplaced_vms: list[str] = Field(default_factory=list)
     bm_used_count: int = 0
@@ -861,6 +900,10 @@ class FleetTemplate(BaseModel):
     ags: int = Field(default=3, ge=1)
     network: str = ""
     pool: str = ""
+    # Prefix for generated machine ids ("bm-" → bm-001, bm-002, …). Lets a
+    # caller that sizes several independent fleets (one per tenancy pool,
+    # ADR-020) merge them without id collisions.
+    id_prefix: str = Field(default="bm-", min_length=1)
 
 
 class RolloutSizingRequest(BaseModel):

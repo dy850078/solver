@@ -21,6 +21,7 @@ from __future__ import annotations
 from .models import (
     ExclusiveBaremetalRule,
     MaxPerBaremetalRule,
+    MinDistinctBaremetalRule,
     ResourceRequirement,
     Resources,
     RolloutStep,
@@ -183,6 +184,41 @@ def solo_floor(vms: list[VM], exclusive_rules: list[ExclusiveBaremetalRule]) -> 
     return len(members & known)
 
 
+def distinct_floor(
+    vms: list[VM], reqs: list[ResourceRequirement],
+    rules: list[MinDistinctBaremetalRule],
+) -> int:
+    """
+    C7 projected onto fleet size: a group that must touch N distinct
+    machines needs a fleet of at least N. Counts only when the rule has at
+    least one member to place — an explicit VM it names or matches, or a
+    requirement (a splitter group) whose identity its selector matches,
+    since the splitter will create ≥1 VM for any requirement with demand.
+
+    Groups take the MAX, never the sum: two groups may share machines, so
+    6 + 6 does not need 12. (Exclusive groups are handled by solo_floor,
+    which is added, and their own count ≥ N is a compile-time check.)
+    """
+    floor = 0
+    for rule in rules:
+        if rule.min_distinct_bms < 1:
+            continue
+        if rule.vm_ids:
+            has_member = any(vm.id in set(rule.vm_ids) for vm in vms)
+        elif rule.selector is not None:
+            sel = rule.selector
+            has_member = any(sel.matches(vm) for vm in vms) or any(
+                sel.matches_attrs(r.cluster_id, r.ip_type, r.node_role)
+                and _has_any_demand(r.total_resources)
+                for r in reqs
+            )
+        else:
+            continue
+        if has_member:
+            floor = max(floor, rule.min_distinct_bms)
+    return floor
+
+
 def fleet_floor(steps: list[RolloutStep], capacity: Resources,
                 config: SolverConfig, ags: int) -> tuple[int, dict[str, int]]:
     """
@@ -200,6 +236,7 @@ def fleet_floor(steps: list[RolloutStep], capacity: Resources,
     reqs = [r for step in steps for r in step.requirements]
     mpb = [r for step in steps for r in step.max_per_bm_rules]
     excl = [r for step in steps for r in step.exclusive_bm_rules]
+    mdb = [r for step in steps for r in step.min_distinct_bm_rules]
 
     solo = solo_floor(vms, excl)
     solo_ids = set()
@@ -216,9 +253,11 @@ def fleet_floor(steps: list[RolloutStep], capacity: Resources,
         "capacity": capacity_floor(rest, reqs, capacity, config),
         "headcount": headcount_floor(rest, mpb, config),
         "pack": pack_floor(rest, reqs, capacity, config),
+        "distinct": distinct_floor(rest, reqs, mdb),
     }
     demand_side = max(
         breakdown["capacity"], breakdown["headcount"], breakdown["pack"],
+        breakdown["distinct"],
     )
     floor = max(ags, solo + demand_side, 1)
     breakdown["total"] = floor

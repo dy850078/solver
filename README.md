@@ -34,6 +34,8 @@ solver/
 │   ├── solver.py            # VMPlacementSolver — CP-SAT model, constraints C1–C6, objective
 │   ├── splitter.py          # ResourceSplitter — budget → (vm_spec × count), shares CpModel with solver
 │   ├── split_solver.py      # Orchestrates splitter + solver joint solve (split-and-solve)
+│   ├── bm_demand.py         # PM-level BM-equivalent demand → rollout/sizing + reports (ADR-020)
+│   ├── placement_report.py  # cluster×role×AG matrix, per-BM layouts, legacy BM-VM template
 │   ├── rollout.py           # Rollout simulation — replays a build order, folding placements forward as pins
 │   ├── rollout_sizing.py    # "How many BMs does this build order need?" — fleet template + search
 │   ├── sizing_floors.py     # Analytic lower bounds on fleet size
@@ -59,6 +61,8 @@ solver/
 | POST | `/v1/placement/split-and-solve` | Split resource budgets into VMs and place them jointly |
 | POST | `/v1/placement/rollout` | Replay a step-by-step build order, carrying placements forward as pins |
 | POST | `/v1/placement/rollout/size` | Estimate the smallest fleet that lets a whole build order place |
+| POST | `/v1/placement/bm-demand/compile` | Compile PM "N equivalent BMs" demand into per-tenancy-group rollout steps (no solve) |
+| POST | `/v1/placement/bm-demand/plan` | Compile + size/place every tenancy group; returns cluster×role×AG matrix, per-BM layouts, legacy template |
 | POST | `/v1/capacity/procure` | Procurement sizing: how many BMs of each type to buy |
 | POST | `/v1/capacity/plan` | Multi-period capacity plan (demand book → per-fab monthly report) |
 | POST | `/v1/capacity/reconcile` | Plan-vs-actual drift report |
@@ -163,6 +167,50 @@ each other's BMs while anti-affinity still spreads each role independently.
 
 ---
 
+## PM demand → placement plan (`POST /v1/placement/bm-demand/plan`)
+
+Procurement input is not a VM list but "cluster X needs **N machines** of
+model M, VMs of spec S" plus policy: which clusters may share machines
+(tenancy groups = pools), which own their machines outright (exclusive) and
+how many distinct machines each node type must spread over (C7). The
+request is compiled onto the rollout / sizing engines and answered with per
+pool machine counts, a cluster × node type × AG matrix, per-machine layouts
+and the legacy BM → VM template (ADR-020).
+
+```bash
+curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
+  -H "Content-Type: application/json" \
+  -d @examples/bm_demand/pm_three_clusters.json \
+  | jq '{total: .total_baremetals, groups: [.groups[] | {name, required_baremetals}], matrix: .placement_matrix}'
+```
+
+- `bm_equivalents: N` means N machines: `k = fits_per_bm(spec, capacity)`
+  VMs per machine, `count = N × k`. A spec that does not tile the machine
+  yields a `spec_does_not_tile_bm` advisory, never machine N+1. `vm_count`
+  is the other form (N is derived).
+- `groups` (shown as *Baremetal groups* in the UI) partition clusters into
+  pools; each pool is sized on its own (`fleet_size` blank) or checked
+  against a fixed size, and the totals add. A demand may name its own
+  `group` to put one node type of a cluster on a dedicated pool ("gpu
+  workers only on GPU-tagged machines", exclusive semantics). Pools compile
+  to `candidate_baremetals`, the same mechanism the scheduler uses for its
+  own role filtering; the production `/solve` contract is unchanged.
+- `legacy_template` in the result is the document the legacy provisioning
+  pipeline consumes, one per Baremetal group, machines numbered `BM1…BMn`
+  within the group (occupied machines only), every VM tagged with its
+  cluster; `legacy_bm_map` traces each key back to the planned machine:
+
+  ```json
+  {"shared": {"BM1": [{"role": "worker", "vm_spec": "third", "routable": "R", "cluster": "A1"},
+                      {"role": "master", "vm_spec": "third", "routable": "R", "cluster": "A1"}],
+              "BM2": [...]},
+   "c1-own": {"BM1": [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]}}
+  ```
+- `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
+- UI: `/ui/demand.html` builds the same request from a form, saves / loads
+  it as a template (the template **is** the request JSON), runs it and
+  hands any pool to the Rollout page.
+
 ## Split-and-Solve (`POST /v1/placement/split-and-solve`)
 
 Instead of pre-specifying exact VM counts, send a total resource budget and let the solver decide how many VMs of which spec to create, then place them — all in a single solve.
@@ -256,4 +304,22 @@ solver config + engine versions (same fields exist on `PlacementResult`).
 - Always search first before creating new files
 - Extend existing functionality rather than duplicating
 - Commit after every completed task
-- Work on a feature branch (`claude/<topic>`), push with `git push -u origin <branch>`; never push to `main` (see CLAUDE.md)
+- Work on a feature branch (`claude/<topic>`), push with `git push -u origin <branch>`, and open a PR against **`release-to-gitlab`** — that is the trunk. `main` is stale: never base work on it or push to it (see CLAUDE.md).
+
+## Release to GitLab
+
+`release-to-gitlab` is the branch the GitLab side consumes; merging a PR into
+it is the "release" step on GitHub. From there:
+
+1. The GitLab Pipeline clones `release-to-gitlab`, runs the security scan and
+   lands the code in the GitLab mirror repo.
+2. Production is a separate GitLab repo with the deploy bound to it (no
+   shared history with the mirror). `scripts/sync-from-upstream.sh` runs
+   every check against the mirror and leaves the push to you; the result is a
+   `sync/*` branch and a merge request into production `master`.
+3. Merging that MR into `master` **is** the deploy — the pipeline ships the
+   code; production machines never `git pull`.
+
+The full procedure (one-time pre-checks, delta inventory, the first-time
+migration and the routine sync) is in `docs/prod-sync-runbook.md`;
+`scripts/compare-with-upstream.sh` shows the current delta.
