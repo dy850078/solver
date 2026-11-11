@@ -304,4 +304,22 @@ solver config + engine versions (same fields exist on `PlacementResult`).
 - Always search first before creating new files
 - Extend existing functionality rather than duplicating
 - Commit after every completed task
-- Work on a feature branch (`claude/<topic>`), push with `git push -u origin <branch>`; never push to `main` (see CLAUDE.md)
+- Work on a feature branch (`claude/<topic>`), push with `git push -u origin <branch>`, and open a PR against **`release-to-gitlab`** — that is the trunk. `main` is stale: never base work on it or push to it (see CLAUDE.md).
+
+## Release to GitLab
+
+`release-to-gitlab` is the branch the GitLab side consumes; merging a PR into
+it is the "release" step on GitHub. From there:
+
+1. The GitLab Pipeline clones `release-to-gitlab`, runs the security scan and
+   lands the code in the GitLab mirror repo.
+2. Production is a separate GitLab repo with the deploy bound to it (no
+   shared history with the mirror). `scripts/sync-from-upstream.sh` runs
+   every check against the mirror and leaves the push to you; the result is a
+   `sync/*` branch and a merge request into production `master`.
+3. Merging that MR into `master` **is** the deploy — the pipeline ships the
+   code; production machines never `git pull`.
+
+The full procedure (one-time pre-checks, delta inventory, the first-time
+migration and the routine sync) is in `docs/prod-sync-runbook.md`;
+`scripts/compare-with-upstream.sh` shows the current delta.
