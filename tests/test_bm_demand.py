@@ -292,11 +292,19 @@ class TestPlanEndToEnd:
         assert {l.bm_id.split("/")[0] for l in plan.bm_layouts} == {"shared", "c1-own"}
 
     def test_legacy_template_shape(self, plan):
+        """One pipeline document per pool, BM1…BMn inside each, every VM
+        tagged with its cluster so a shared pool reads per cluster."""
         t = plan.legacy_template
-        assert len(t) == len(plan.bm_layouts)
-        c1_rows = [rows for bm, rows in t.items() if bm.startswith("c1-own/")]
-        assert c1_rows and all(rows == [["worker", "full", "R"]] for rows in c1_rows)
-        assert any(["worker", "half", "NR"] in rows for rows in t.values())
+        assert set(t) == {"shared", "c1-own"}
+        shared_used = [l for l in plan.bm_layouts if l.pool == "shared" and l.entries]
+        assert list(t["shared"]) == [f"BM{i}" for i in range(1, len(shared_used) + 1)]
+        assert sum(len(rows) for rows in t["shared"].values()) == 36 + 10
+        assert all(rows == [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]
+                   for rows in t["c1-own"].values())
+        b1 = [e for rows in t["shared"].values() for e in rows if e["cluster"] == "B1"]
+        assert len(b1) == 10 and all(e["routable"] == "NR" and e["vm_spec"] == "half" for e in b1)
+        assert plan.legacy_bm_map["shared"]["BM1"].startswith("shared/")
+        assert set(plan.legacy_bm_map["shared"].values()) == {l.bm_id for l in shared_used}
 
     def test_vms_get_readable_hostnames(self, plan):
         """Synthetic ids are for machines; chips and templates show
@@ -447,6 +455,9 @@ class TestDemandGroupOverride:
         assert prefixes == {"shared", "gpu-nodes"}
         gpu_layouts = [l for l in r.bm_layouts if l.pool == "gpu-nodes"]
         assert gpu_layouts and all(e.node_role == "gpu-worker" for l in gpu_layouts for e in l.entries)
+        gpu_doc = r.legacy_template["gpu-nodes"]
+        assert all(e == {"role": "gpu-worker", "vm_spec": "gpu-half", "routable": "R", "cluster": "A1"}
+                   for rows in gpu_doc.values() for e in rows)
 
     def test_unknown_group_is_input_error(self):
         req = self._req()

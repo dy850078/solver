@@ -195,6 +195,17 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   workers only on GPU-tagged machines", exclusive semantics). Pools compile
   to `candidate_baremetals`, the same mechanism the scheduler uses for its
   own role filtering; the production `/solve` contract is unchanged.
+- `legacy_template` in the result is the document the legacy provisioning
+  pipeline consumes, one per Baremetal group, machines numbered `BM1…BMn`
+  within the group (occupied machines only), every VM tagged with its
+  cluster; `legacy_bm_map` traces each key back to the planned machine:
+
+  ```json
+  {"shared": {"BM1": [{"role": "worker", "vm_spec": "third", "routable": "R", "cluster": "A1"},
+                      {"role": "master", "vm_spec": "third", "routable": "R", "cluster": "A1"}],
+              "BM2": [...]},
+   "c1-own": {"BM1": [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]}}
+  ```
 - `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and

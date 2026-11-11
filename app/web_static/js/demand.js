@@ -396,6 +396,7 @@ function renderAll() {
   const cards = ["#groups-card", "#advisory-card", "#compiled-card", "#matrix-card", "#rack-card", "#layout-card"];
   if (!r.groups?.length) {
     for (const c of cards) $(c).classList.add("hidden");
+    $("#legacy-card").classList.add("hidden");
     renderAdvisories();
     return;
   }
@@ -407,6 +408,7 @@ function renderAll() {
   state.group = failed >= 0 ? failed : (r.groups.length > 1 ? -1 : 0);
   renderGroupTabs();
   renderRack();
+  renderLegacy();
   renderLayouts();
 }
 
@@ -433,10 +435,57 @@ async function runPlan() {
   }
 }
 
-function downloadTemplate() {
-  if (!state.result) return;
-  download(new Blob([JSON.stringify(state.result.legacy_template, null, 2)], { type: "application/json" }),
-    `${fileSafe(state.name)}-bm-vm-template.json`);
+/* ── legacy pipeline export ────────────────────────────────────────── */
+
+function legacyPools() {
+  return Object.keys(state.result?.legacy_template ?? {});
+}
+
+function legacySelectedPool() {
+  const sel = $("#legacy-pool");
+  const pools = legacyPools();
+  return pools.includes(sel.value) ? sel.value : pools[0];
+}
+
+function legacyJsonFor(pool) {
+  return JSON.stringify(state.result.legacy_template[pool] ?? {}, null, 2);
+}
+
+function renderLegacy() {
+  const card = $("#legacy-card");
+  const pools = legacyPools();
+  if (!pools.length) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  const sel = $("#legacy-pool");
+  const keep = sel.value;
+  sel.innerHTML = pools.map((p) => {
+    const n = Object.keys(state.result.legacy_template[p]).length;
+    return `<option value="${escapeHtml(p)}">${escapeHtml(p)} · ${n} BM</option>`;
+  }).join("");
+  sel.value = pools.includes(keep) ? keep : pools[0];
+  $("#legacy-json").value = legacyJsonFor(legacySelectedPool());
+}
+
+async function copyLegacy() {
+  const text = $("#legacy-json").value;
+  const btn = $("#legacy-copy-btn");
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch {
+    // Clipboard API needs a secure context; fall back to the selection route.
+    const ta = $("#legacy-json");
+    ta.focus(); ta.select();
+    try { ok = document.execCommand("copy"); } catch { ok = false; }
+    ta.setSelectionRange(0, 0);
+  }
+  const label = btn.textContent;
+  btn.textContent = ok ? "Copied ✓" : "Copy failed";
+  setTimeout(() => { btn.textContent = label; }, 1500);
+}
+
+function downloadLegacy(pool) {
+  download(new Blob([legacyJsonFor(pool)], { type: "application/json" }),
+    `${fileSafe(state.name)}-${fileSafe(pool)}-legacy.json`);
 }
 
 function downloadResult() {
@@ -556,8 +605,14 @@ function init() {
   });
   $("#json-override").addEventListener("change", () => { if (!$("#json-override").checked) syncJson(); });
   $("#run-btn").addEventListener("click", runPlan);
-  $("#dl-template-btn").addEventListener("click", downloadTemplate);
   $("#dl-result-btn").addEventListener("click", downloadResult);
+  $("#legacy-pool").addEventListener("change", () => { $("#legacy-json").value = legacyJsonFor(legacySelectedPool()); });
+  $("#legacy-copy-btn").addEventListener("click", copyLegacy);
+  $("#legacy-dl-btn").addEventListener("click", () => downloadLegacy(legacySelectedPool()));
+  $("#legacy-dl-all-btn").addEventListener("click", () => {
+    // Browsers throttle rapid downloads; space them out a little.
+    legacyPools().forEach((p, i) => setTimeout(() => downloadLegacy(p), i * 300));
+  });
 
   // "Open in Rollout" lives in the rack card header so it follows the
   // selected pool.

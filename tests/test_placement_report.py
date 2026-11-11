@@ -2,7 +2,7 @@
 
 from app.models import PlacementAssignment, Resources
 from app.placement_report import (
-    bm_layouts, legacy_template, placement_matrix, spec_name_of,
+    bm_layouts, legacy_bm_map, legacy_template, placement_matrix, spec_name_of,
 )
 
 from .conftest import make_bm, make_vm
@@ -78,14 +78,44 @@ class TestBmLayouts:
 
 
 class TestLegacyTemplate:
+    """One document per pool, BM1…BMn within the pool, entries
+    {role, vm_spec, routable, cluster} (ADR-020 D10)."""
 
-    def test_default_shape_and_ip_labels(self):
+    def _layouts(self):
+        a, v, b = _scenario()
+        b[0] = b[0].model_copy(update={"pool": "pool-ap"})
+        b[1] = b[1].model_copy(update={"pool": "pool-ap"})
+        b[2] = b[2].model_copy(update={"pool": "pool-cp"})
+        b.append(make_bm("bm-idle", pool="pool-ap"))  # hosts nothing → no key
+        v.append(make_vm("any-ip", cluster="B", ip_type=""))
+        a.append(PlacementAssignment(vm_id="any-ip", baremetal_id="bm-3", ag="ag-3"))
+        return bm_layouts(a, v, b, CATALOG)
+
+    def test_one_document_per_pool_numbered_within_pool(self):
+        t = legacy_template(self._layouts())
+        assert set(t) == {"pool-ap", "pool-cp"}
+        assert list(t["pool-ap"]) == ["BM1", "BM2"]
+        assert list(t["pool-cp"]) == ["BM1"]
+        assert t["pool-ap"]["BM1"] == [
+            {"role": "worker", "vm_spec": "big", "routable": "R", "cluster": "A"},
+            {"role": "worker", "vm_spec": "big", "routable": "R", "cluster": "A"},
+        ]
+
+    def test_entry_fields_and_ip_labels(self):
+        t = legacy_template(self._layouts())
+        rows = t["pool-cp"]["BM1"]
+        assert all(set(r) == {"role", "vm_spec", "routable", "cluster"} for r in rows)
+        assert rows[0] == {"role": "master", "vm_spec": "small", "routable": "NR", "cluster": "B"}
+        assert rows[-1]["routable"] == ""  # no ip_type → empty string, key kept
+
+    def test_bm_map_traces_keys_to_machines(self):
+        layouts = self._layouts()
+        m = legacy_bm_map(layouts)
+        assert m == {"pool-ap": {"BM1": "bm-1", "BM2": "bm-2"}, "pool-cp": {"BM1": "bm-3"}}
+        # idle machine never gets a key
+        assert "bm-idle" not in {v for d in m.values() for v in d.values()}
+
+    def test_empty_pool_name_groups_under_default(self):
         a, v, b = _scenario()
         t = legacy_template(bm_layouts(a, v, b, CATALOG))
-        assert t["bm-1"] == [["worker", "big", "R"], ["worker", "big", "R"]]
-        assert t["bm-3"][0] == ["master", "small", "NR"]
-
-    def test_field_order_is_configurable(self):
-        a, v, b = _scenario()
-        t = legacy_template(bm_layouts(a, v, b, CATALOG), fields=("cluster_id", "vm_spec"))
-        assert t["bm-2"] == [["A", "big"]]
+        assert set(t) == {"default"} and list(t["default"]) == ["BM1", "BM2", "BM3"]

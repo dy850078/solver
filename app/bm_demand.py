@@ -61,6 +61,7 @@ from .placement_report import (
     BmLayout,
     PlacementMatrixRow,
     bm_layouts,
+    legacy_bm_map,
     legacy_template,
     placement_matrix,
 )
@@ -179,10 +180,6 @@ class BmDemandPlanRequest(BaseModel):
     max_baremetals: int = Field(default=200, ge=1)
     max_probes: int = Field(default=12, ge=1)
     deadline_seconds: float = Field(default=120.0, gt=0)
-    # legacy_template field order; see placement_report.legacy_template.
-    template_fields: list[str] = Field(
-        default_factory=lambda: ["node_role", "vm_spec", "ip_type"],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +235,11 @@ class BmDemandPlanResult(BaseModel):
     total_baremetals: int = 0
     placement_matrix: list[PlacementMatrixRow] = Field(default_factory=list)
     bm_layouts: list[BmLayout] = Field(default_factory=list)
-    legacy_template: dict[str, list[list[str]]] = Field(default_factory=dict)
+    # One pipeline document per pool: {"<pool>": {"BM1": [{role, vm_spec,
+    # routable, cluster}, …]}} (placement_report.legacy_template); the map
+    # traces BMn back to the planned machine id.
+    legacy_template: dict[str, dict[str, list[dict[str, str]]]] = Field(default_factory=dict)
+    legacy_bm_map: dict[str, dict[str, str]] = Field(default_factory=dict)
     advisories: list[dict[str, Any]] = Field(default_factory=list)
     config_fingerprint: str = ""
     diagnostics: dict[str, Any] = Field(default_factory=dict)
@@ -681,7 +682,8 @@ def plan_bm_demands(req: BmDemandPlanRequest) -> BmDemandPlanResult:
         total_baremetals=sum(g.required_baremetals for g in group_results),
         placement_matrix=placement_matrix(all_assign, all_vms, all_bms, catalog),
         bm_layouts=layouts,
-        legacy_template=legacy_template(layouts, tuple(req.template_fields)),
+        legacy_template=legacy_template(layouts),
+        legacy_bm_map=legacy_bm_map(layouts),
         advisories=compiled.advisories,
         config_fingerprint=fingerprint,
         diagnostics={"elapsed_seconds": round(time.time() - start, 3)},

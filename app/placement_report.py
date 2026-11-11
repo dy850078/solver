@@ -9,9 +9,10 @@ the fleet), none of which the solver computes itself:
   cluster's node type land on AG-1/2/3" table.
 - `bm_layouts`: per-BM occupancy (which VMs, which spec, how full) — the
   "what goes on each machine" plan.
-- `legacy_template`: `bm_layouts` flattened into the mapping shape a
-  pre-scheduler provisioning system consumes, e.g.
-  {"bm-001": [["worker", "half", "R"], ["worker", "half", "NR"]]}.
+- `legacy_template`: `bm_layouts` as the document the legacy provisioning
+  pipeline consumes — one per pool, machines numbered BM1…BMn, entries
+  {"role", "vm_spec", "routable": "R"|"NR"|"", "cluster"}; `legacy_bm_map`
+  traces each BMn back to the planned machine.
 
 Pure functions: no solver import, no CP-SAT. Spec names come from a
 caller-supplied catalog matched by exact Resources equality; a VM whose
@@ -144,27 +145,51 @@ def bm_layouts(
     return out
 
 
-def legacy_template(
-    layouts: list[BmLayout],
-    fields: tuple[str, ...] = ("node_role", "vm_spec", "ip_type"),
-    ip_type_labels: dict[str, str] | None = None,
-) -> dict[str, list[list[str]]]:
-    """Flatten layouts to {bm_id: [[field, …], …]}. `fields` names
-    BmLayoutEntry attributes in output order; ip_type values are mapped
-    through `ip_type_labels` (default routable→R, non-routable→NR, others
-    verbatim). The exact wire format is the legacy system's to dictate —
-    this is the adjustable formatter it plugs into."""
-    labels = IP_TYPE_LABELS if ip_type_labels is None else ip_type_labels
-    out: dict[str, list[list[str]]] = {}
+def _number_layouts(layouts: list[BmLayout]) -> dict[str, list[tuple[str, BmLayout]]]:
+    """Per pool, the occupied machines in layout order numbered BM1…BMn.
+    Shared by legacy_template and legacy_bm_map so the two never disagree."""
+    by_pool: dict[str, list[tuple[str, BmLayout]]] = OrderedDict()
     for layout in layouts:
-        rows = []
-        for e in layout.entries:
-            row = []
-            for f in fields:
-                v = getattr(e, f)
-                if f == "ip_type":
-                    v = labels.get(v, v)
-                row.append(str(v))
-            rows.append(row)
-        out[layout.bm_id] = rows
+        if not layout.entries:
+            continue
+        pool = layout.pool or "default"
+        bucket = by_pool.setdefault(pool, [])
+        bucket.append((f"BM{len(bucket) + 1}", layout))
+    return by_pool
+
+
+def legacy_template(layouts: list[BmLayout]) -> dict[str, dict[str, list[dict[str, str]]]]:
+    """
+    The BM → VM mapping the legacy provisioning pipeline consumes, one
+    document per pool (ADR-020 D10):
+
+        {"<pool>": {"BM1": [{"role": "worker", "vm_spec": "half",
+                             "routable": "R", "cluster": "C1"}, …],
+                    "BM2": […]}}
+
+    Machines are numbered BM1…BMn within their pool in layout order;
+    machines hosting nothing are left out. `routable` is R / NR, or "" when
+    the VM has no ip_type. `cluster` lets a shared pool's rows be read per
+    cluster. The real machine behind each key is in legacy_bm_map().
+    """
+    out: dict[str, dict[str, list[dict[str, str]]]] = {}
+    for pool, numbered in _number_layouts(layouts).items():
+        doc: dict[str, list[dict[str, str]]] = {}
+        for key, layout in numbered:
+            doc[key] = [{
+                "role": e.node_role,
+                "vm_spec": e.vm_spec,
+                "routable": IP_TYPE_LABELS.get(e.ip_type, e.ip_type or ""),
+                "cluster": e.cluster_id,
+            } for e in layout.entries]
+        out[pool] = doc
     return out
+
+
+def legacy_bm_map(layouts: list[BmLayout]) -> dict[str, dict[str, str]]:
+    """{"<pool>": {"BM1": "<bm_id>", …}} — the trace from legacy keys back
+    to the planned machines. Not part of the pipeline document."""
+    return {
+        pool: {key: layout.bm_id for key, layout in numbered}
+        for pool, numbered in _number_layouts(layouts).items()
+    }

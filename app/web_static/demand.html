@@ -214,7 +214,6 @@
         <h2 class="card__title">Baremetal groups</h2>
         <span class="card__hint">each group is its own pool — machines never cross groups, totals add up</span>
         <div class="card__header-right toolbar">
-          <button id="dl-template-btn" type="button" class="btn btn--ghost btn--small" title="Download the BM → VM mapping for the legacy provisioning system">Legacy template</button>
           <button id="dl-result-btn" type="button" class="btn btn--ghost btn--small" title="Download the full plan result JSON">Result JSON</button>
         </div>
       </header>
@@ -279,6 +278,26 @@
         <div id="step-strip" class="step-strip step-strip--mini"></div>
         <div id="rack-container" class="rack-area"></div>
         <div id="ag-legend" class="legend"></div>
+      </div>
+    </section>
+
+    <section id="legacy-card" class="card hidden">
+      <header class="card__header">
+        <h2 class="card__title">Legacy pipeline export</h2>
+        <span class="card__hint">one document per Baremetal group · BM1…BMn in layout order · every VM tagged with its cluster</span>
+        <div class="card__header-right toolbar">
+          <label class="select-inline">
+            <span class="select-inline__label">Group</span>
+            <select id="legacy-pool" class="select select--compact"></select>
+          </label>
+          <button id="legacy-copy-btn" type="button" class="btn btn--primary btn--small" title="Copy this group's JSON to the clipboard">Copy JSON</button>
+          <button id="legacy-dl-btn" type="button" class="btn btn--ghost btn--small" title="Download this group's JSON">Download</button>
+          <button id="legacy-dl-all-btn" type="button" class="btn btn--ghost btn--small" title="Download one file per group">Download all groups</button>
+        </div>
+      </header>
+      <div class="card__body">
+        <textarea id="legacy-json" class="editor editor--legacy" readonly spellcheck="false"></textarea>
+        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON.</p>
       </div>
     </section>
 

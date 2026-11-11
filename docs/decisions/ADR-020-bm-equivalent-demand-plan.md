@@ -215,8 +215,16 @@ key 只發一次,否則後面的 step 會收到重複約束(無害但浪費)。
 **報表(`app/placement_report.py`)全是純函數**,輸入是 `(assignments, vms, bms)`
 三個 list,不碰 solver。spec 名靠 `Resources` 精確相等反查目錄,查不到給
 `"<cpu>c-<mem>g"` 退路——報表永遠不會因為一個沒命名的 spec 掛掉。
-`legacy_template` 的欄位順序與 ip_type 標籤(`routable→R`, `non-routable→NR`)
-可調,正式格式到了只改參數。
+`legacy_template` 是 legacy pipeline 直接吃的文件(**D10**,使用者定案):
+**每個 Baremetal group 一份**,group 內的機器依版面順序連號 `BM1…BMn`(只含有
+VM 的機器),每顆 VM 一筆 `{"role", "vm_spec", "routable": "R"|"NR"|"", "cluster"}`。
+`cluster` 讓共住 pool 的文件能以 cluster 視角讀(control-plane 共住、worker 獨住
+的情境);`routable` 的 R/NR 映射只在這一層做,solver / rollout 仍用完整的 `ip_type`。
+落選:全域連號(同一台機器在各 cluster 的視角裡跳號);每 cluster 一份各自從 1
+起算(共住機器在不同文件裡編號不同,對不起來)。`legacy_bm_map` 另附
+`{pool: {"BM1": "<bm_id>"}}` 供人追溯,不混進 pipeline 文件。UI 卡片「Legacy
+pipeline export」提供 group 下拉、Copy JSON(clipboard API,退回 execCommand)、
+Download、Download all groups。
 
 ## 5. 取捨與風險
 
