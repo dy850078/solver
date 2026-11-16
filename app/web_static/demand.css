@@ -15,15 +15,44 @@
 }
 #builder .derive-row .btn--add { width: auto; height: 30px; }
 
-/* Demand row: two lines + a preview line */
-#builder .frow--demand-top { grid-template-columns: 1.2fr 1.2fr 0.9fr auto auto; align-items: end; }
+/* The PM form is the densest sidebar: give it more room by default (the
+   drag handle / saved width still win). */
+:root { --sidebar-w: 480px; }
+
+/* Demand row: identity + size by default, an advanced line when the
+   section toggle is on, then the preview line (with chips for hidden
+   fields that hold a value). Cluster gets the widest column: names like
+   prod-taipei-datacenter-cluster-01 are the norm. */
+#builder .frow--demand-top { grid-template-columns: 1.7fr 1fr 0.65fr auto auto; align-items: end; }
 #builder .frow--demand-mid { grid-template-columns: 1.3fr 1.2fr 0.8fr; align-items: end; }
 #builder .frow--demand-bot { grid-template-columns: 0.7fr 0.9fr 1fr 1.4fr; align-items: end; }
 #builder .frow--demand-mid .segmented { min-width: 0; }
+#builder .mini .input, #builder .mini .select { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 #builder .demand-preview {
   font-size: 11px; color: var(--text-subtle); font-variant-numeric: tabular-nums;
-  display: flex; gap: 10px; flex-wrap: wrap;
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
 }
+#builder .demand-chips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+#builder .demand-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-base); background: var(--bg-surface);
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; color: var(--text-muted);
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#builder .subhead--row { display: flex; align-items: baseline; gap: 8px; }
+#builder .subhead--row .muted { flex: 1 1 auto; min-width: 0; }
+#builder .subhead__toggle {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 400;
+  text-transform: none; letter-spacing: 0; color: var(--text-muted); cursor: pointer; white-space: nowrap;
+}
+#builder .subhead__toggle input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
+/* Long names never dictate layout: truncate, keep the full name in title. */
+#builder .pick-name {
+  display: inline-block; max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom;
+}
+#builder .order-row__name { min-width: 0; }
+#builder .order-row__name .muted { font-size: 11px; }
 #builder .demand-preview b { color: var(--text-muted); font-weight: 600; }
 #builder .demand-preview .warn { color: var(--warning, #b7791f); }
 #builder .segmented--mini label { padding: 4px 8px; font-size: 11px; }
@@ -56,7 +85,7 @@
 
 /* Results */
 .group-table td.pool { font-weight: 600; }
-.group-table .clusters { color: var(--text-muted); font-size: 12px; }
+.group-table .clusters { color: var(--text-muted); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adv-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .adv-list li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; font-size: 12.5px; }
 .adv-chip {

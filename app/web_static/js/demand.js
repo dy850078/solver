@@ -160,7 +160,7 @@ function renderGroups() {
       : "";
     return `<tr>
       <td class="pool">${escapeHtml(g.name)}</td>
-      <td class="clusters">${g.clusters.map(escapeHtml).join(", ")}</td>
+      <td class="clusters" title="${escapeHtml(g.clusters.join(", "))}">${g.clusters.map(escapeHtml).join(", ")}</td>
       <td>${escapeHtml(g.bm_spec)}</td>
       <td class="num"><strong>${g.required_baremetals || "—"}</strong></td>
       <td><span class="step-chip step-chip--${statusKind(g.success ? "OPTIMAL" : g.solver_status)}">${escapeHtml(g.success ? "ok" : chipLabel(g.solver_status))}</span>

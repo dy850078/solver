@@ -135,7 +135,8 @@
         </div>
         <button type="button" class="btn btn--add" data-act="vm-add">+ Custom VM spec</button>
 
-        <p class="subhead">Cluster demands <span class="muted">one row per cluster × node type</span></p>
+        <p class="subhead subhead--row">Cluster demands <span class="muted">one row per cluster × node type</span>
+          <label class="subhead__toggle" title="Show ≥ BMs, Step, Baremetal group and Labels on every row. When hidden, rows that set them show the values as chips."><input id="demand-advanced" type="checkbox"> Advanced fields</label></p>
         <div id="demand-rows" class="form-rows"></div>
         <button type="button" class="btn btn--add" data-act="demand-add">+ Demand</button>
 
