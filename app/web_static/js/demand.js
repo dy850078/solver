@@ -10,7 +10,7 @@
  */
 
 import { listExamples, getExample, bmDemandPlan } from "./api.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, formatLabels } from "./util.js";
 import { initSidebarChrome } from "./sidebar.js";
 import { rebuildColorScale } from "./colors.js";
 import {
@@ -194,18 +194,25 @@ function renderAdvisories() {
         <span>${escapeHtml(a.message ?? "")}</span></li>`).join("")}</ul>`;
 }
 
+/** Labels column helpers: shown only when some row carries labels. */
+const anyLabels = (rows) => rows.some((r) => Object.keys(r.labels || {}).length);
+const labelsTh = (show) => (show ? "<th>Labels</th>" : "");
+const labelsTd = (show, labels) =>
+  (show ? `<td class="labels-cell">${escapeHtml(formatLabels(labels)) || "—"}</td>` : "");
+
 function renderCompiled() {
   const card = $("#compiled-card");
   const rows = (state.result.compiled ?? []).flatMap((g) => g.demands.map((d) => ({ ...d, pool: g.name })));
   if (!rows.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  const showLabels = anyLabels(rows);
   $("#compiled-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
+      <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th>${labelsTh(showLabels)}<th>Spec</th>
         <th class="num">VMs / BM</th><th class="num">BMs</th><th class="num">VMs</th><th class="num">≥ BMs</th><th>Step</th></tr></thead>
       <tbody>${rows.map((d) => `<tr>
         <td>${escapeHtml(d.pool)}</td><td>${escapeHtml(d.cluster_id)}</td><td>${escapeHtml(d.node_role)}</td>
-        <td class="muted">${escapeHtml(d.ip_type || "—")}</td>
+        <td class="muted">${escapeHtml(d.ip_type || "—")}</td>${labelsTd(showLabels, d.labels)}
         <td>${escapeHtml(d.vm_spec)}${d.exclusive ? ' <span class="muted">· exclusive</span>' : ""}</td>
         <td class="num">${d.fits_per_bm}</td><td class="num">${d.bm_equivalents}</td>
         <td class="num"><strong>${d.vm_count}</strong></td><td class="num">${d.min_distinct_bms || "—"}</td>
@@ -220,14 +227,15 @@ function renderMatrix() {
   card.classList.remove("hidden");
   const ags = [...new Set(rows.flatMap((r) => Object.keys(r.per_ag)))]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const showLabels = anyLabels(rows);
   $("#matrix-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
+      <thead><tr><th>Cluster</th><th>Node type</th><th>IP</th>${labelsTh(showLabels)}<th>Spec</th>
         ${ags.map((ag) => `<th class="num">${escapeHtml(ag)}</th>`).join("")}
         <th class="num">VMs</th><th class="num">Distinct BMs</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td>${escapeHtml(r.cluster_id)}</td><td>${escapeHtml(r.node_role)}</td>
-        <td class="muted">${escapeHtml(r.ip_type || "—")}</td><td>${escapeHtml(r.vm_spec)}</td>
+        <td class="muted">${escapeHtml(r.ip_type || "—")}</td>${labelsTd(showLabels, r.labels)}<td>${escapeHtml(r.vm_spec)}</td>
         ${ags.map((ag) => `<td class="num">${r.per_ag[ag] ?? 0}</td>`).join("")}
         <td class="num"><strong>${r.vm_count}</strong></td><td class="num">${r.distinct_bms}</td></tr>`).join("")}</tbody>
     </table>`;

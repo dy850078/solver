@@ -158,12 +158,29 @@ make cli INPUT=examples/success_basic.json OUTPUT=result.json
 
 Rules (`anti_affinity_rules`, `max_per_bm_rules`, `exclusive_bm_rules`,
 `failover_rules`) select VMs either by `vm_ids` or by a `selector` over
-`(cluster_id, ip_type, node_role)`. `node_role` is an open string
+`(cluster_id, ip_type, node_role, labels)`. `node_role` is an open string
 (`^[\w.-]+$`); the selector's `node_role` also accepts a list, meaning
 "role is one of these". `examples/control_plane_learner_separate.json` uses
 that form: one `max_per_bm` rule over `["control-plane",
 "control-plane-learner"]` with `max_per_bm: 1` keeps masters and learners off
 each other's BMs while anti-affinity still spreads each role independently.
+
+**Labels** (ADR-021). A VM may carry k8s node labels, `"labels": {"dedicated":
+"AAA"}`. They are identity that travels with the VM (requirements pass them to
+every synthetic VM the splitter creates). Two things read them:
+
+- `config.auto_group_labels: ["dedicated"]` makes the auto anti-affinity and
+  auto max-per-BM groups key on `(cluster_id, ip_type, node_role)` **plus the
+  value of each listed label** — a missing label counts as `""` — so
+  `dedicated=AAA`, `dedicated=BBB` and the plain workers of the same role each
+  spread over the AGs on their own instead of sharing one `⌈9/3⌉ = 3` per-AG
+  budget. Labels not listed never split a group; labels never merge different
+  roles or clusters. Default `[]` keeps today's grouping and rule ids exactly;
+  with labels the id reads `auto/A/routable/worker/dedicated=AAA`.
+  `examples/labels_dedicated_spread.json` shows three groups of three.
+- `selector.labels: {"dedicated": "AAA"}` matches with the same rule
+  (`vm.labels.get(key, "") == value`), so `{"dedicated": ""}` selects the VMs
+  that do **not** carry the label.
 
 ---
 
@@ -206,10 +223,22 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
               "BM2": [...]},
    "c1-own": {"BM1": [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]}}
   ```
+- A demand row may carry `labels` (`{"dedicated": "AAA"}`): rows that differ
+  only in labels are separate node types, each with its own footprint (C7)
+  rule pinned to its own label values (the unlabeled row's selector says
+  `{"dedicated": ""}`, so it never borrows the labeled rows' machines).
+  `config.auto_group_labels` decides which keys also split the AG spread /
+  max-per-BM groups; a key used by a row but not listed there yields a
+  `label_not_in_auto_group` advisory. The placement matrix gets a Labels
+  column and hostnames carry the values (`worker-R-AAA-01`); the legacy
+  template keeps its four columns. `examples/bm_demand/dedicated_labels.json`.
 - `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and
-  hands any pool to the Rollout page.
+  hands any pool to the Rollout page. Each demand row has a free-text
+  `Labels` field (`dedicated=AAA, tier=gold`); the Policy card lists every
+  key in use with a "spread-grouping" checkbox (`dedicated` is ticked the
+  first time it appears).
 
 ## Split-and-Solve (`POST /v1/placement/split-and-solve`)
 

@@ -32,11 +32,12 @@ Design decisions (details and alternatives in ADR-020):
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import OrderedDict
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     Baremetal,
@@ -56,6 +57,7 @@ from .models import (
     config_fingerprint,
     res_get,
     resource_dims,
+    validate_labels,
 )
 from .placement_report import (
     BmLayout,
@@ -112,6 +114,17 @@ class ClusterDemand(BaseModel):
     # machines" policy, with exclusive semantics (nobody else uses that
     # pool). None = the group that lists the cluster.
     group: str | None = None
+    # k8s node labels this node type's VMs carry (ADR-021), e.g.
+    # {"dedicated": "AAA"}. Two rows that differ only in labels are two
+    # demands. Keys listed in config.auto_group_labels split the auto C3/C4
+    # groups by value; every row's C7 rule is pinned to its own label values
+    # regardless.
+    labels: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("labels")
+    @classmethod
+    def _labels_format(cls, v: dict[str, str]) -> dict[str, str]:
+        return validate_labels(v)
 
     @model_validator(mode="after")
     def _one_basis(self) -> ClusterDemand:
@@ -198,6 +211,7 @@ class CompiledDemand(BaseModel):
     min_distinct_bms: int
     exclusive: bool
     step: str
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class CompiledGroup(BaseModel):
@@ -275,12 +289,35 @@ def _ceil_div(a: int, b: int) -> int:
     return -(-a // b)
 
 
-def _selector(d: ClusterDemand) -> GroupSelector:
+def _selector(d: ClusterDemand, label_keys: list[str]) -> GroupSelector:
+    """
+    Selector for THIS demand row's VMs. `label_keys` is every label key any
+    demand in the request uses: the selector pins each of them to the row's
+    own value, "" when the row lacks it. Because selector matching reads a
+    missing VM label as "" (GroupSelector.labels), the unlabeled row's
+    `{"dedicated": ""}` excludes the dedicated=AAA row's VMs — so each row's
+    C7 "≥ N machines" counts only its own VMs instead of borrowing the
+    machines its labeled siblings already occupy. With no labels anywhere
+    the selector is exactly the pre-ADR-021 triple.
+    """
+    labels = {k: d.labels.get(k, "") for k in label_keys} or None
     return GroupSelector(
         cluster_id=d.cluster_id,
         ip_type=d.ip_type or None,
         node_role=d.node_role,
+        labels=labels,
     )
+
+
+def _label_suffix(labels: dict[str, str]) -> str:
+    """`[k=v,k2=v2]` for messages, "" when there are no labels."""
+    if not labels:
+        return ""
+    return "[" + ",".join(f"{k}={v}" for k, v in sorted(labels.items())) + "]"
+
+
+def _demand_label(d: ClusterDemand) -> str:
+    return f"{d.cluster_id}/{d.ip_type or '*'}/{d.node_role}{_label_suffix(d.labels)}"
 
 
 # ---------------------------------------------------------------------------
@@ -308,14 +345,31 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
     if len(vm_specs) != len(req.vm_specs):
         out.errors.append("vm_specs names must be unique")
 
-    seen_keys: set[tuple[str, str, str]] = set()
+    # Two rows are the same demand only if cluster, ip_type, role AND labels
+    # agree: "A1 worker dedicated=AAA" and "A1 worker" are two node types.
+    seen_keys: set[tuple] = set()
     for d in req.demands:
-        key = (d.cluster_id, d.ip_type, d.node_role)
+        key = (d.cluster_id, d.ip_type, d.node_role, tuple(sorted(d.labels.items())))
         if key in seen_keys:
-            out.errors.append(
-                f"duplicate demand for {d.cluster_id}/{d.ip_type or '*'}/{d.node_role}"
-            )
+            out.errors.append(f"duplicate demand for {_demand_label(d)}")
         seen_keys.add(key)
+
+    # Every label key any row uses: each row's selector pins all of them
+    # (see _selector). Keys used by a row but not grouped on by auto C3/C4
+    # get an advisory — the solver will spread those rows as ONE group.
+    label_keys = sorted({k for d in req.demands for k in d.labels})
+    ungrouped = [k for k in label_keys if k not in req.config.auto_group_labels]
+    if ungrouped:
+        out.advisories.append({
+            "type": "label_not_in_auto_group", "severity": "info",
+            "label_keys": ungrouped,
+            "message": (
+                f"label key(s) {ungrouped} are used by demands but not listed in "
+                f"config.auto_group_labels — auto anti-affinity / max-per-BM will "
+                f"treat rows that differ only in these labels as one group; each "
+                f"row's footprint (C7) rule still applies to its own VMs"
+            ),
+        })
 
     for c in exclusive - demand_cluster_set:
         out.advisories.append({
@@ -361,7 +415,7 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
         return d.group if d.group is not None else owner.get(d.cluster_id)
 
     for d in req.demands:
-        label = f"{d.cluster_id}/{d.ip_type or '*'}/{d.node_role}"
+        label = _demand_label(d)
         if d.group is not None and d.group not in names:
             out.errors.append(f"demand {label}: unknown group '{d.group}'")
         elif owner_of(d) is None:
@@ -398,7 +452,7 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
         g = group_by_name[gname]
         cap = bm_specs[g.bm_spec].capacity
         spec = vm_specs.get(d.vm_spec)
-        label = f"{d.cluster_id}/{d.ip_type or '*'}/{d.node_role}"
+        label = _demand_label(d)
         if spec is None:
             out.errors.append(f"demand {label}: unknown vm_spec '{d.vm_spec}'")
             continue
@@ -519,6 +573,7 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
                 gpu={m: q * count for m, q in spec.resources.gpu.items()},
             ),
             node_role=d.node_role, cluster_id=d.cluster_id, ip_type=d.ip_type,
+            labels=dict(d.labels),
             vm_specs=[spec.resources],
             min_total_vms=count, max_total_vms=count,
             network=req.topology.network, pool=gname,
@@ -532,13 +587,14 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
         if min_distinct:
             step.min_distinct_bm_rules.append(MinDistinctBaremetalRule(
                 group_id=f"footprint/{label}",
-                selector=_selector(d),
+                selector=_selector(d, label_keys),
                 min_distinct_bms=min_distinct,
             ))
         per_group_compiled[gname].append(CompiledDemand(
             cluster_id=d.cluster_id, node_role=d.node_role, ip_type=d.ip_type,
             vm_spec=d.vm_spec, fits_per_bm=k, bm_equivalents=n, vm_count=count,
             min_distinct_bms=min_distinct, exclusive=is_exclusive, step=step_name,
+            labels=dict(d.labels),
         ))
 
     if out.errors:
@@ -574,29 +630,41 @@ def compile_bm_demands(req: BmDemandPlanRequest) -> _Compiled:
 # ---------------------------------------------------------------------------
 
 _IP_SHORT = {"routable": "R", "non-routable": "NR"}
+_HOST_UNSAFE = re.compile(r"[^A-Za-z0-9-]")
+
+
+def _label_host_parts(labels: dict[str, str]) -> list[str]:
+    """Label VALUES for a hostname, in key order, empty values skipped, any
+    char outside [A-Za-z0-9-] (k8s allows `_` and `.`) mapped to "-" so the
+    name stays a valid DNS label."""
+    return [
+        _HOST_UNSAFE.sub("-", v) for _, v in sorted(labels.items()) if v
+    ]
 
 
 def _name_vms(rollout: RolloutResult | None) -> None:
     """
-    Give every placed VM a readable hostname — `{role}-{R|NR}-{nn}`,
-    numbered per (cluster, ip_type, role) across the build order — on both
-    the VM object and its assignment, so the UI chips, the layout table and
-    the legacy template can show it. The splitter's synthetic ids
-    ("split-r0-s0-18") stay as the stable id; they are not for humans.
-    Explicit VMs that already carry a hostname keep it. In place.
+    Give every placed VM a readable hostname — `{role}-{R|NR}-{label values}-{nn}`
+    (e.g. `worker-R-01`, `worker-R-AAA-01`), numbered per (cluster, ip_type,
+    role, labels) across the build order — on both the VM object and its
+    assignment, so the UI chips, the layout table and the legacy template
+    can show it. The splitter's synthetic ids ("split-r0-s0-18") stay as the
+    stable id; they are not for humans. Explicit VMs that already carry a
+    hostname keep it. In place.
     """
     if rollout is None:
         return
-    seq: dict[tuple[str, str, str], int] = {}
+    seq: dict[tuple, int] = {}
     for rep in rollout.reports:
         for vm, a in zip(rep.new_vms, rep.new_assignments):
             if vm.hostname:
                 a.vm_hostname = a.vm_hostname or vm.hostname
                 continue
-            key = (vm.cluster_id, vm.ip_type, vm.node_role)
+            key = (vm.cluster_id, vm.ip_type, vm.node_role, tuple(sorted(vm.labels.items())))
             seq[key] = seq.get(key, 0) + 1
             ip = _IP_SHORT.get(vm.ip_type, vm.ip_type)
-            vm.hostname = "-".join(p for p in (vm.node_role, ip, f"{seq[key]:02d}") if p)
+            parts = [vm.node_role, ip, *_label_host_parts(vm.labels), f"{seq[key]:02d}"]
+            vm.hostname = "-".join(p for p in parts if p)
             a.vm_hostname = vm.hostname
 
 

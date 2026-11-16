@@ -9,7 +9,7 @@
 
 import { colorForAg, colorForCluster, inkForCluster, clusterShort } from "./colors.js";
 import { showTooltip, moveTooltip, hideTooltip, buildTooltipBody } from "./tooltip.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, formatLabels } from "./util.js";
 import { lookupVm, matchesFilter, isFilterActive } from "./filter.js";
 
 const PHYSICAL_DIMS = ["site", "phase", "datacenter", "room", "rack"];
@@ -44,6 +44,7 @@ function vmEntry(a, request) {
     cluster_id: vm?.cluster_id ?? "",
     node_role: vm?.node_role ?? "",
     ip_type: vm?.ip_type ?? "",
+    labels: vm?.labels ?? {},
     demand: vm?.demand ?? null,
   };
 }
@@ -201,6 +202,7 @@ function renderVm(vm) {
     data-cluster="${escapeHtml(vm.cluster_id)}"
     data-role="${escapeHtml(vm.node_role)}"
     data-ip="${escapeHtml(vm.ip_type)}"
+    data-labels="${escapeHtml(formatLabels(vm.labels))}"
     data-cpu="${vm.demand?.cpu_cores ?? ""}"
     data-mem="${vm.demand?.memory_mib ?? ""}"
     data-storage="${vm.demand?.storage_gb ?? ""}"
@@ -280,6 +282,7 @@ function vmTooltipNode(el) {
       ["Cluster", el.dataset.cluster || "—"],
       ["Role", el.dataset.role || "—"],
       ["IP", el.dataset.ip || "—"],
+      ...(el.dataset.labels ? [["Labels", el.dataset.labels]] : []),
       ["Demand", dem],
     ],
   );

@@ -38,6 +38,7 @@ export function lookupVm(vmId, request) {
         cluster_id: req.cluster_id ?? "",
         node_role: req.node_role ?? "",
         ip_type: req.ip_type ?? "",
+        labels: { ...(req.labels || {}) },
         demand: null,
       };
     }

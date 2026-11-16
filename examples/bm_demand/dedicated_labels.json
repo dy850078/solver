@@ -1,0 +1,28 @@
+{
+  "_name": "dedicated-labels",
+  "_description": "Label-aware node types (ADR-021). Cluster A1 asks for three kinds of routable workers on one shared pool: 3 machines of dedicated=AAA workers, 3 of dedicated=BBB workers and 3 plain workers, all cut in thirds. With config.auto_group_labels=[\"dedicated\"] each kind is its own anti-affinity / max-per-BM group (spread over the 3 AGs independently) and its own footprint (C7) row; the placement matrix shows three rows for A1/worker and hostnames carry the label value (worker-R-AAA-01). Untick dedicated in the Policy card to merge them into one group.",
+  "bm_specs": [
+    {"name": "bm-90-720", "capacity": {"cpu_cores": 90, "memory_mib": 737280, "storage_gb": 6000}}
+  ],
+  "vm_specs": [
+    {"name": "third", "resources": {"cpu_cores": 30, "memory_mib": 245760, "storage_gb": 2000}}
+  ],
+  "demands": [
+    {"cluster_id": "A1", "node_role": "worker", "ip_type": "routable", "vm_spec": "third",
+     "bm_equivalents": 3, "labels": {"dedicated": "AAA"}},
+    {"cluster_id": "A1", "node_role": "worker", "ip_type": "routable", "vm_spec": "third",
+     "bm_equivalents": 3, "labels": {"dedicated": "BBB"}},
+    {"cluster_id": "A1", "node_role": "worker", "ip_type": "routable", "vm_spec": "third",
+     "bm_equivalents": 3}
+  ],
+  "groups": [],
+  "exclusive_clusters": [],
+  "default_min_distinct_bms": 3,
+  "topology": {"sites": 1, "phases": 1, "datacenters": 1, "rooms": 1, "racks": 6, "ags": 3},
+  "config": {
+    "max_solve_time_seconds": 10,
+    "auto_generate_anti_affinity": true,
+    "w_headroom": 0,
+    "auto_group_labels": ["dedicated"]
+  }
+}

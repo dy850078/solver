@@ -526,3 +526,100 @@ class TestExample:
         items = client.get("/api/examples").json()
         hints = {i["name"]: i["endpoint_hint"] for i in items}
         assert hints["bm_demand/pm_three_clusters.json"] == "bm-demand"
+
+
+# ===========================================================================
+# Labels on demands (ADR-021)
+# ===========================================================================
+
+LABELED = SolverConfig(max_solve_time_seconds=10, w_headroom=0, auto_group_labels=["dedicated"])
+
+
+class TestLabels:
+
+    def _rows(self):
+        return [
+            D("A1", "third", n=3, labels={"dedicated": "AAA"}),
+            D("A1", "third", n=3, labels={"dedicated": "BBB"}),
+            D("A1", "third", n=3),
+        ]
+
+    def test_compile_carries_labels_and_pins_c7_selectors(self):
+        c = compile_bm_demands(request(self._rows(), min_distinct=3, config=LABELED))
+        assert not c.errors, c.errors
+        step = c.groups[0].steps[0]
+        assert [r.labels for r in step.requirements] == [
+            {"dedicated": "AAA"}, {"dedicated": "BBB"}, {}]
+        # every row's footprint rule pins EVERY label key the request uses —
+        # the unlabeled row via "" — so no rule borrows a sibling's machines
+        assert [r.selector.labels for r in step.min_distinct_bm_rules] == [
+            {"dedicated": "AAA"}, {"dedicated": "BBB"}, {"dedicated": ""}]
+        assert [r.group_id for r in step.min_distinct_bm_rules] == [
+            "footprint/A1/routable/worker[dedicated=AAA]",
+            "footprint/A1/routable/worker[dedicated=BBB]",
+            "footprint/A1/routable/worker"]
+        assert [d.labels for d in c.groups[0].demands] == [
+            {"dedicated": "AAA"}, {"dedicated": "BBB"}, {}]
+        assert not any(a["type"] == "label_not_in_auto_group" for a in c.advisories)
+
+    def test_no_labels_anywhere_keeps_selectors_bit_identical(self):
+        c = compile_bm_demands(request([D("A1", "third", n=3)], min_distinct=3))
+        rule = c.groups[0].steps[0].min_distinct_bm_rules[0]
+        assert rule.selector.labels is None
+        assert rule.group_id == "footprint/A1/routable/worker"
+
+    def test_rows_differing_only_in_labels_are_distinct_demands(self):
+        c = compile_bm_demands(request(self._rows(), min_distinct=3, config=LABELED))
+        assert not c.errors
+        dup = compile_bm_demands(request([
+            D("A1", "third", n=3, labels={"dedicated": "AAA"}),
+            D("A1", "third", n=3, labels={"dedicated": "AAA"}),
+        ], min_distinct=3, config=LABELED))
+        assert dup.errors == ["duplicate demand for A1/routable/worker[dedicated=AAA]"]
+
+    def test_label_key_not_grouped_on_gets_an_advisory(self):
+        c = compile_bm_demands(request(self._rows(), min_distinct=3))   # FAST: no auto_group_labels
+        adv = [a for a in c.advisories if a["type"] == "label_not_in_auto_group"]
+        assert len(adv) == 1 and adv[0]["label_keys"] == ["dedicated"]
+
+    def test_plan_matrix_has_one_row_per_label_value_and_hostnames_carry_it(self):
+        r = plan_bm_demands(request(self._rows(), min_distinct=3, config=LABELED))
+        assert r.success, r.solver_status
+        rows = {tuple(sorted(row.labels.items())): row for row in r.placement_matrix}
+        assert set(rows) == {(("dedicated", "AAA"),), (("dedicated", "BBB"),), ()}
+        for row in rows.values():
+            assert row.vm_count == 9 and row.distinct_bms >= 3
+            assert set(row.per_ag) == {"ag-1", "ag-2", "ag-3"}
+        hosts = sorted(a.vm_hostname for g in r.groups for rep in g.rollout.reports
+                       for a in rep.new_assignments)
+        assert "worker-R-AAA-01" in hosts and "worker-R-BBB-09" in hosts and "worker-R-01" in hosts
+        assert len(set(hosts)) == 27
+        # legacy export keeps its four columns
+        for pool in r.legacy_template.values():
+            for entries in pool.values():
+                assert all(set(e) == {"role", "vm_spec", "routable", "cluster"} for e in entries)
+
+    def test_hostname_label_values_are_dns_safe(self):
+        from app.bm_demand import _label_host_parts
+        assert _label_host_parts({"tier": "gold_v1.2", "dedicated": "AAA", "empty": ""}) == ["AAA", "gold-v1-2"]
+
+    def test_bad_label_format_is_rejected(self):
+        with pytest.raises(ValueError, match="label"):
+            D("A1", "third", n=3, labels={"dedicated": "a b"})
+
+    def test_plan_endpoint_accepts_labels(self, client):
+        body = json.loads(request(self._rows(), min_distinct=3, config=LABELED).model_dump_json())
+        resp = client.post("/v1/placement/bm-demand/plan", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"]
+        assert sorted(row["labels"].get("dedicated", "") for row in data["placement_matrix"]) == ["", "AAA", "BBB"]
+        assert data["compiled"][0]["demands"][0]["labels"] == {"dedicated": "AAA"}
+
+    def test_example_file(self):
+        ex = Path(__file__).parent.parent / "examples" / "bm_demand" / "dedicated_labels.json"
+        req = BmDemandPlanRequest.model_validate_json(ex.read_text())
+        assert req.config.auto_group_labels == ["dedicated"]
+        r = plan_bm_demands(req)
+        assert r.success, r.solver_status
+        assert len(r.placement_matrix) == 3
