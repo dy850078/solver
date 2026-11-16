@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import Enum
 from functools import lru_cache
 from importlib import metadata
@@ -221,6 +221,36 @@ def validate_role(v: str) -> str:
     return v
 
 
+# VM labels (ADR-021): k8s-style `key=value` pairs carried on VMs and
+# requirements. The FORMAT is deliberately a subset of Kubernetes label
+# syntax — key = optional `prefix/` + name, value may be empty — and excludes
+# `=`, `,`, `+` and whitespace so the UI's free-text `k=v, k2=v2` field, the
+# auto-rule group_id suffix (`.../k=v,k2=v2`) and the `+`-joined role list in
+# selector ids can never be ambiguous. Membership (which keys/values exist) is
+# the scheduler's business; only the format is checked here.
+_LABEL_KEY_RE = re.compile(r"^([\w.-]{1,63}/)?[\w.-]{1,63}$")
+_LABEL_VALUE_RE = re.compile(r"^[\w.-]{0,63}$")
+
+
+def validate_label_key(k: str) -> str:
+    if not _LABEL_KEY_RE.match(k):
+        raise ValueError(
+            f"label key {k!r} must match ^([\\w.-]+/)?[\\w.-]+$ (1-63 chars per part)"
+        )
+    return k
+
+
+def validate_labels(v: dict[str, str]) -> dict[str, str]:
+    """Shared field_validator body for every `labels` dict in the contract."""
+    for k, val in v.items():
+        validate_label_key(k)
+        if not isinstance(val, str) or not _LABEL_VALUE_RE.match(val):
+            raise ValueError(
+                f"label {k!r} value {val!r} must match ^[\\w.-]{{0,63}}$"
+            )
+    return dict(v)
+
+
 class VM(BaseModel):
     """
     A VM to be placed on a baremetal.
@@ -233,6 +263,13 @@ class VM(BaseModel):
     ip_type: network type of the VM (e.g. "routable", "non-routable").
       Used together with node_role as the grouping key for auto-generated
       anti-affinity rules.
+
+    labels: k8s-style node labels (`{"dedicated": "AAA"}`), identity that
+      travels with the VM (ADR-021). Only the keys listed in
+      `SolverConfig.auto_group_labels` take part in auto C3/C4 grouping —
+      a VM without such a key is grouped as if its value were "" — every
+      other label is carried but ignored by the solver. Selectors may match
+      on labels (`GroupSelector.labels`).
 
     pinned_to: the BM this VM ALREADY lives on (add-node / rollout carry-in).
       A statement of fact about the past, not a placement request — for
@@ -255,6 +292,7 @@ class VM(BaseModel):
     node_role: str = "worker"
     ip_type: str = ""
     cluster_id: str = ""
+    labels: dict[str, str] = Field(default_factory=dict)
     candidate_baremetals: list[str] = Field(default_factory=list)
     pinned_to: str | None = None
 
@@ -262,6 +300,11 @@ class VM(BaseModel):
     @classmethod
     def _role_format(cls, v: str) -> str:
         return validate_role(v)
+
+    @field_validator("labels")
+    @classmethod
+    def _labels_format(cls, v: dict[str, str]) -> dict[str, str]:
+        return validate_labels(v)
 
 
 # ---------------------------------------------------------------------------
@@ -282,15 +325,34 @@ class GroupSelector(BaseModel):
     cap over control-plane ∪ control-plane-learner keeps masters and learners
     off each other's BMs while auto C3/C5 still see them as two roles.
 
+    labels (ADR-021): None = wildcard. Otherwise every (key, value) pair must
+    hold on the VM under the rule `vm.labels.get(key, "") == value` — the SAME
+    rule the auto-grouping key uses, so a missing label is the empty string.
+    Consequence: `labels={"dedicated": ""}` selects the VMs that do NOT carry
+    `dedicated` (or carry it empty), which is how the PM-demand compiler keeps
+    the unlabeled row's C7 rule off the labeled rows' machines. An empty dict
+    is normalized to None (nothing to match on).
+
     Examples:
       GroupSelector(cluster_id="A", ip_type="non-routable", node_role=MASTER)
       → every VM in cluster A whose ip_type is non-routable and role is master.
       GroupSelector(cluster_id="A", node_role=["control-plane", "control-plane-learner"])
       → every VM in cluster A whose role is either of the two.
+      GroupSelector(cluster_id="A", node_role="worker", labels={"dedicated": "AAA"})
+      → cluster A workers labeled dedicated=AAA.
     """
     cluster_id: str | None = None
     ip_type: str | None = None
     node_role: str | list[str] | None = None
+    labels: dict[str, str] | None = None
+
+    @field_validator("labels")
+    @classmethod
+    def _labels_format(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        if v is None:
+            return None
+        v = validate_labels(v)
+        return v or None
 
     @field_validator("node_role")
     @classmethod
@@ -311,7 +373,10 @@ class GroupSelector(BaseModel):
         return out
 
     def is_empty(self) -> bool:
-        return self.cluster_id is None and self.ip_type is None and self.node_role is None
+        return (
+            self.cluster_id is None and self.ip_type is None
+            and self.node_role is None and self.labels is None
+        )
 
     def role_set(self) -> frozenset[str] | None:
         """Roles this selector accepts, or None for wildcard. Single source of
@@ -323,10 +388,15 @@ class GroupSelector(BaseModel):
             return frozenset((self.node_role,))
         return frozenset(self.node_role)
 
-    def matches_attrs(self, cluster_id: str, ip_type: str, node_role: str) -> bool:
-        """Match against bare (cluster_id, ip_type, node_role) scalars. Used by
-        matches() for VMs and by the capacity planner for requirements, so both
-        paths share one definition of selector semantics."""
+    def matches_attrs(
+        self, cluster_id: str, ip_type: str, node_role: str,
+        labels: Mapping[str, str],
+    ) -> bool:
+        """Match against bare (cluster_id, ip_type, node_role, labels) scalars.
+        Used by matches() for VMs and by the capacity planner / sizing floors
+        for requirements, so every path shares one definition of selector
+        semantics. `labels` is deliberately REQUIRED (no default): a caller
+        that forgot it would otherwise silently never match labeled selectors."""
         if self.cluster_id is not None and cluster_id != self.cluster_id:
             return False
         if self.ip_type is not None and ip_type != self.ip_type:
@@ -334,10 +404,14 @@ class GroupSelector(BaseModel):
         roles = self.role_set()
         if roles is not None and node_role not in roles:
             return False
+        if self.labels is not None:
+            for k, v in self.labels.items():
+                if labels.get(k, "") != v:
+                    return False
         return True
 
     def matches(self, vm: VM) -> bool:
-        return self.matches_attrs(vm.cluster_id, vm.ip_type, vm.node_role)
+        return self.matches_attrs(vm.cluster_id, vm.ip_type, vm.node_role, vm.labels)
 
 
 class AntiAffinityRule(BaseModel):
@@ -534,12 +608,19 @@ class SolverConfig(BaseModel):
     # resource dimension — BMs have no pod capacity, so the solver's placement
     # path is untouched. 0 (default) disables the constraint.
     max_pods_per_node: int = Field(default=0, ge=0)
-    # Per-baremetal cap (C4): limit how many VMs sharing the same
-    # (cluster_id, ip_type, node_role) can land on a single BM.
+    # Per-baremetal cap (C4): limit how many VMs sharing the same auto
+    # grouping key (see auto_group_key) can land on a single BM.
     # When auto_generate_max_per_bm=True, default_max_per_bm MUST be set
     # to a positive integer or the request is rejected with INPUT_ERROR.
     auto_generate_max_per_bm: bool = False
     default_max_per_bm: int | None = None
+    # Label keys that refine the auto-rule grouping key (ADR-021). The key for
+    # auto C3 / auto C4 is (cluster_id, ip_type, node_role) + one (key, value)
+    # pair per listed label key, with a missing label read as "". Grouping is
+    # by VALUE: dedicated=AAA, dedicated=BBB and "no dedicated" are three
+    # groups. Labels not listed here are carried on the VM but do not split
+    # groups. Default [] → grouping is exactly the historical triple.
+    auto_group_labels: list[str] = Field(default_factory=list)
     # Procurement (capacity planning Phase 2): weight for minimizing how many
     # buyable BMs are used. Set high so in-stock BMs are always filled before
     # buying and the buy count is minimized. procurement_spread_dimension is
@@ -566,6 +647,52 @@ class SolverConfig(BaseModel):
     # The multi-period planner groups in-stock BMs into per-fab pools by this
     # dimension; a demand entry's fab "" means single-fab mode (match all).
     fab_topology_dimension: str = "site"
+
+    @field_validator("auto_group_labels")
+    @classmethod
+    def _validate_auto_group_labels(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for k in v:
+            validate_label_key(k)
+            if k not in out:
+                out.append(k)
+        return out
+
+    def auto_group_key(
+        self, cluster_id: str, ip_type: str, node_role: str,
+        labels: Mapping[str, str],
+    ) -> tuple:
+        """
+        THE grouping key for auto-generated C3/C4 rules — single source of
+        truth shared by the solver (Step B) and sizing_floors.headcount_floor,
+        so a fleet-size lower bound can never disagree with the solver about
+        who shares a cap.
+
+        (cluster_id, ip_type, node_role, ((k, labels.get(k, "")), ...))
+        with one pair per key in auto_group_labels, in that order. With the
+        default [] the trailing tuple is empty and the key degenerates to the
+        historical triple.
+        """
+        return (
+            cluster_id, ip_type, node_role,
+            tuple((k, labels.get(k, "")) for k in self.auto_group_labels),
+        )
+
+    @staticmethod
+    def auto_group_id(prefix: str, key: tuple) -> str:
+        """
+        Human-readable id for an auto rule: `{prefix}/{cluster}/{ip}/{role}`
+        plus, only when label keys take part, `/{k}={v}[,{k2}={v2}]`. The
+        first four segments are positional (the role charset ^[\\w.-]+$ never
+        contains "/"), so parsers that read the role as segment 3 keep
+        working and `startswith("auto/")` checks are unaffected. The suffix
+        follows auto_group_labels order, so the id is deterministic.
+        """
+        cluster_id, ip_type, node_role, label_pairs = key
+        base = f"{prefix}/{cluster_id}/{ip_type}/{node_role}"
+        if not label_pairs:
+            return base
+        return base + "/" + ",".join(f"{k}={v}" for k, v in label_pairs)
 
     @field_validator("procurement_spread_dimension", "fab_topology_dimension")
     @classmethod
@@ -698,6 +825,9 @@ class ResourceRequirement(BaseModel):
     node_role: str = "worker"
     cluster_id: str = ""
     ip_type: str = ""
+    # Labels every synthetic VM split from this requirement inherits
+    # (ADR-021); see VM.labels.
+    labels: dict[str, str] = Field(default_factory=dict)
     vm_specs: list[Resources] | None = None
     min_total_vms: int | None = None
     max_total_vms: int | None = None
@@ -726,6 +856,11 @@ class ResourceRequirement(BaseModel):
     pool: str = ""
     candidate_baremetals: list[str] = Field(default_factory=list)
 
+    @field_validator("labels")
+    @classmethod
+    def _labels_format(cls, v: dict[str, str]) -> dict[str, str]:
+        return validate_labels(v)
+
 
 class SplitPlacementRequest(BaseModel):
     """Input for the split-and-solve endpoint."""
@@ -743,14 +878,16 @@ class SplitPlacementRequest(BaseModel):
 class SplitDecision(BaseModel):
     """How many VMs of a given spec the solver chose for one requirement.
 
-    cluster_id / ip_type echo the requirement's identity so two
-    requirements sharing a role (e.g. one per cluster) stay distinguishable
-    in the output; "" for pre-upgrade payloads."""
+    cluster_id / ip_type / labels echo the requirement's identity so two
+    requirements sharing a role (e.g. one per cluster, or one per label
+    value) stay distinguishable in the output; "" / {} for pre-upgrade
+    payloads."""
     node_role: str
     vm_spec: Resources
     count: int
     cluster_id: str = ""
     ip_type: str = ""
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class SplitPlacementResult(BaseModel):

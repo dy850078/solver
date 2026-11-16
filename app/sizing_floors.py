@@ -134,9 +134,13 @@ def headcount_floor(
         floor = max(floor, _ceil_div(n, rule.max_per_bm))
 
     if config.auto_generate_max_per_bm and config.default_max_per_bm:
-        groups: dict[tuple[str, str, str], int] = {}
+        # Same key the solver's auto C4 uses (SolverConfig.auto_group_key),
+        # so label-split groups bound the fleet exactly as they are capped.
+        groups: dict[tuple, int] = {}
         for vm in vms:
-            key = (vm.cluster_id, vm.ip_type, vm.node_role)
+            key = config.auto_group_key(
+                vm.cluster_id, vm.ip_type, vm.node_role, vm.labels,
+            )
             groups[key] = groups.get(key, 0) + 1
         for n in groups.values():
             floor = max(floor, _ceil_div(n, config.default_max_per_bm))
@@ -208,7 +212,7 @@ def distinct_floor(
         elif rule.selector is not None:
             sel = rule.selector
             has_member = any(sel.matches(vm) for vm in vms) or any(
-                sel.matches_attrs(r.cluster_id, r.ip_type, r.node_role)
+                sel.matches_attrs(r.cluster_id, r.ip_type, r.node_role, r.labels)
                 and _has_any_demand(r.total_resources)
                 for r in reqs
             )

@@ -489,3 +489,34 @@ class TestSizingMinDistinct:
             r = sizing(steps, fleet=FleetTemplate(total_capacity=BM, racks=4, ags=2))
             assert r.success, r.solver_status
             assert r.analytic_floor <= r.required_baremetals
+
+
+# ===========================================================================
+# Label-aware headcount floor (ADR-021)
+# ===========================================================================
+
+class TestLabelHeadcountFloor:
+
+    def _vms(self):
+        return ([vm(f"a{i}", labels={"dedicated": "AAA"}) for i in range(3)]
+                + [vm(f"b{i}", labels={"dedicated": "BBB"}) for i in range(3)])
+
+    def test_floor_follows_the_solver_grouping(self):
+        """Auto C4 cap 1: grouped by label → two groups of 3 → floor 3 (groups
+        may share machines: max, not sum); ungrouped → one group of 6 → 6."""
+        steps = [RolloutStep(name="s", vms=self._vms())]
+        split = SolverConfig(auto_generate_max_per_bm=True, default_max_per_bm=1,
+                             auto_group_labels=["dedicated"])
+        merged = SolverConfig(auto_generate_max_per_bm=True, default_max_per_bm=1)
+        assert fleet_floor(steps, BM, split, ags=1)[1]["headcount"] == 3
+        assert fleet_floor(steps, BM, merged, ags=1)[1]["headcount"] == 6
+
+    def test_sizing_places_label_groups_on_disjoint_ags(self):
+        steps = [RolloutStep(name="s", vms=self._vms())]
+        res = sizing(steps, auto_generate_anti_affinity=True, auto_group_labels=["dedicated"])
+        assert res.success, res.solver_status
+        rep = res.rollout.reports[0]
+        ag_of = {b.id: b.topology.ag for b in res.baremetals}
+        for prefix in ("a", "b"):
+            ags = {ag_of[a.baremetal_id] for a in rep.new_assignments if a.vm_id.startswith(prefix)}
+            assert len(ags) == 3, (prefix, ags)

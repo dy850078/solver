@@ -252,6 +252,7 @@ class ResourceSplitter:
                     node_role=req.node_role,
                     ip_type=req.ip_type,
                     cluster_id=req.cluster_id,
+                    labels=dict(req.labels),
                     candidate_baremetals=eligible_ids,
                 ))
 
@@ -355,5 +356,6 @@ class ResourceSplitter:
                         count=count,
                         cluster_id=req.cluster_id,
                         ip_type=req.ip_type,
+                        labels=dict(req.labels),
                     ))
         return decisions

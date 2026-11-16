@@ -1037,13 +1037,19 @@ class _Generator:
         diagnostics — via the role(s) in a failing max-per-BM rule's group_id
         (``maxbm/{cluster}/{ip}/{role[+role...]}``, a no_colocate_group unit
         names every member) or the role of a VM with no eligible BM. Empty
-        when nothing is attributable (caller falls back to all)."""
+        when nothing is attributable (caller falls back to all).
+
+        The role is read as segment 3 (positional), not as the last segment:
+        auto / selector ids may carry a trailing ``/k=v`` label suffix
+        (ADR-021) and the role charset never contains "/"."""
         diag = result.diagnostics or {}
         roles: set[str] = set()
         for key in ("infeasible_max_per_bm_rules", "infeasible_exclusive_rules"):
             for r in diag.get(key, []):
-                tail = str(r.get("group_id", "")).rsplit("/", 1)[-1]
-                roles.update(x for x in tail.split("+") if x)
+                segs = str(r.get("group_id", "")).split("/")
+                if len(segs) < 4:
+                    continue
+                roles.update(x for x in segs[3].split("+") if x and x != "*")
         role_by_vm = {vm.id: vm.node_role for vm in vms}
         for vm_id in diag.get("vms_with_no_eligible_bm", []):
             if vm_id in role_by_vm:

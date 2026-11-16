@@ -1054,3 +1054,51 @@ class TestSplitWithMinDistinctBm:
         r = solve_split_placement(request)
         assert not r.success
         assert r.solver_status == "INFEASIBLE"
+
+
+# ===========================================================================
+# Labels on requirements (ADR-021)
+# ===========================================================================
+
+class TestSplitWithLabels:
+
+    def _req(self, label, n=3):
+        spec = Resources(cpu_cores=4, memory_mib=16_000, storage_gb=100)
+        r = make_req(cpu=4 * n, mem=16_000 * n, disk=100 * n, role=NodeRole.WORKER,
+                     cluster="A", ip_type="routable", vm_specs=[spec], min_vms=n, max_vms=n)
+        return r.model_copy(update={"labels": {"dedicated": label}}) if label else r
+
+    def test_synthetic_vms_inherit_labels(self):
+        from app.split_solver import solve_split_placement_with_synthetics
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i}") for i in range(3)]
+        req = self._req("AAA").model_copy(update={"candidate_baremetals": [b.id for b in bms]})
+        r, synth = solve_split_placement_with_synthetics(SplitPlacementRequest(
+            requirements=[req], baremetals=bms,
+            config=SolverConfig(max_solve_time_seconds=10, auto_generate_anti_affinity=False)))
+        assert r.success
+        assert synth and all(vm.labels == {"dedicated": "AAA"} for vm in synth)
+        assert r.split_decisions[0].labels == {"dedicated": "AAA"}
+
+    def test_label_groups_spread_independently_on_split_path(self):
+        """AAA / BBB / plain thirds in one solve: with auto_group_labels each
+        trio is its own auto group (dynamic ceil still keyed on 'auto/'), so
+        every trio covers all 3 AGs."""
+        bms = [make_bm(f"bm-{ag}-{s}", ag=f"ag-{ag}") for ag in range(3) for s in range(3)]
+        reqs = [self._req("AAA"), self._req("BBB"), self._req(None)]
+        r = split_solve(reqs, bms, auto_generate_anti_affinity=True,
+                        auto_group_labels=["dedicated"])
+        assert r.success, r.solver_status
+        by_req = {}
+        for a in r.assignments:
+            idx = int(a.vm_id.split("-")[1][1:])   # split-r{idx}-s0-k
+            by_req.setdefault(idx, set()).add(a.ag)
+        assert all(len(ags) == 3 for ags in by_req.values()), by_req
+
+    def test_without_auto_group_labels_labels_are_inert(self):
+        bms = [make_bm(f"bm-{ag}-{s}", ag=f"ag-{ag}") for ag in range(3) for s in range(3)]
+        reqs = [self._req("AAA"), self._req("BBB"), self._req(None)]
+        r = split_solve(reqs, bms, auto_generate_anti_affinity=True)
+        assert r.success
+        from collections import Counter
+        # one 9-VM group: per-AG cap ceil(9/3)=3 holds for the whole set
+        assert max(Counter(a.ag for a in r.assignments).values()) <= 3

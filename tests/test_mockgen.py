@@ -903,3 +903,23 @@ def test_verified_is_none_without_verify():
     resp = generate_mock_request(_cp_request([_tagged("master", 3)], verify=False))
     assert resp.verified is None
     assert resp.feasibility == "unverified"
+
+
+def test_escalation_targets_read_role_as_segment_three():
+    """Auto / selector ids may end in a `/k=v` label suffix (ADR-021); the role
+    is positional, so the suffix must not be mistaken for a role."""
+    from types import SimpleNamespace
+    from app.mockgen import _Generator
+    gen = _Generator(_cp_request(
+        [_tagged("master", 5), _tagged("learner", 5)],
+        bm_profiles=[
+            BmProfile(name="m-pool", capacity=_BIG_CTRL, roles=["master"]),
+            BmProfile(name="l-pool", capacity=_BIG_CTRL, roles=["learner"]),
+        ],
+    ))
+    fake = SimpleNamespace(diagnostics={"infeasible_max_per_bm_rules": [
+        {"group_id": "auto-bm/cluster-1/non-routable/master/dedicated=AAA"},
+        {"group_id": "selector/cluster-1/*/learner+master/tier=gold"},
+        {"group_id": "exclusive/cluster-1"},   # too short → ignored
+    ]})
+    assert sorted(gen._escalation_targets(fake, [])) == ["l-pool", "m-pool"]

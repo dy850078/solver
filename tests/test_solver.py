@@ -2118,3 +2118,191 @@ class TestMinDistinctBaremetal:
         )
         r = solve([make_vm("w-0")], [make_bm("bm-0")], min_distinct_rules=[rule])
         assert r.solver_status.startswith("INPUT_ERROR")
+
+
+# ===========================================================================
+# Label-aware auto grouping (ADR-021)
+# ===========================================================================
+
+def _label_fleet():
+    """9 cluster-A routable workers — 3 × dedicated=AAA, 3 × dedicated=BBB,
+    3 unlabeled — on 9 BMs (3 per AG), so three label groups can each take one
+    BM per AG while a single 9-VM group (cap ceil(9/3)=3) could pile a label
+    value into one AG."""
+    bms = [make_bm(f"bm-{ag}-{slot}", ag=f"ag-{ag}", rack=f"rack-{ag}-{slot}")
+           for ag in range(3) for slot in range(3)]
+    vms = []
+    for i, label in enumerate(["AAA"] * 3 + ["BBB"] * 3 + [None] * 3):
+        vm = make_vm(f"w-{i}", cluster="A", ip_type="routable")
+        if label is not None:
+            vm = vm.model_copy(update={"labels": {"dedicated": label}})
+        vms.append(vm)
+    return vms, bms
+
+
+def _label_solver(vms, bms, **cfg):
+    all_bm_ids = [bm.id for bm in bms]
+    request = PlacementRequest(
+        vms=[vm.model_copy(update={"candidate_baremetals": all_bm_ids}) for vm in vms],
+        baremetals=bms,
+        config=SolverConfig(max_solve_time_seconds=10, **cfg),
+    )
+    return VMPlacementSolver(request)
+
+
+class TestLabelAutoGrouping:
+
+    def test_three_label_groups_spread_independently(self):
+        vms, bms = _label_fleet()
+        s = _label_solver(
+            vms, bms, auto_generate_anti_affinity=True, target_spread={"ag": 3},
+            auto_generate_max_per_bm=True, default_max_per_bm=1,
+            auto_group_labels=["dedicated"],
+        )
+        r = s.solve()
+        assert r.success, r.solver_status
+        assert sorted(x.group_id for x in s.effective_rules) == [
+            "auto/A/routable/worker/dedicated=",
+            "auto/A/routable/worker/dedicated=AAA",
+            "auto/A/routable/worker/dedicated=BBB",
+        ]
+        assert sorted(x.group_id for x in s.max_per_bm_rules) == [
+            "auto-bm/A/routable/worker/dedicated=",
+            "auto-bm/A/routable/worker/dedicated=AAA",
+            "auto-bm/A/routable/worker/dedicated=BBB",
+        ]
+        a = amap(r)
+        bm_ag = {bm.id: bm.topology.ag for bm in bms}
+        for ids in (["w-0", "w-1", "w-2"], ["w-3", "w-4", "w-5"], ["w-6", "w-7", "w-8"]):
+            assert len({bm_ag[a[v]] for v in ids}) == 3, (ids, a)   # one per AG
+            assert len({a[v] for v in ids}) == 3, (ids, a)          # one per BM
+
+    def test_default_config_keeps_the_historical_triple(self):
+        """auto_group_labels=[] → labels are carried but never split a group:
+        one rule, the pre-ADR-021 id, all nine VMs."""
+        vms, bms = _label_fleet()
+        s = _label_solver(
+            vms, bms, auto_generate_anti_affinity=True, target_spread={"ag": 3},
+            auto_generate_max_per_bm=True, default_max_per_bm=1,
+        )
+        r = s.solve()
+        assert r.success, r.solver_status
+        assert [x.group_id for x in s.effective_rules] == ["auto/A/routable/worker"]
+        assert len(s.effective_rules[0].vm_ids) == 9
+        assert [x.group_id for x in s.max_per_bm_rules] == ["auto-bm/A/routable/worker"]
+
+    def test_unlisted_label_does_not_split(self):
+        """Only keys in auto_group_labels take part; env=prod vs env=dev stay
+        one group when only `dedicated` is listed."""
+        vms, bms = _label_fleet()
+        vms = [vm.model_copy(update={"labels": {**vm.labels, "env": "prod" if i % 2 else "dev"}})
+               for i, vm in enumerate(vms)]
+        s = _label_solver(vms, bms, auto_generate_anti_affinity=True,
+                          auto_group_labels=["dedicated"])
+        s.solve()
+        assert len(s.effective_rules) == 3
+
+    def test_same_value_under_different_keys_do_not_collide(self):
+        """dedicated=AAA and other=AAA are (key, value) pairs → two groups."""
+        bms = [make_bm(f"bm-{i}", ag=f"ag-{i % 3}") for i in range(6)]
+        vms = (
+            [make_vm(f"d-{i}", cluster="A").model_copy(update={"labels": {"dedicated": "AAA"}})
+             for i in range(3)]
+            + [make_vm(f"o-{i}", cluster="A").model_copy(update={"labels": {"other": "AAA"}})
+               for i in range(3)]
+        )
+        s = _label_solver(vms, bms, auto_generate_anti_affinity=True,
+                          auto_group_labels=["dedicated", "other"])
+        s.solve()
+        assert sorted(x.group_id for x in s.effective_rules) == [
+            "auto/A/routable/worker/dedicated=,other=AAA",
+            "auto/A/routable/worker/dedicated=AAA,other=",
+        ]
+
+    def test_auto_group_key_and_id_helpers(self):
+        cfg = SolverConfig(auto_group_labels=["dedicated", "tier"])
+        key = cfg.auto_group_key("A", "routable", "worker", {"tier": "gold", "env": "x"})
+        assert key == ("A", "routable", "worker", (("dedicated", ""), ("tier", "gold")))
+        assert SolverConfig.auto_group_id("auto", key) == "auto/A/routable/worker/dedicated=,tier=gold"
+        plain = SolverConfig().auto_group_key("A", "routable", "worker", {"tier": "gold"})
+        assert SolverConfig.auto_group_id("auto", plain) == "auto/A/routable/worker"
+        # dedupe keeps order; bad key format rejected
+        assert SolverConfig(auto_group_labels=["a", "b", "a"]).auto_group_labels == ["a", "b"]
+        with pytest.raises(ValueError, match="label key"):
+            SolverConfig(auto_group_labels=["bad=key"])
+
+    def test_label_format_is_validated(self):
+        with pytest.raises(ValueError, match="label key"):
+            PlacementRequest.model_validate({"vms": [{"id": "v", "demand": {}, "labels": {"a=b": "x"}}],
+                                             "baremetals": []})
+        with pytest.raises(ValueError, match="value"):
+            PlacementRequest.model_validate({"vms": [{"id": "v", "demand": {}, "labels": {"k": "x,y"}}],
+                                             "baremetals": []})
+        ok = PlacementRequest.model_validate({
+            "vms": [{"id": "v", "demand": {}, "labels": {"example.com/dedicated": "AAA", "empty": ""}}],
+            "baremetals": []})
+        assert ok.vms[0].labels == {"example.com/dedicated": "AAA", "empty": ""}
+
+    def test_explicit_rule_with_label_selector_covers_only_its_group(self):
+        """An explicit C4 over dedicated=AAA takes those VMs out of auto C4;
+        BBB and the unlabeled group still get auto rules."""
+        vms, bms = _label_fleet()
+        rule = MaxPerBaremetalRule(
+            selector=GroupSelector(cluster_id="A", node_role="worker", labels={"dedicated": "AAA"}),
+            max_per_bm=1,
+        )
+        all_bm_ids = [bm.id for bm in bms]
+        s = VMPlacementSolver(PlacementRequest(
+            vms=[vm.model_copy(update={"candidate_baremetals": all_bm_ids}) for vm in vms],
+            baremetals=bms, max_per_bm_rules=[rule],
+            config=SolverConfig(max_solve_time_seconds=10, auto_generate_anti_affinity=False,
+                                auto_generate_max_per_bm=True, default_max_per_bm=1,
+                                auto_group_labels=["dedicated"]),
+        ))
+        assert s.solve().success
+        ids = sorted(x.group_id for x in s.max_per_bm_rules)
+        assert ids == ["auto-bm/A/routable/worker/dedicated=",
+                       "auto-bm/A/routable/worker/dedicated=BBB",
+                       "selector/A/*/worker/dedicated=AAA"], ids
+        assert sorted(next(x for x in s.max_per_bm_rules if x.group_id.startswith("selector/")).vm_ids) \
+            == ["w-0", "w-1", "w-2"]
+
+
+class TestLabelSelector:
+    """GroupSelector.labels: missing label ≡ "" (same rule as the grouping key)."""
+
+    def _vm(self, labels=None):
+        vm = make_vm("v", cluster="A")
+        return vm.model_copy(update={"labels": labels}) if labels is not None else vm
+
+    def test_value_match_and_missing_key_is_empty(self):
+        sel = GroupSelector(cluster_id="A", labels={"dedicated": "AAA"})
+        assert sel.matches(self._vm({"dedicated": "AAA"}))
+        assert not sel.matches(self._vm({"dedicated": "BBB"}))
+        assert not sel.matches(self._vm())                      # missing ≠ "AAA"
+        empty = GroupSelector(cluster_id="A", labels={"dedicated": ""})
+        assert empty.matches(self._vm())                        # missing ≡ ""
+        assert empty.matches(self._vm({"dedicated": ""}))
+        assert not empty.matches(self._vm({"dedicated": "AAA"}))
+
+    def test_every_pair_must_hold(self):
+        sel = GroupSelector(labels={"dedicated": "AAA", "tier": "gold"})
+        assert sel.matches(self._vm({"dedicated": "AAA", "tier": "gold", "env": "x"}))
+        assert not sel.matches(self._vm({"dedicated": "AAA"}))  # tier missing → "" ≠ gold
+
+    def test_empty_dict_is_wildcard_and_is_empty(self):
+        assert GroupSelector(labels={}).labels is None
+        assert GroupSelector(labels={}).is_empty()
+        assert not GroupSelector(labels={"dedicated": ""}).is_empty()
+        assert GroupSelector(labels={"dedicated": "AAA"}).matches(self._vm({"dedicated": "AAA"}))
+
+    def test_labels_only_selector_is_accepted_by_rules(self):
+        rule = MaxPerBaremetalRule(selector=GroupSelector(labels={"dedicated": "AAA"}), max_per_bm=1)
+        vms = [self._vm({"dedicated": "AAA"}).model_copy(update={"id": f"v{i}"}) for i in range(2)]
+        r = solve(vms, [make_bm("bm-0"), make_bm("bm-1")], max_per_bm_rules=[rule])
+        assert r.success and len(set(amap(r).values())) == 2
+
+    def test_fallback_group_id_carries_sorted_labels(self):
+        sel = GroupSelector(cluster_id="A", node_role="worker", labels={"tier": "gold", "dedicated": "AAA"})
+        assert VMPlacementSolver._auto_group_id_for_selector(sel) == \
+            "selector/A/*/worker/dedicated=AAA,tier=gold"
