@@ -84,7 +84,9 @@ auto C3、auto C4、`headcount_floor` 共用;selector 加 `labels`,比對規則�
   分組與 selector 一致採用,代價可接受。
 - **已知缺口**:`DemandEntry`(多期 capacity planner)無 labels;`rollout-form.js` 匯入器
   以 `role|ip|spec` 摺疊,匯入帶 label 的請求會併群;mockgen 不產生 labels;
-  legacy pipeline 文件四欄不變,看不到 dedicated 分群(hostname 帶值是唯一線索)。
+  legacy pipeline 文件:有 label 的 VM 多一個 `labels` 物件(無 label 的維持四欄、
+  byte 級相同),UI 匯出前可勾選要留哪些欄位——沒有 label 的文件不受影響,有的話
+  下游 parser 要能容忍多一個 key(使用者定案)。
 - 訊號:若出現「label 要跨 role 合併」或「label 的否定/集合比對」需求,代表 selector
   該升級成查詢語言,而不是再加欄位(與 ADR-016 §5 同一條警戒線)。
 

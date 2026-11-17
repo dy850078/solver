@@ -127,8 +127,9 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   the Go scheduler's own role filtering — the production contract is
   unchanged (UI label: Baremetal group; JSON field stays `groups`). Legacy
   pipeline export: one JSON per pool, `BM1…BMn` numbered within the pool
-  (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`;
-  `legacy_bm_map` traces keys to machine ids.
+  (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`
+  plus `labels: {k: v}` only on VMs that carry labels (ADR-021; the UI export
+  card lets the user drop columns); `legacy_bm_map` traces keys to machine ids.
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

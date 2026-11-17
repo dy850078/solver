@@ -23,6 +23,7 @@ the report never fails on an unnamed spec.
 from __future__ import annotations
 
 from collections import OrderedDict
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -179,18 +180,28 @@ def legacy_template(layouts: list[BmLayout]) -> dict[str, dict[str, list[dict[st
     Machines are numbered BM1…BMn within their pool in layout order;
     machines hosting nothing are left out. `routable` is R / NR, or "" when
     the VM has no ip_type. `cluster` lets a shared pool's rows be read per
-    cluster. The real machine behind each key is in legacy_bm_map().
+    cluster. A VM that carries labels (ADR-021) adds a fifth key,
+    `"labels": {"dedicated": "AAA"}`; unlabeled VMs keep the four keys
+    exactly, so documents without labels are byte-identical to before. The
+    UI lets the user drop columns before copying / downloading. The real
+    machine behind each key is in legacy_bm_map().
     """
-    out: dict[str, dict[str, list[dict[str, str]]]] = {}
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for pool, numbered in _number_layouts(layouts).items():
-        doc: dict[str, list[dict[str, str]]] = {}
+        doc: dict[str, list[dict[str, Any]]] = {}
         for key, layout in numbered:
-            doc[key] = [{
-                "role": e.node_role,
-                "vm_spec": e.vm_spec,
-                "routable": IP_TYPE_LABELS.get(e.ip_type, e.ip_type or ""),
-                "cluster": e.cluster_id,
-            } for e in layout.entries]
+            rows: list[dict[str, Any]] = []
+            for e in layout.entries:
+                row: dict[str, Any] = {
+                    "role": e.node_role,
+                    "vm_spec": e.vm_spec,
+                    "routable": IP_TYPE_LABELS.get(e.ip_type, e.ip_type or ""),
+                    "cluster": e.cluster_id,
+                }
+                if e.labels:
+                    row["labels"] = dict(e.labels)
+                rows.append(row)
+            doc[key] = rows
         out[pool] = doc
     return out
 

@@ -464,8 +464,40 @@ function legacySelectedPool() {
   return pools.includes(sel.value) ? sel.value : pools[0];
 }
 
+/* Columns of the legacy document. The server always writes the four
+ * classic keys plus `labels` on labeled VMs; the user picks which of them
+ * the copied / downloaded document keeps (persisted per browser). */
+const LEGACY_FIELDS = ["role", "vm_spec", "routable", "cluster", "labels"];
+const LEGACY_FIELDS_KEY = "solver-legacy-fields";
+function legacyFields() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LEGACY_FIELDS_KEY) || "null");
+    if (Array.isArray(saved)) return LEGACY_FIELDS.filter((f) => saved.includes(f));
+  } catch { /* fall through */ }
+  return [...LEGACY_FIELDS];
+}
+function setLegacyFields(fields) {
+  try { localStorage.setItem(LEGACY_FIELDS_KEY, JSON.stringify(fields)); } catch { /* ignore */ }
+}
+
+function legacyDocFor(pool) {
+  const keep = new Set(legacyFields());
+  const doc = state.result.legacy_template[pool] ?? {};
+  return Object.fromEntries(Object.entries(doc).map(([bm, rows]) => [bm, rows.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([k]) => keep.has(k))))]));
+}
+
 function legacyJsonFor(pool) {
-  return JSON.stringify(state.result.legacy_template[pool] ?? {}, null, 2);
+  return JSON.stringify(legacyDocFor(pool), null, 2);
+}
+
+function renderLegacyFields() {
+  const chosen = new Set(legacyFields());
+  const anyLabels = Object.values(state.result?.legacy_template ?? {})
+    .some((doc) => Object.values(doc).some((rows) => rows.some((r) => r.labels)));
+  $("#legacy-fields").innerHTML = `<span class="mini__label">Columns</span>` + LEGACY_FIELDS.map((f) => `
+    <label class="${f === "labels" && !anyLabels ? "is-muted" : ""}" title="${f === "labels" ? "present only on VMs that carry labels" : f}">
+      <input type="checkbox" data-legacy-field="${f}" ${chosen.has(f) ? "checked" : ""}><span>${escapeHtml(f)}</span></label>`).join("");
 }
 
 function renderLegacy() {
@@ -473,6 +505,7 @@ function renderLegacy() {
   const pools = legacyPools();
   if (!pools.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  renderLegacyFields();
   const sel = $("#legacy-pool");
   const keep = sel.value;
   sel.innerHTML = pools.map((p) => {
@@ -624,6 +657,13 @@ function init() {
   $("#run-btn").addEventListener("click", runPlan);
   $("#dl-result-btn").addEventListener("click", downloadResult);
   $("#legacy-pool").addEventListener("change", () => { $("#legacy-json").value = legacyJsonFor(legacySelectedPool()); });
+  $("#legacy-fields").addEventListener("change", (e) => {
+    if (e.target.dataset?.legacyField === undefined) return;
+    const chosen = [...document.querySelectorAll("#legacy-fields input[data-legacy-field]")]
+      .filter((i) => i.checked).map((i) => i.dataset.legacyField);
+    setLegacyFields(chosen);
+    $("#legacy-json").value = legacyJsonFor(legacySelectedPool());
+  });
   $("#legacy-copy-btn").addEventListener("click", copyLegacy);
   $("#legacy-dl-btn").addEventListener("click", () => downloadLegacy(legacySelectedPool()));
   $("#legacy-dl-all-btn").addEventListener("click", () => {

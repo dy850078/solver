@@ -252,7 +252,9 @@ class BmDemandPlanResult(BaseModel):
     # One pipeline document per pool: {"<pool>": {"BM1": [{role, vm_spec,
     # routable, cluster}, …]}} (placement_report.legacy_template); the map
     # traces BMn back to the planned machine id.
-    legacy_template: dict[str, dict[str, list[dict[str, str]]]] = Field(default_factory=dict)
+    # Rows are {role, vm_spec, routable, cluster} plus an optional `labels`
+    # dict (ADR-021), hence Any.
+    legacy_template: dict[str, dict[str, list[dict[str, Any]]]] = Field(default_factory=dict)
     legacy_bm_map: dict[str, dict[str, str]] = Field(default_factory=dict)
     advisories: list[dict[str, Any]] = Field(default_factory=list)
     config_fingerprint: str = ""

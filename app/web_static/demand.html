@@ -297,8 +297,9 @@
         </div>
       </header>
       <div class="card__body">
+        <div id="legacy-fields" class="legacy-fields" title="Columns written for every VM. `labels` appears only on VMs that carry labels."></div>
         <textarea id="legacy-json" class="editor editor--legacy" readonly spellcheck="false"></textarea>
-        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON.</p>
+        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON. Untick a column to leave it out of the copied / downloaded document.</p>
       </div>
     </section>
 

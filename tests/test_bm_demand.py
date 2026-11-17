@@ -594,10 +594,17 @@ class TestLabels:
                        for a in rep.new_assignments)
         assert "worker-R-AAA-01" in hosts and "worker-R-BBB-09" in hosts and "worker-R-01" in hosts
         assert len(set(hosts)) == 27
-        # legacy export keeps its four columns
+        # legacy export: four columns, plus `labels` only on labeled VMs
+        seen_labels = set()
         for pool in r.legacy_template.values():
             for entries in pool.values():
-                assert all(set(e) == {"role", "vm_spec", "routable", "cluster"} for e in entries)
+                for e in entries:
+                    assert set(e) - {"labels"} == {"role", "vm_spec", "routable", "cluster"}
+                    if "labels" in e:
+                        seen_labels.add(e["labels"]["dedicated"])
+                    else:
+                        assert e["role"] == "worker"
+        assert seen_labels == {"AAA", "BBB"}
 
     def test_hostname_label_values_are_dns_safe(self):
         from app.bm_demand import _label_host_parts

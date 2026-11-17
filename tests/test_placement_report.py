@@ -139,11 +139,14 @@ class TestLabelsInReports:
         assert plain.vm_count == 1 and plain.per_ag == {"ag-2": 1}
         assert sum(r.vm_count for r in rows.values()) == len(a)
 
-    def test_layout_entries_carry_labels_and_legacy_template_is_unchanged(self):
+    def test_layout_entries_carry_labels_and_legacy_rows_add_labels_only_when_present(self):
         a, v, b = self._labeled()
         layouts = bm_layouts(a, v, b, CATALOG)
         bm1 = next(l for l in layouts if l.bm_id == "bm-1")
         assert [e.labels for e in bm1.entries] == [{"dedicated": "AAA"}] * 2
         t = legacy_template(layouts)
+        # bm-1 hosts the two labeled VMs → five keys; everyone else keeps four
+        assert all(set(r) == {"role", "vm_spec", "routable", "cluster", "labels"}
+                   and r["labels"] == {"dedicated": "AAA"} for r in t["default"]["BM1"])
         assert all(set(r) == {"role", "vm_spec", "routable", "cluster"}
-                   for rows in t["default"].values() for r in rows)
+                   for key, rows in t["default"].items() if key != "BM1" for r in rows)

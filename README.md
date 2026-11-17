@@ -230,8 +230,10 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   `config.auto_group_labels` decides which keys also split the AG spread /
   max-per-BM groups; a key used by a row but not listed there yields a
   `label_not_in_auto_group` advisory. The placement matrix gets a Labels
-  column and hostnames carry the values (`worker-R-AAA-01`); the legacy
-  template keeps its four columns. `examples/bm_demand/dedicated_labels.json`.
+  column and hostnames carry the values (`worker-R-AAA-01`). In the legacy
+  template a labeled VM gains a fifth key, `"labels": {"dedicated": "AAA"}`;
+  unlabeled VMs keep the four keys, and the UI's export card lets you untick
+  any column before copying / downloading. `examples/bm_demand/dedicated_labels.json`.
 - `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and
