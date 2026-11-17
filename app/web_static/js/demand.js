@@ -12,7 +12,7 @@
 import { listExamples, getExample, bmDemandPlan } from "./api.js";
 import { escapeHtml, formatLabels } from "./util.js";
 import { initSidebarChrome } from "./sidebar.js";
-import { rebuildColorScale } from "./colors.js";
+import { rebuildColorScale, clusterShort } from "./colors.js";
 import {
   GROUP_BY_OPTIONS, buildPanels, collectAgSet, renderRackDiagram, showRackEmpty,
 } from "./rackdiagram.js";
@@ -369,11 +369,11 @@ function updateFilterControls(view) {
   $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
-function stockCell(used, total) {
+function stockCell(used, total, title = "") {
   if (!total) return `<td class="stock-cell">—</td>`;
   const pct = Math.min(100, Math.round((used / total) * 100));
   const mod = pct >= 100 ? " stock-meter__fill--full" : pct >= 90 ? " stock-meter__fill--hot" : "";
-  return `<td class="stock-cell">${used.toLocaleString()} / ${total.toLocaleString()}
+  return `<td class="stock-cell" title="${escapeHtml(title || `${used.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`)}">${used.toLocaleString()} / ${total.toLocaleString()}
     <span class="stock-meter"><span class="stock-meter__fill${mod}" style="width:${pct}%"></span></span></td>`;
 }
 
@@ -383,16 +383,25 @@ function renderLayouts() {
   if (!layouts.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
   const ipShort = (ip) => ({ routable: "R", "non-routable": "NR" }[ip] ?? ip ?? "");
+  // Every column but VMs is nowrap and narrow; VMs takes the remaining
+  // width and wraps its pills, each pill capped in width (full text in the
+  // title), so a machine with many / long hostnames grows DOWN, never
+  // sideways. The pill's bold prefix is the same short cluster badge the
+  // rack diagram uses (renderRack has rebuilt the colour scale by now), so
+  // a long cluster name does not eat the hostname. Memory is in GiB.
+  const entryText = (e) => `${e.cluster_id} ${e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`} · ${e.vm_spec}`;
+  const gib = (mib) => Math.round((mib ?? 0) / 1024);
   $("#layout-content").innerHTML = `
-    <table class="table">
-      <thead><tr><th>Machine</th><th>Group</th><th>AG</th><th>Rack</th><th>VMs</th><th>CPU</th><th>Memory (MiB)</th><th>Storage (GB)</th></tr></thead>
+    <table class="table layout-table">
+      <thead><tr><th>Machine <span class="muted">· group · AG · rack</span></th><th class="vms">VMs</th><th>CPU</th><th>Memory (GiB)</th><th>Storage (GB)</th></tr></thead>
       <tbody>${layouts.map((l) => `<tr>
-        <td class="cell-mono">${escapeHtml(l.bm_id)}</td><td>${escapeHtml(l.pool)}</td>
-        <td>${escapeHtml(l.ag)}</td><td>${escapeHtml(l.rack)}</td>
-        <td><div class="layout-entries">${l.entries.map((e) =>
-          `<span class="layout-entry" title="${escapeHtml(e.vm_id)}"><b>${escapeHtml(e.cluster_id)}</b> ${escapeHtml(e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`)} · ${escapeHtml(e.vm_spec)}</span>`).join("")}</div></td>
+        <td class="machine" title="${escapeHtml(`${l.bm_id} · ${l.pool || "default"} · ${l.ag} · ${l.rack}`)}">
+          <span class="cell-mono">${escapeHtml(l.bm_id)}</span>
+          <span class="machine__where muted">${escapeHtml(l.pool || "default")} · ${escapeHtml(l.ag)} · ${escapeHtml(l.rack)}</span></td>
+        <td class="vms"><div class="layout-entries">${l.entries.map((e) =>
+          `<span class="layout-entry" title="${escapeHtml(`${entryText(e)} (${e.vm_id})${Object.keys(e.labels || {}).length ? ` · ${formatLabels(e.labels)}` : ""}`)}"><b>${escapeHtml(clusterShort(e.cluster_id))}</b> ${escapeHtml(e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`)} · ${escapeHtml(e.vm_spec)}</span>`).join("")}</div></td>
         ${stockCell(l.used.cpu_cores, l.capacity.cpu_cores)}
-        ${stockCell(l.used.memory_mib, l.capacity.memory_mib)}
+        ${stockCell(gib(l.used.memory_mib), gib(l.capacity.memory_mib), `${(l.used.memory_mib ?? 0).toLocaleString()} / ${(l.capacity.memory_mib ?? 0).toLocaleString()} MiB`)}
         ${stockCell(l.used.storage_gb, l.capacity.storage_gb)}
       </tr>`).join("")}</tbody>
     </table>`;

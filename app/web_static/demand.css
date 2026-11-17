@@ -96,11 +96,26 @@
 .adv-chip--info { background: var(--accent-soft); color: var(--accent); }
 .step-strip--mini { margin-bottom: 12px; }
 .step-strip--mini .step-cell { cursor: default; }
-.layout-entries { display: flex; flex-wrap: wrap; gap: 4px; }
-#layout-content td.cell-mono { white-space: nowrap; }
-#layout-content td:nth-child(3), #layout-content td:nth-child(4) { white-space: nowrap; }
+/* Machine layouts: content never widens the table. Every column but VMs
+   is nowrap and narrow; the VMs column gets the remaining width and wraps
+   its pills, each pill capped in width (ellipsis, full text in the title);
+   stock cells stack the number over the meter. Below ~760px the card
+   scrolls horizontally instead of clipping. */
+#layout-content { overflow-x: auto; }
+.layout-table { width: 100%; min-width: 640px; }
+.layout-table th, .layout-table td { white-space: nowrap; vertical-align: top; padding: 9px 12px; }
+.layout-table td.machine { max-width: 190px; }
+.layout-table td.machine > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.layout-table .machine__where { font-size: 11px; margin-top: 2px; }
+.layout-table th.vms, .layout-table td.vms { white-space: normal; width: 50%; min-width: 220px; }
+.layout-table .stock-cell { font-size: 12px; }
+.layout-table .stock-cell .stock-meter { display: block; margin: 4px 0 0; width: 72px; }
+.layout-entries { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+/* inline-block (not inline-flex) so text-overflow can ellipsize a pill that
+   is wider than the cap; the full text is in the title. */
 .layout-entry {
-  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; white-space: nowrap;
+  display: inline-block; max-width: 240px; box-sizing: border-box; line-height: 18px; padding: 0 7px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   border-radius: var(--radius-full); font-size: 11px; background: var(--bg-subtle);
   border: 1px solid var(--border-base); font-variant-numeric: tabular-nums;
 }
