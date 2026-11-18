@@ -31,12 +31,13 @@ const state = {
     req: null, res: null,
     groupBy: "rack",
     showCapacity: (() => { try { return localStorage.getItem("solver-show-capacity") === "1"; } catch { return false; } })(),
-    filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set() },
+    filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set(), labels: new Set() },
   },
 };
 let clusterMs = null;
 let roleMs = null;
 let ipTypeMs = null;
+let labelMs = null;
 
 /* ── helpers ─────────────────────────────────────────────────────── */
 
@@ -248,12 +249,13 @@ function updateFilterControls() {
   clusterMs.update({ options: mapToOptions(opts.clusters), selected: d.filter.clusters });
   roleMs.update({ options: mapToOptions(opts.roles), selected: d.filter.roles });
   ipTypeMs.update({ options: mapToOptions(opts.ipTypes), selected: d.filter.ipTypes });
+  labelMs.update({ options: mapToOptions(opts.labels), selected: d.filter.labels });
   $("cmp-filter-clear").classList.toggle("hidden", !isFilterActive(d.filter));
 }
 
 function clearDetailFilter() {
   const d = state.detail;
-  d.filter.clusters.clear(); d.filter.roles.clear(); d.filter.ipTypes.clear();
+  d.filter.clusters.clear(); d.filter.roles.clear(); d.filter.ipTypes.clear(); d.filter.labels.clear();
   updateFilterControls();
   renderDetailViz();
 }
@@ -489,9 +491,11 @@ function initDetailControls() {
   clusterMs = createMultiSelect({ label: "Cluster", onChange: onFilterChange("clusters") });
   roleMs = createMultiSelect({ label: "Role", onChange: onFilterChange("roles") });
   ipTypeMs = createMultiSelect({ label: "IP type", onChange: onFilterChange("ipTypes") });
+  labelMs = createMultiSelect({ label: "Labels", onChange: onFilterChange("labels") });
   $("cmp-filter-cluster").appendChild(clusterMs.element);
   $("cmp-filter-role").appendChild(roleMs.element);
   $("cmp-filter-iptype").appendChild(ipTypeMs.element);
+  $("cmp-filter-label").appendChild(labelMs.element);
   $("cmp-filter-clear").addEventListener("click", clearDetailFilter);
 }
 
