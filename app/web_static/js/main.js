@@ -22,12 +22,14 @@ const state = {
     clusters: new Set(),
     roles: new Set(),
     ipTypes: new Set(),
+    labels: new Set(),
   },
 };
 
 let clusterMs = null;
 let roleMs = null;
 let ipTypeMs = null;
+let labelMs = null;
 
 const VALID_ENDPOINTS = new Set(["solve", "split-and-solve"]);
 
@@ -129,6 +131,7 @@ function updateFilterControls() {
   clusterMs.update({ options: mapToOptions(opts.clusters), selected: state.filter.clusters });
   roleMs.update({ options: mapToOptions(opts.roles), selected: state.filter.roles });
   ipTypeMs.update({ options: mapToOptions(opts.ipTypes), selected: state.filter.ipTypes });
+  labelMs.update({ options: mapToOptions(opts.labels), selected: state.filter.labels });
   clearBtn.classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
@@ -136,6 +139,7 @@ function clearFilter() {
   state.filter.clusters.clear();
   state.filter.roles.clear();
   state.filter.ipTypes.clear();
+  state.filter.labels.clear();
   updateFilterControls();
   rerenderAll();
 }
@@ -426,9 +430,11 @@ function init() {
   clusterMs = createMultiSelect({ label: "Cluster",  onChange: onFilterChange("clusters") });
   roleMs    = createMultiSelect({ label: "Role",     onChange: onFilterChange("roles") });
   ipTypeMs  = createMultiSelect({ label: "IP type",  onChange: onFilterChange("ipTypes") });
+  labelMs   = createMultiSelect({ label: "Labels",   onChange: onFilterChange("labels") });
   $("#filter-cluster").appendChild(clusterMs.element);
   $("#filter-role").appendChild(roleMs.element);
   $("#filter-iptype").appendChild(ipTypeMs.element);
+  $("#filter-label").appendChild(labelMs.element);
 
   $("#filter-clear").addEventListener("click", clearFilter);
 }

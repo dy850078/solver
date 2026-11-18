@@ -36,12 +36,12 @@ const state = {
   selected: 0,     // index into result.reports
   groupBy: "rack",
   sizing: null,    // RolloutSizingResult when the fleet size was estimated
-  filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set() },
+  filter: { clusters: new Set(), roles: new Set(), ipTypes: new Set(), labels: new Set() },
   // Shared preference with the Topology page (same localStorage key).
   showCapacity: localStorage.getItem("solver-show-capacity") === "1",
 };
 
-let clusterMs, roleMs, ipTypeMs;   // filter multi-selects (built in init)
+let clusterMs, roleMs, ipTypeMs, labelMs;   // filter multi-selects (built in init)
 
 function statusKind(status) {
   if (!status) return "warn";
@@ -264,6 +264,7 @@ function updateFilterControls() {
   clusterMs.update({ options: toOptions(opts.clusters), selected: state.filter.clusters });
   roleMs.update({ options: toOptions(opts.roles), selected: state.filter.roles });
   ipTypeMs.update({ options: toOptions(opts.ipTypes), selected: state.filter.ipTypes });
+  labelMs.update({ options: toOptions(opts.labels), selected: state.filter.labels });
   $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
@@ -616,13 +617,16 @@ function init() {
   clusterMs = createMultiSelect({ label: "Cluster", onChange: onFilterChange("clusters") });
   roleMs    = createMultiSelect({ label: "Role",    onChange: onFilterChange("roles") });
   ipTypeMs  = createMultiSelect({ label: "IP type", onChange: onFilterChange("ipTypes") });
+  labelMs   = createMultiSelect({ label: "Labels",  onChange: onFilterChange("labels") });
   $("#filter-cluster").appendChild(clusterMs.element);
   $("#filter-role").appendChild(roleMs.element);
   $("#filter-iptype").appendChild(ipTypeMs.element);
+  $("#filter-label").appendChild(labelMs.element);
   $("#filter-clear").addEventListener("click", () => {
     state.filter.clusters.clear();
     state.filter.roles.clear();
     state.filter.ipTypes.clear();
+    state.filter.labels.clear();
     updateFilterControls();
     if (state.result?.reports?.length) {
       renderStepDetail();

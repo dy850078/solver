@@ -307,9 +307,21 @@ function applyFieldEdit(el) {
     if (!row) return;
     row[f] = value;
   }
-  // Spec names feed every group dropdown; step names feed nothing visual.
-  if (sec === "specs" && f === "name") renderForm();
-  else renderSummary();
+  // Spec names feed every group dropdown. Rebuilding the form on every
+  // keystroke would yank the focus out of the name field, so while typing
+  // only the matching <option> labels are rewritten in place; the full
+  // rebuild happens when the field commits (`change`, see initForm).
+  if (sec === "specs" && f === "name") refreshSpecOptionLabels(i);
+  renderSummary();
+}
+
+function refreshSpecOptionLabels(specIdx) {
+  const s = state.specs[specIdx];
+  if (!s) return;
+  for (const sel of document.querySelectorAll('#builder select[data-f="specIdx"]')) {
+    const opt = sel.querySelector(`option[value="${specIdx}"]`);
+    if (opt) opt.textContent = specOptionLabel(s);
+  }
 }
 
 function handleAction(action, i, stepIdx) {
@@ -995,7 +1007,10 @@ export function initForm(onChange) {
   });
   root.addEventListener("change", (e) => {
     const el = e.target;
-    if (el.dataset?.s && el.tagName === "SELECT") { applyFieldEdit(el); onChange?.(); }
+    if (el.dataset?.s && el.tagName === "SELECT") { applyFieldEdit(el); onChange?.(); return; }
+    // A spec name committed (blur / Enter): now rebuild so every dropdown
+    // and summary reflects it exactly — safe, nothing is being typed.
+    if (el.dataset?.s === "specs" && el.dataset.f === "name") renderForm();
   });
   root.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-act]");

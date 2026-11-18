@@ -19,6 +19,14 @@ const SYNTH_ID_RE = /^split-r(\d+)-s\d+-\d+$/;
 const NO_CLUSTER = "(no cluster)";
 const NO_ROLE = "(no role)";
 const NO_IP = "(no ip)";
+const NO_LABELS = "(no labels)";
+
+/** A VM's labels as filter values: one "key=value" per pair, or the
+ *  "(no labels)" sentinel so unlabeled VMs can be picked out too. */
+export function labelValues(vm) {
+  const pairs = Object.entries(vm?.labels || {}).map(([k, v]) => `${k}=${v}`);
+  return pairs.length ? pairs : [NO_LABELS];
+}
 
 /** Returns a VM-like object with cluster_id / node_role / ip_type fields, or null. */
 export function lookupVm(vmId, request) {
@@ -46,13 +54,17 @@ export function lookupVm(vmId, request) {
   return null;
 }
 
-/** Filter state shape: { clusters: Set, roles: Set, ipTypes: Set }.
- *  An empty set on a dimension means "no filter on this dimension".
+/** Filter state shape: { clusters: Set, roles: Set, ipTypes: Set, labels: Set }.
+ *  An empty set on a dimension means "no filter on this dimension"; values
+ *  within a dimension are OR'd, dimensions are AND'd. `labels` holds
+ *  "key=value" strings (or "(no labels)"); a VM passes when ANY of its pairs
+ *  is selected. `labels` may be absent on older callers.
  */
 export function isFilterActive(filter) {
   return (filter?.clusters?.size ?? 0)
        + (filter?.roles?.size ?? 0)
-       + (filter?.ipTypes?.size ?? 0) > 0;
+       + (filter?.ipTypes?.size ?? 0)
+       + (filter?.labels?.size ?? 0) > 0;
 }
 
 export function matchesFilter(vm, filter) {
@@ -63,6 +75,7 @@ export function matchesFilter(vm, filter) {
   if (filter.clusters.size > 0 && !filter.clusters.has(cluster)) return false;
   if (filter.roles.size > 0 && !filter.roles.has(role)) return false;
   if (filter.ipTypes.size > 0 && !filter.ipTypes.has(ip)) return false;
+  if ((filter.labels?.size ?? 0) > 0 && !labelValues(vm).some((p) => filter.labels.has(p))) return false;
   return true;
 }
 
@@ -97,13 +110,15 @@ export function applyFilter(result, request, filter) {
 }
 
 /** Enumerate available values for each filter dimension and count VMs.
- *  Returns { clusters, roles, ipTypes } where each value is a Map<value, count>.
- *  Counts include assignments + unplaced VMs.
+ *  Returns { clusters, roles, ipTypes, labels } where each value is a
+ *  Map<value, count>. Counts include assignments + unplaced VMs; a VM with
+ *  two labels counts once under each "key=value".
  */
 export function buildFilterOptions(request, result) {
   const clusters = new Map();
   const roles = new Map();
   const ipTypes = new Map();
+  const labels = new Map();
 
   const bump = (m, k) => m.set(k, (m.get(k) ?? 0) + 1);
 
@@ -112,10 +127,11 @@ export function buildFilterOptions(request, result) {
     bump(clusters, vm?.cluster_id || NO_CLUSTER);
     bump(roles, vm?.node_role || NO_ROLE);
     bump(ipTypes, vm?.ip_type || NO_IP);
+    for (const p of labelValues(vm)) bump(labels, p);
   };
 
   for (const a of result.assignments ?? []) consider(a.vm_id);
   for (const id of result.unplaced_vms ?? []) consider(id);
 
-  return { clusters, roles, ipTypes };
+  return { clusters, roles, ipTypes, labels };
 }
