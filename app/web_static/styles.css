@@ -975,6 +975,8 @@ html[data-theme="dark"] .vm-chip:hover { filter: brightness(1.15); }
 }
 .table tr:last-child td { border-bottom: none; }
 .table th.num, .table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* VM labels column (demand / rollout placement matrix, ADR-021) */
+.table .labels-cell { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-muted); }
 .table tr:hover td { background: var(--bg-hover); }
 .table .cell-mono {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;

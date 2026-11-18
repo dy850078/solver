@@ -15,15 +15,44 @@
 }
 #builder .derive-row .btn--add { width: auto; height: 30px; }
 
-/* Demand row: two lines + a preview line */
-#builder .frow--demand-top { grid-template-columns: 1.2fr 1.2fr 0.9fr auto auto; align-items: end; }
+/* The PM form is the densest sidebar: give it more room by default (the
+   drag handle / saved width still win). */
+:root { --sidebar-w: 480px; }
+
+/* Demand row: identity + size by default, an advanced line when the
+   section toggle is on, then the preview line (with chips for hidden
+   fields that hold a value). Cluster gets the widest column: names like
+   prod-taipei-datacenter-cluster-01 are the norm. */
+#builder .frow--demand-top { grid-template-columns: 1.7fr 1fr 0.65fr auto auto; align-items: end; }
 #builder .frow--demand-mid { grid-template-columns: 1.3fr 1.2fr 0.8fr; align-items: end; }
-#builder .frow--demand-bot { grid-template-columns: 0.9fr 1fr 1.2fr; align-items: end; }
+#builder .frow--demand-bot { grid-template-columns: 0.7fr 0.9fr 1fr 1.4fr; align-items: end; }
 #builder .frow--demand-mid .segmented { min-width: 0; }
+#builder .mini .input, #builder .mini .select { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 #builder .demand-preview {
   font-size: 11px; color: var(--text-subtle); font-variant-numeric: tabular-nums;
-  display: flex; gap: 10px; flex-wrap: wrap;
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
 }
+#builder .demand-chips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+#builder .demand-chip {
+  display: inline-block; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border-base); background: var(--bg-surface);
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; color: var(--text-muted);
+  max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#builder .subhead--row { display: flex; align-items: baseline; gap: 8px; }
+#builder .subhead--row .muted { flex: 1 1 auto; min-width: 0; }
+#builder .subhead__toggle {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 400;
+  text-transform: none; letter-spacing: 0; color: var(--text-muted); cursor: pointer; white-space: nowrap;
+}
+#builder .subhead__toggle input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
+/* Long names never dictate layout: truncate, keep the full name in title. */
+#builder .pick-name {
+  display: inline-block; max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom;
+}
+#builder .order-row__name { min-width: 0; }
+#builder .order-row__name .muted { font-size: 11px; }
 #builder .demand-preview b { color: var(--text-muted); font-weight: 600; }
 #builder .demand-preview .warn { color: var(--warning, #b7791f); }
 #builder .segmented--mini label { padding: 4px 8px; font-size: 11px; }
@@ -42,7 +71,8 @@
 
 /* Policy */
 #builder .frow--policy { grid-template-columns: 1fr 1fr; align-items: end; }
-#builder .excl-picks { margin-top: 4px; }
+#builder .excl-picks, #builder .glabel-picks { margin-top: 4px; }
+#builder .glabel-picks code { font-size: 11px; }
 
 /* Build order list */
 #builder .order-row {
@@ -55,7 +85,7 @@
 
 /* Results */
 .group-table td.pool { font-weight: 600; }
-.group-table .clusters { color: var(--text-muted); font-size: 12px; }
+.group-table .clusters { color: var(--text-muted); font-size: 12px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adv-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .adv-list li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; font-size: 12.5px; }
 .adv-chip {
@@ -66,11 +96,26 @@
 .adv-chip--info { background: var(--accent-soft); color: var(--accent); }
 .step-strip--mini { margin-bottom: 12px; }
 .step-strip--mini .step-cell { cursor: default; }
-.layout-entries { display: flex; flex-wrap: wrap; gap: 4px; }
-#layout-content td.cell-mono { white-space: nowrap; }
-#layout-content td:nth-child(3), #layout-content td:nth-child(4) { white-space: nowrap; }
+/* Machine layouts: content never widens the table. Every column but VMs
+   is nowrap and narrow; the VMs column gets the remaining width and wraps
+   its pills, each pill capped in width (ellipsis, full text in the title);
+   stock cells stack the number over the meter. Below ~760px the card
+   scrolls horizontally instead of clipping. */
+#layout-content { overflow-x: auto; }
+.layout-table { width: 100%; min-width: 640px; }
+.layout-table th, .layout-table td { white-space: nowrap; vertical-align: top; padding: 9px 12px; }
+.layout-table td.machine { max-width: 190px; }
+.layout-table td.machine > span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.layout-table .machine__where { font-size: 11px; margin-top: 2px; }
+.layout-table th.vms, .layout-table td.vms { white-space: normal; width: 50%; min-width: 220px; }
+.layout-table .stock-cell { font-size: 12px; }
+.layout-table .stock-cell .stock-meter { display: block; margin: 4px 0 0; width: 72px; }
+.layout-entries { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+/* inline-block (not inline-flex) so text-overflow can ellipsize a pill that
+   is wider than the cap; the full text is in the title. */
 .layout-entry {
-  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; white-space: nowrap;
+  display: inline-block; max-width: 240px; box-sizing: border-box; line-height: 18px; padding: 0 7px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   border-radius: var(--radius-full); font-size: 11px; background: var(--bg-subtle);
   border: 1px solid var(--border-base); font-variant-numeric: tabular-nums;
 }
@@ -89,5 +134,13 @@
 
 /* Legacy pipeline export */
 #legacy-json.editor--legacy { min-height: 220px; max-height: 420px; font-size: 12px; }
+.legacy-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 8px; }
+.legacy-fields .mini__label { font-size: 10.5px; color: var(--text-subtle); }
+.legacy-fields label {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace); cursor: pointer;
+}
+.legacy-fields label.is-muted { opacity: 0.55; }
+.legacy-fields input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
 .legacy-hint { font-size: 11.5px; margin: 8px 0 0; }
 #legacy-card .toolbar { gap: 6px; }

@@ -238,16 +238,23 @@ Go scheduler 在 request 中傳入的 `anti_affinity_rules`：
 
 #### (b) 自動生成規則
 
-當 `config.auto_generate_anti_affinity = true`（預設）時，solver 自動為具有相同 `(cluster_id, ip_type, node_role)` 的 VM 群組產生規則。
+當 `config.auto_generate_anti_affinity = true`（預設）時，solver 自動為具有相同分組 key 的 VM 群組產生規則。
 
-**Grouping key**：`(cluster_id, ip_type, node_role)`
+**Grouping key**：`(cluster_id, ip_type, node_role)` + 每個 `config.auto_group_labels` 裡的 key 一對 `(key, vm.labels.get(key, ""))`（ADR-021；`SolverConfig.auto_group_key` 是唯一定義，`sizing_floors.headcount_floor` 共用）。預設 `auto_group_labels=[]` 時就是傳統的三元組。
 
 ```
 cluster-A / routable / master    → 一組
 cluster-A / routable / learner   → 另一組（master / learner 天然分群）
 cluster-A / routable / worker    → 一組
 cluster-B / non-routable / infra → 一組
+
+auto_group_labels=["dedicated"] 時，以值再切細：
+cluster-A / routable / worker / dedicated=AAA → 一組（id auto/A/routable/worker/dedicated=AAA）
+cluster-A / routable / worker / dedicated=BBB → 另一組
+cluster-A / routable / worker / （沒有 dedicated ≡ dedicated=""）→ 第三組（id …/dedicated=）
 ```
+
+沒被列入 `auto_group_labels` 的 label 只跟著 VM 走、不切群；label 只能把同一個三元組切細，永遠不會把不同 role / cluster 合併。
 
 > **為什麼包含 `cluster_id`?**
 > 同一台 BM 環境若同時部署多個 cluster，舊版只用 `(ip_type, node_role)` 會把
@@ -420,9 +427,9 @@ cap_room = ⌈4/2⌉ = 2
 
 #### (b) 自動生成規則
 
-開啟 `config.auto_generate_max_per_bm = true` 時，solver 對具有相同
-`(cluster_id, ip_type, node_role)` 的 VM 群組（大小 ≥ 2）產生規則，每條規則
-套用 `config.default_max_per_bm`。
+開啟 `config.auto_generate_max_per_bm = true` 時，solver 對具有相同分組 key
+（與 C3 相同：`(cluster_id, ip_type, node_role)` + `auto_group_labels` 的 label 值，
+見 C3 (b)）的 VM 群組（大小 ≥ 2）產生規則，每條規則套用 `config.default_max_per_bm`。
 
 **必要條件**：`auto_generate_max_per_bm=true` 時 `default_max_per_bm` 必須為正整數，
 否則 solver 回傳 `INPUT_ERROR`。
@@ -610,8 +617,8 @@ C3 限制 AG 層級的分佈；C4 限制單 BM 層級的分佈。兩者**獨立*
 → C4 在每個 AG 內部也禁止疊放在同一台 BM（本例每 AG 只放 1 個，本就成立）
 ```
 
-若兩者同時 auto-gen，分組鍵都是 `(cluster_id, ip_type, node_role)`，所以同一群 VM
-會被兩條規則同時涵蓋——這是預期行為，不會衝突。
+若兩者同時 auto-gen，分組鍵都是 `SolverConfig.auto_group_key`（三元組 + 設定的
+label 值），所以同一群 VM 會被兩條規則同時涵蓋——這是預期行為，不會衝突。
 
 ### Partial Placement × C1
 
@@ -666,9 +673,10 @@ C3/C4 有 auto-gen；C6 沒有 — 獨占是明確的營運宣告，不做推斷
 | 參數 | 影響的約束 | 說明 |
 |------|-----------|------|
 | `allow_partial_placement` | C1 | `true`: `≤ 1`（允許不放），`false`: `== 1`（必須放） |
-| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生分散規則 |
+| `auto_generate_anti_affinity` | C3 | `true`: 自動按 `(cluster_id, ip_type, node_role)`（+ `auto_group_labels` 的 label 值）產生分散規則 |
+| `auto_group_labels` | C3 / C4 | `list[str]`，預設 `[]`：參與 auto 分組的 VM label key；每個 key 以 `(key, value)` 對加進分組 key，缺 key 視為 `""`（ADR-021） |
 | `target_spread` | C3 | `dict[str, int]`，鍵為維度名（如 `ag`/`room`），值為達標桶數；自動規則用其鍵集合作為 `spread_on`，無法達標時發 `spread_below_target` advisory |
-| `auto_generate_max_per_bm` | C4 | `true`: 自動按 `(cluster_id, ip_type, node_role)` 產生單 BM 上限規則（需設 `default_max_per_bm`） |
+| `auto_generate_max_per_bm` | C4 | `true`: 自動按 `(cluster_id, ip_type, node_role)`（+ `auto_group_labels` 的 label 值）產生單 BM 上限規則（需設 `default_max_per_bm`） |
 | `default_max_per_bm` | C4 | C4 auto-gen 時的預設上限；必為正整數 |
 | `candidate_baremetals`（per VM） | Eligible Pairs | 限定此 VM 只考慮指定的 BM |
 | `anti_affinity_rules`（per request） | C3 | 顯式分散規則（`spread_on` 必填、選填 `cap_per_bucket`） |

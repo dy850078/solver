@@ -630,7 +630,9 @@ if active_var is not None and solver.value(active_var) == 0:
     continue
 
 # _resolve_anti_affinity_rules：auto rule 只帶 spread_on（= config.target_spread 的 keys），
-# 不設 cap_per_bucket；synthetic 與否不在 rule 上做記號
+# 不設 cap_per_bucket；synthetic 與否不在 rule 上做記號。group_id 由
+# SolverConfig.auto_group_id("auto", key) 產生：`auto/{c}/{ip}/{role}`，有 label
+# 參與分組時再接 `/k=v[,k2=v2]`（ADR-021）——前綴 `auto/` 不可改，下方靠它判斷。
 rules.append(AntiAffinityRule(group_id="auto/...", vm_ids=vm_ids, spread_on=auto_spread_dims))
 
 # _add_anti_affinity_constraints：對每個 dim in spread_on、每個 bucket

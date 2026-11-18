@@ -8,7 +8,7 @@
  */
 
 import { listExamples, getExample, rollout, rolloutSize } from "./api.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, formatLabels } from "./util.js";
 import { initSidebarChrome } from "./sidebar.js";
 import { rebuildColorScale } from "./colors.js";
 import {
@@ -299,10 +299,14 @@ function renderMatrix() {
     if (!vm) continue;
     const ag = a.ag || bmById.get(a.baremetal_id)?.topology?.ag || "";
     agSet.add(ag);
-    const key = `${vm.cluster_id}\u0000${vm.node_role}\u0000${vm.ip_type ?? ""}`;
+    // Labels are part of the row key (ADR-021): dedicated=AAA workers and
+    // plain workers are separate node types, exactly as the server's
+    // placement_matrix splits them.
+    const labels = formatLabels(vm.labels, ",");
+    const key = `${vm.cluster_id}\u0000${vm.node_role}\u0000${vm.ip_type ?? ""}\u0000${labels}`;
     let row = rows.get(key);
     if (!row) {
-      row = { cluster: vm.cluster_id, role: vm.node_role, ip: vm.ip_type ?? "",
+      row = { cluster: vm.cluster_id, role: vm.node_role, ip: vm.ip_type ?? "", labels,
               n: 0, bms: new Set(), perAg: new Map() };
       rows.set(key, row);
     }
@@ -312,12 +316,15 @@ function renderMatrix() {
   }
   const ags = [...agSet].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
   const sorted = [...rows.values()].sort((x, y) =>
-    x.cluster.localeCompare(y.cluster) || x.role.localeCompare(y.role) || x.ip.localeCompare(y.ip));
+    x.cluster.localeCompare(y.cluster) || x.role.localeCompare(y.role) || x.ip.localeCompare(y.ip)
+    || x.labels.localeCompare(y.labels));
+  const showLabels = sorted.some((r) => r.labels);
   const body = sorted.map((r) => `
     <tr>
       <td>${escapeHtml(r.cluster)}</td>
       <td>${escapeHtml(r.role)}</td>
       <td class="muted">${escapeHtml(r.ip || "—")}</td>
+      ${showLabels ? `<td class="labels-cell">${escapeHtml(r.labels.replaceAll(",", ", ")) || "—"}</td>` : ""}
       ${ags.map((ag) => `<td class="num">${r.perAg.get(ag) ?? 0}</td>`).join("")}
       <td class="num"><strong>${r.n}</strong></td>
       <td class="num">${r.bms.size}</td>
@@ -326,7 +333,7 @@ function renderMatrix() {
   $("#matrix-content").innerHTML = `
     <table class="table">
       <thead><tr>
-        <th>Cluster</th><th>Node type</th><th>IP</th>
+        <th>Cluster</th><th>Node type</th><th>IP</th>${showLabels ? "<th>Labels</th>" : ""}
         ${ags.map((ag) => `<th class="num">${escapeHtml(ag || "—")}</th>`).join("")}
         <th class="num">VMs</th><th class="num">Distinct BMs</th>
       </tr></thead>

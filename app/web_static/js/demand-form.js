@@ -24,15 +24,27 @@
  * memory_mib (×1024).
  */
 
-import { escapeHtml as esc, formatGpu, parseGpu } from "./util.js";
+import { escapeHtml as esc, formatGpu, formatLabels, parseGpu, parseLabels } from "./util.js";
 
 const GiB = 1024;
 const ROLES = ["worker", "master", "learner", "infra", "l4lb-storage", "bastion"];
 const IP_OPTIONS = [
-  { value: "routable", label: "R · routable" },
-  { value: "non-routable", label: "NR · non-routable" },
-  { value: "", label: "— (any)" },
+  { value: "routable", label: "R" },
+  { value: "non-routable", label: "NR" },
+  { value: "", label: "— any" },
 ];
+const IP_TITLE = "IP type: R = routable, NR = non-routable, — = any";
+
+/* The demand row shows identity + size by default; the four rarely edited
+ * fields (≥ BMs, Step, Baremetal group, Labels) live behind the section's
+ * "Advanced fields" switch and surface as chips on the preview line
+ * whenever they hold a value, so a collapsed row still tells the truth. */
+const ADV_KEY = "solver-demand-advanced";
+export const ui = { showAdvanced: (() => { try { return localStorage.getItem(ADV_KEY) === "1"; } catch { return false; } })() };
+export function setShowAdvanced(on) {
+  ui.showAdvanced = !!on;
+  try { localStorage.setItem(ADV_KEY, on ? "1" : "0"); } catch { /* ignore */ }
+}
 
 export const state = {
   name: "",
@@ -40,7 +52,8 @@ export const state = {
   bmSpecs: [],   // {name, cpu, memGiB, disk, gpu:{model:n}}
   vmSpecs: [],   // same shape
   // {cluster, role, ip, spec(name), basis:"bm"|"vm", n, minDistinct:null|int,
-  //  step:"", group:"" ("" = the group that lists the cluster)}
+  //  step:"", group:"" ("" = the group that lists the cluster),
+  //  labels:{key: value} (k8s node labels, ADR-021)}
   demands: [],
   // {name, clusters:[...], bmSpec(name), fleetSize:null|int}
   groups: [],
@@ -48,8 +61,17 @@ export const state = {
   policy: { defaultMinDistinct: 6 },
   topo: { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 6, ags: 3 },
   buildOrder: [], // step names, reconciled against demands on every edit
-  cfg: { maxSolve: 10, autoAA: true, wHeadroom: 0, maxBaremetals: 200, maxProbes: 12, deadline: 120 },
+  // autoGroupLabels → config.auto_group_labels: the label keys whose values
+  // split the auto anti-affinity / max-per-BM groups. Only keys some demand
+  // row uses are sent.
+  cfg: { maxSolve: 10, autoAA: true, wHeadroom: 0, maxBaremetals: 200, maxProbes: 12, deadline: 120,
+         autoGroupLabels: [] },
+  // Label keys that have appeared on a row at least once: `dedicated` is
+  // ticked the FIRST time it shows up; after that the user's choice stands.
+  seenLabelKeys: [],
 };
+
+const AUTO_TICK_LABELS = ["dedicated"];
 
 const blank = {
   bm: () => ({ name: `bm-${state.bmSpecs.length + 1}`, cpu: 90, memGiB: 720, disk: 6000, gpu: {} }),
@@ -57,6 +79,7 @@ const blank = {
   demand: () => ({
     cluster: `cluster-${state.demands.length + 1}`, role: "worker", ip: "routable",
     spec: state.vmSpecs[0]?.name ?? "", basis: "bm", n: 5, minDistinct: null, step: "", group: "",
+    labels: {},
   }),
   group: () => ({ name: `pool-${state.groups.length + 1}`, clusters: [], bmSpec: state.bmSpecs[0]?.name ?? "", fleetSize: null }),
 };
@@ -92,6 +115,26 @@ export function clusterNames() {
 function stepNames() {
   return [...new Set(state.demands.map((d) => (d.step || d.cluster).trim()).filter(Boolean))];
 }
+
+/** Every label key some demand row carries, sorted. */
+export function labelKeysInUse() {
+  return [...new Set(state.demands.flatMap((d) => Object.keys(d.labels || {})))].sort();
+}
+
+/** Record newly seen label keys; auto-tick the well-known ones once. */
+function noteLabelKeys() {
+  for (const k of labelKeysInUse()) {
+    if (state.seenLabelKeys.includes(k)) continue;
+    state.seenLabelKeys.push(k);
+    if (AUTO_TICK_LABELS.includes(k) && !state.cfg.autoGroupLabels.includes(k)) {
+      state.cfg.autoGroupLabels.push(k);
+    }
+  }
+}
+
+/** Demand identity as the server sees it: cluster, ip, role AND labels. */
+const demandKey = (d) =>
+  `${d.cluster.trim()}\u0000${d.ip}\u0000${(d.role.trim() || "worker")}\u0000${formatLabels(d.labels, ",")}`;
 
 function groupOf(cluster) {
   return state.groups.find((g) => g.clusters.includes(cluster)) ?? null;
@@ -175,14 +218,14 @@ const txt = (sec, i, f, v, label, ph = "", extra = "") =>
 
 const combo = (sec, i, f, v, label, listId) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
-    <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}" pattern="[\\w.\\-]+" ${bind(sec, i, f)}></label>`;
+    <input class="input" type="text" list="${listId}" value="${esc(v ?? "")}" title="${esc(v ?? "")}" pattern="[\\w.\\-]+" ${bind(sec, i, f)}></label>`;
 
 const num = (sec, i, f, v, label, { min = 0, ph = "" } = {}) =>
   `<label class="mini"><span class="mini__label">${esc(label)}</span>
     <input class="input" type="number" min="${min}" value="${v ?? ""}" placeholder="${esc(ph)}" ${bind(sec, i, f)}></label>`;
 
-const pick = (sec, i, f, v, label, options) =>
-  `<label class="mini"><span class="mini__label">${esc(label)}</span>
+const pick = (sec, i, f, v, label, options, title = "") =>
+  `<label class="mini" ${title ? `title="${esc(title)}"` : ""}><span class="mini__label">${esc(label)}</span>
     <select class="select" ${bind(sec, i, f)}>${options.map((o) =>
       `<option value="${esc(o.value)}"${String(o.value) === String(v) ? " selected" : ""}>${esc(o.label)}</option>`,
     ).join("")}</select></label>`;
@@ -206,6 +249,19 @@ function catRow(sec, s, i, delAct) {
   </div></div>`;
 }
 
+/** Chips for the advanced fields that hold a value — the collapsed row's
+ * summary of what the hidden fields say. */
+function demandChips(d) {
+  const chips = [];
+  if (d.minDistinct !== null && d.minDistinct !== undefined) chips.push(["≥ BMs", `≥${d.minDistinct} BMs`]);
+  if (d.step.trim()) chips.push(["Step", `step: ${d.step.trim()}`]);
+  if (d.group) chips.push(["Baremetal group", `pool: ${d.group}`]);
+  for (const [k, v] of Object.entries(d.labels || {}).sort(([a], [b]) => a.localeCompare(b))) {
+    chips.push(["Label", `${k}=${v}`]);
+  }
+  return chips.map(([t, text]) => `<span class="demand-chip" title="${esc(t)}">${esc(text)}</span>`).join("");
+}
+
 function demandRow(d, i) {
   const p = previewDemand(d);
   const preview = p.ok === false && p.text
@@ -214,6 +270,7 @@ function demandRow(d, i) {
        <span><b>${p.count}</b> VM(s)</span>
        <span><b>${p.n}</b> equivalent BM(s)</span>
        ${(p.warn || []).map((w) => `<span class="warn">⚠ ${esc(w)}</span>`).join("")}`;
+  const chips = ui.showAdvanced ? "" : demandChips(d);
   // NOT a <label>: the segmented control holds its own <label>s and a
   // nested label would re-activate the first radio on every click.
   const basis = `<div class="mini"><span class="mini__label">Count as</span>
@@ -223,11 +280,22 @@ function demandRow(d, i) {
     </div></div>`;
   const groupOpts = [{ value: "", label: "(cluster's group)" },
     ...state.groups.map((g) => ({ value: g.name, label: g.name }))];
+  const advanced = !ui.showAdvanced ? "" : `
+    <div class="frow frow--demand-bot">
+      ${num("demands", i, "minDistinct", d.minDistinct, "≥ BMs", { min: 0, ph: `${state.policy.defaultMinDistinct ?? 0}` })}
+      ${txt("demands", i, "step", d.step, "Step", "= cluster",
+        `title="Rows sharing a step name are placed in ONE solve; different names are built one after another (later steps see earlier placements as pinned). Blank = the cluster id."`)}
+      ${state.groups.length
+        ? pick("demands", i, "group", d.group, "Baremetal group", groupOpts)
+        : `<div class="mini"><span class="mini__label">Baremetal group</span><span class="muted" style="font-size:12px;padding:6px 0">single shared pool</span></div>`}
+      ${txt("demands", i, "labels", formatLabels(d.labels), "Labels", "dedicated=AAA, tier=gold",
+        `title="k8s node labels these VMs carry, key=value separated by commas. Rows that differ only in labels are separate node types. Tick a key under Policy to make its values spread independently (auto anti-affinity / max-per-BM)."`)}
+    </div>`;
   return `<div class="frow-card">
     <div class="frow frow--demand-top">
       ${combo("demands", i, "cluster", d.cluster, "Cluster", "cluster-options")}
       ${combo("demands", i, "role", d.role, "Node type", "role-options")}
-      ${pick("demands", i, "ip", d.ip, "IP", IP_OPTIONS)}
+      ${pick("demands", i, "ip", d.ip, "IP", IP_OPTIONS, IP_TITLE)}
       ${act("demand-dup", i, "⧉", "Duplicate")}
       ${act("demand-del", i, "✕", "Delete", "row-act--del")}
     </div>
@@ -235,16 +303,8 @@ function demandRow(d, i) {
       ${pick("demands", i, "spec", d.spec, "VM spec", specOpts())}
       ${basis}
       ${num("demands", i, "n", d.n, d.basis === "vm" ? "VM count" : "BM count", { min: 1 })}
-    </div>
-    <div class="frow frow--demand-bot">
-      ${num("demands", i, "minDistinct", d.minDistinct, "≥ BMs", { min: 0, ph: `default ${state.policy.defaultMinDistinct ?? 0}` })}
-      ${txt("demands", i, "step", d.step, "Step", "= cluster",
-        `title="Rows sharing a step name are placed in ONE solve; different names are built one after another (later steps see earlier placements as pinned). Blank = the cluster id."`)}
-      ${state.groups.length
-        ? pick("demands", i, "group", d.group, "Baremetal group", groupOpts)
-        : `<div class="mini"><span class="mini__label">Baremetal group</span><span class="muted" style="font-size:12px;padding:6px 0">single shared pool</span></div>`}
-    </div>
-    <div class="demand-preview">${preview}</div>
+    </div>${advanced}
+    <div class="demand-preview">${preview}${chips ? `<span class="demand-chips">${chips}</span>` : ""}</div>
   </div>`;
 }
 
@@ -254,17 +314,17 @@ function groupCard(g, i) {
     ? all.map((c) => {
       const owner = groupOf(c);
       const taken = owner && owner !== g;
-      return `<label class="${taken ? "is-taken" : ""}" title="${taken ? `in group ${esc(owner.name)}` : ""}">
+      return `<label class="${taken ? "is-taken" : ""}" title="${esc(taken ? `${c} — in group ${owner.name}` : c)}">
         <input type="checkbox" data-gpick="${i}" data-cluster="${esc(c)}"
           ${g.clusters.includes(c) ? "checked" : ""} ${taken ? "disabled" : ""}>
-        <span>${esc(c)}</span></label>`;
+        <span class="pick-name">${esc(c)}</span></label>`;
     }).join("")
     : `<p class="picks-hint">Add demands first — clusters appear here.</p>`;
   const sigma = groupEquivalents(g);
   const hosted = state.demands.filter((d) => groupOfDemand(d) === g);
   const viaOverride = hosted.filter((d) => d.group === g.name && !g.clusters.includes(d.cluster.trim()));
   const byDefault = hosted.filter((d) => !viaOverride.includes(d));
-  const rowLabel = (d) => `${esc(d.cluster || "?")}/${esc(d.role || "?")}`;
+  const rowLabel = (d) => `<span class="pick-name" title="${esc(`${d.cluster || "?"}/${d.role || "?"}`)}">${esc(d.cluster || "?")}/${esc(d.role || "?")}</span>`;
   return `<div class="frow-card step-card">
     <div class="frow frow--group-head">
       ${txt("groups", i, "name", g.name, "Group")}
@@ -284,9 +344,9 @@ function groupCard(g, i) {
 function policyCard() {
   const all = clusterNames();
   const excl = all.length
-    ? all.map((c) => `<label>
+    ? all.map((c) => `<label title="${esc(c)}">
         <input type="checkbox" data-excl="${esc(c)}" ${state.exclusive.includes(c) ? "checked" : ""}>
-        <span>${esc(c)}</span></label>`).join("")
+        <span class="pick-name">${esc(c)}</span></label>`).join("")
     : `<p class="picks-hint">No clusters yet.</p>`;
   return `<div class="frow-card">
     <div class="frow frow--policy">
@@ -297,6 +357,12 @@ function policyCard() {
     </div>
     <span class="mini__label">Exclusive clusters <span class="muted">— one VM per machine, nobody else on it (C6)</span></span>
     <div class="cluster-picks excl-picks">${excl}</div>
+    <span class="mini__label" style="margin-top:4px">Spread-grouping labels <span class="muted">— ticked keys split auto anti-affinity / max-per-BM groups by value (dedicated=AAA, dedicated=BBB and "no dedicated" spread independently)</span></span>
+    <div class="cluster-picks glabel-picks">${labelKeysInUse().length
+      ? labelKeysInUse().map((k) => `<label>
+          <input type="checkbox" data-glabel="${esc(k)}" ${state.cfg.autoGroupLabels.includes(k) ? "checked" : ""}>
+          <span>${esc(k)}</span></label>`).join("")
+      : `<p class="picks-hint">No labels yet — add <code>key=value</code> on a demand row.</p>`}</div>
     <span class="mini__label" style="margin-top:4px">Topology <span class="muted">— racks fan out over AGs; counts of 1 collapse that dimension</span></span>
     <div class="frow frow--topo">
       ${TOPO_DIMS.map(([k, label]) => `<label class="mini"><span class="mini__label">${label}</span>
@@ -310,10 +376,16 @@ function orderRows() {
   if (!state.buildOrder.length) return `<p class="form-empty">Steps follow from the demands (one per cluster unless a row names a step).</p>`;
   return state.buildOrder.map((name, i) => {
     const members = state.demands.filter((d) => (d.step || d.cluster).trim() === name);
-    const detail = members.map((d) => `${d.cluster}/${d.role}`).join(", ");
+    // The step name usually IS the cluster: list only the roles then, and
+    // prefix the cluster only where it differs (a named multi-cluster step).
+    const detail = members.map((d) => {
+      const lbl = formatLabels(d.labels, ",");
+      const role = `${d.role}${lbl ? `[${lbl}]` : ""}`;
+      return d.cluster.trim() === name ? role : `${d.cluster}/${role}`;
+    }).join(", ");
     return `<div class="order-row">
       <span class="step-card__seq">${i + 1}</span>
-      <span>${esc(name)} <span class="muted">${esc(detail)}</span></span>
+      <span class="order-row__name"><span class="pick-name" title="${esc(name)}">${esc(name)}</span> <span class="muted">${esc(detail)}</span></span>
       ${act("order-up", i, "↑", "Earlier", "", i === 0 ? "disabled" : "")}
       ${act("order-down", i, "↓", "Later", "", i === state.buildOrder.length - 1 ? "disabled" : "")}
     </div>`;
@@ -347,6 +419,8 @@ export function renderForm() {
   $("#demand-rows").innerHTML = state.demands.length
     ? state.demands.map(demandRow).join("")
     : `<p class="form-empty">No demands yet.</p>`;
+  const adv = $("#demand-advanced");
+  if (adv) adv.checked = ui.showAdvanced;
   $("#group-rows").innerHTML = state.groups.length
     ? state.groups.map(groupCard).join("")
     : `<p class="form-empty">No groups — every cluster shares one pool on the first machine model.</p>`;
@@ -424,6 +498,13 @@ function applyFieldEdit(el) {
     else if (f === "basis") { row.basis = el.value; return "rerender"; }
     else if (f === "step") { row.step = el.value.trim(); return "deferred"; }
     else if (f === "group") { row.group = el.value; return "rerender"; }
+    else if (f === "labels") {
+      // Deferred like names: the Policy card (label-key checkboxes) is
+      // rebuilt when the text field commits, not under the cursor.
+      row.labels = parseLabels(el.value);
+      noteLabelKeys();
+      return "deferred";
+    }
     else row[f] = el.value;
     return "preview";
   }
@@ -460,7 +541,7 @@ function handleAction(action, i) {
       break;
     }
     case "demand-add": state.demands.push(blank.demand()); break;
-    case "demand-dup": state.demands.splice(i + 1, 0, { ...state.demands[i] }); break;
+    case "demand-dup": state.demands.splice(i + 1, 0, { ...state.demands[i], labels: { ...(state.demands[i].labels || {}) } }); break;
     case "demand-del": state.demands.splice(i, 1); break;
     case "group-add": state.groups.push(blank.group()); break;
     case "group-del": {
@@ -508,9 +589,18 @@ export function buildRequest({ withMeta = false } = {}) {
   dup(state.vmSpecs.map((v) => v.name.trim()), "VM specs");
   dup(state.groups.map((g) => g.name.trim()), "Groups");
   const specNames = new Set(state.vmSpecs.map((v) => v.name.trim()));
+  const seenDemands = new Map();
   for (const d of state.demands) {
     if (!d.cluster.trim()) throw new Error("Every demand needs a cluster id.");
     if (!specNames.has(d.spec)) throw new Error(`Demand ${d.cluster}/${d.role}: pick a VM spec.`);
+    // Mirrors the server's duplicate check (cluster, ip, role, labels): two
+    // rows with the same triple but different labels are two node types.
+    const key = demandKey(d);
+    if (seenDemands.has(key)) {
+      const lbl = formatLabels(d.labels);
+      throw new Error(`Duplicate demand ${d.cluster}/${d.ip || "*"}/${d.role}${lbl ? ` [${lbl}]` : ""} — merge the rows, or give one of them different labels (e.g. dedicated=AAA) to make it a separate node type.`);
+    }
+    seenDemands.set(key, d);
   }
   if (state.groups.length) {
     const seen = new Map();
@@ -541,6 +631,7 @@ export function buildRequest({ withMeta = false } = {}) {
       if (d.minDistinct !== null && d.minDistinct !== undefined) out.min_distinct_bms = d.minDistinct;
       if (d.step.trim()) out.step = d.step.trim();
       if (d.group) out.group = d.group;
+      if (Object.keys(d.labels || {}).length) out.labels = { ...d.labels };
       return out;
     }),
     groups: state.groups.map((g) => {
@@ -556,6 +647,7 @@ export function buildRequest({ withMeta = false } = {}) {
       max_solve_time_seconds: state.cfg.maxSolve,
       auto_generate_anti_affinity: state.cfg.autoAA,
       w_headroom: state.cfg.wHeadroom,
+      auto_group_labels: state.cfg.autoGroupLabels.filter((k) => labelKeysInUse().includes(k)),
     },
     max_baremetals: state.cfg.maxBaremetals,
     max_probes: state.cfg.maxProbes,
@@ -588,6 +680,7 @@ export function loadIntoForm(req) {
     minDistinct: d.min_distinct_bms ?? null,
     step: d.step ?? "",
     group: d.group ?? "",
+    labels: { ...(d.labels || {}) },
   }));
   state.groups = (req.groups ?? []).map((g) => ({
     name: g.name, clusters: uniq(g.clusters ?? []), bmSpec: g.bm_spec, fleetSize: g.fleet_size ?? null,
@@ -601,6 +694,10 @@ export function loadIntoForm(req) {
   state.cfg.maxSolve = Number(c.max_solve_time_seconds ?? 10);
   state.cfg.autoAA = c.auto_generate_anti_affinity ?? true;
   state.cfg.wHeadroom = Number(c.w_headroom ?? 0);
+  // A template is explicit about its grouping keys: take them as-is and
+  // treat every key it uses as already seen (no auto-tick on load).
+  state.cfg.autoGroupLabels = uniq(c.auto_group_labels ?? []);
+  state.seenLabelKeys = labelKeysInUse();
   state.cfg.maxBaremetals = Number(req.max_baremetals ?? 200);
   state.cfg.maxProbes = Number(req.max_probes ?? 12);
   state.cfg.deadline = Number(req.deadline_seconds ?? 120);
@@ -615,13 +712,15 @@ export function resetForm() {
   state.exclusive = []; state.policy.defaultMinDistinct = 6;
   state.topo = { sites: 1, phases: 1, datacenters: 1, rooms: 1, racks: 6, ags: 3 };
   state.buildOrder = [];
-  state.cfg = { maxSolve: 10, autoAA: true, wHeadroom: 0, maxBaremetals: 200, maxProbes: 12, deadline: 120 };
+  state.cfg = { maxSolve: 10, autoAA: true, wHeadroom: 0, maxBaremetals: 200, maxProbes: 12, deadline: 120,
+                autoGroupLabels: [] };
+  state.seenLabelKeys = [];
   // A useful blank: one 90/720 model, its half and third, and one demand.
   state.bmSpecs.push({ name: "bm-90-720", cpu: 90, memGiB: 720, disk: 6000, gpu: {} });
   state.vmSpecs.push({ name: "full", cpu: 90, memGiB: 720, disk: 6000, gpu: {} });
   state.vmSpecs.push({ name: "half", cpu: 45, memGiB: 360, disk: 3000, gpu: {} });
   state.vmSpecs.push({ name: "third", cpu: 30, memGiB: 240, disk: 2000, gpu: {} });
-  state.demands.push({ cluster: "cluster-1", role: "worker", ip: "routable", spec: "half", basis: "bm", n: 6, minDistinct: null, step: "", group: "" });
+  state.demands.push({ cluster: "cluster-1", role: "worker", ip: "routable", spec: "half", basis: "bm", n: 6, minDistinct: null, step: "", group: "", labels: {} });
   renderForm();
 }
 
@@ -637,6 +736,7 @@ export function initForm(onChange) {
     if (el.id === "cfg-max-solve") { state.cfg.maxSolve = Number(el.value) || 10; onChange?.(); return; }
     if (el.id === "cfg-headroom") { state.cfg.wHeadroom = Math.max(0, Number(el.value) || 0); renderPreviews(); onChange?.(); return; }
     if (el.id === "cfg-auto-aa") { state.cfg.autoAA = el.checked; renderPreviews(); onChange?.(); return; }
+    if (el.id === "demand-advanced") { setShowAdvanced(el.checked); renderForm(); return; }
     if (el.id === "cfg-max-bm") { state.cfg.maxBaremetals = Number(el.value) || 200; onChange?.(); return; }
     if (el.id === "cfg-max-probes") { state.cfg.maxProbes = Number(el.value) || 12; onChange?.(); return; }
     if (el.id === "cfg-deadline") { state.cfg.deadline = Number(el.value) || 120; onChange?.(); return; }
@@ -660,6 +760,13 @@ export function initForm(onChange) {
         ? [...new Set([...state.exclusive, c])]
         : state.exclusive.filter((x) => x !== c);
       renderPreviews(); onChange?.(); return;
+    }
+    if (el.dataset?.glabel !== undefined) {
+      const k = el.dataset.glabel;
+      state.cfg.autoGroupLabels = el.checked
+        ? [...new Set([...state.cfg.autoGroupLabels, k])]
+        : state.cfg.autoGroupLabels.filter((x) => x !== k);
+      onChange?.(); return;
     }
     if (!el.dataset?.s) return;
     if (el.type === "radio") return; // handled on `change`

@@ -23,6 +23,7 @@ the report never fails on an unnamed spec.
 from __future__ import annotations
 
 from collections import OrderedDict
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -30,7 +31,7 @@ from .models import VM, Baremetal, PlacementAssignment, Resources
 
 
 class PlacementMatrixRow(BaseModel):
-    """One (cluster, node_role, ip_type, spec) group and where it landed."""
+    """One (cluster, node_role, ip_type, labels, spec) group and where it landed."""
     cluster_id: str
     node_role: str
     ip_type: str
@@ -38,6 +39,7 @@ class PlacementMatrixRow(BaseModel):
     vm_count: int
     distinct_bms: int
     per_ag: dict[str, int] = Field(default_factory=dict)
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class BmLayoutEntry(BaseModel):
@@ -47,6 +49,7 @@ class BmLayoutEntry(BaseModel):
     node_role: str
     ip_type: str
     vm_spec: str
+    labels: dict[str, str] = Field(default_factory=dict)
 
 
 class BmLayout(BaseModel):
@@ -93,12 +96,17 @@ def placement_matrix(
     bms: list[Baremetal],
     spec_catalog: dict[str, Resources] | None = None,
 ) -> list[PlacementMatrixRow]:
-    """Group placements by (cluster, role, ip_type, spec); count VMs,
-    distinct machines and VMs per AG. Rows sorted by key for stable output.
-    Assignments whose VM or BM is not in the given lists are skipped."""
-    groups: dict[tuple[str, str, str, str], dict] = OrderedDict()
+    """Group placements by (cluster, role, ip_type, labels, spec); count VMs,
+    distinct machines and VMs per AG. Rows sorted by key for stable output
+    (labels as a sorted item tuple — dicts don't sort). Assignments whose VM
+    or BM is not in the given lists are skipped."""
+    groups: dict[tuple, dict] = OrderedDict()
     for a, vm, bm in _index(assignments, vms, bms):
-        key = (vm.cluster_id, vm.node_role, vm.ip_type, spec_name_of(vm.demand, spec_catalog))
+        key = (
+            vm.cluster_id, vm.node_role, vm.ip_type,
+            tuple(sorted(vm.labels.items())),
+            spec_name_of(vm.demand, spec_catalog),
+        )
         g = groups.setdefault(key, {"n": 0, "bms": set(), "ag": {}})
         g["n"] += 1
         g["bms"].add(bm.id)
@@ -108,7 +116,8 @@ def placement_matrix(
     for key in sorted(groups):
         g = groups[key]
         rows.append(PlacementMatrixRow(
-            cluster_id=key[0], node_role=key[1], ip_type=key[2], vm_spec=key[3],
+            cluster_id=key[0], node_role=key[1], ip_type=key[2],
+            labels=dict(key[3]), vm_spec=key[4],
             vm_count=g["n"], distinct_bms=len(g["bms"]),
             per_ag=dict(sorted(g["ag"].items())),
         ))
@@ -137,6 +146,7 @@ def bm_layouts(
             vm_id=vm.id, vm_hostname=vm.hostname or "", cluster_id=vm.cluster_id,
             node_role=vm.node_role, ip_type=vm.ip_type,
             vm_spec=spec_name_of(vm.demand, spec_catalog),
+            labels=dict(vm.labels),
         ))
         layout.used = layout.used + vm.demand
     out = list(by_bm.values())
@@ -170,18 +180,28 @@ def legacy_template(layouts: list[BmLayout]) -> dict[str, dict[str, list[dict[st
     Machines are numbered BM1…BMn within their pool in layout order;
     machines hosting nothing are left out. `routable` is R / NR, or "" when
     the VM has no ip_type. `cluster` lets a shared pool's rows be read per
-    cluster. The real machine behind each key is in legacy_bm_map().
+    cluster. A VM that carries labels (ADR-021) adds a fifth key,
+    `"labels": {"dedicated": "AAA"}`; unlabeled VMs keep the four keys
+    exactly, so documents without labels are byte-identical to before. The
+    UI lets the user drop columns before copying / downloading. The real
+    machine behind each key is in legacy_bm_map().
     """
-    out: dict[str, dict[str, list[dict[str, str]]]] = {}
+    out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for pool, numbered in _number_layouts(layouts).items():
-        doc: dict[str, list[dict[str, str]]] = {}
+        doc: dict[str, list[dict[str, Any]]] = {}
         for key, layout in numbered:
-            doc[key] = [{
-                "role": e.node_role,
-                "vm_spec": e.vm_spec,
-                "routable": IP_TYPE_LABELS.get(e.ip_type, e.ip_type or ""),
-                "cluster": e.cluster_id,
-            } for e in layout.entries]
+            rows: list[dict[str, Any]] = []
+            for e in layout.entries:
+                row: dict[str, Any] = {
+                    "role": e.node_role,
+                    "vm_spec": e.vm_spec,
+                    "routable": IP_TYPE_LABELS.get(e.ip_type, e.ip_type or ""),
+                    "cluster": e.cluster_id,
+                }
+                if e.labels:
+                    row["labels"] = dict(e.labels)
+                rows.append(row)
+            doc[key] = rows
         out[pool] = doc
     return out
 

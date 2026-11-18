@@ -1679,3 +1679,15 @@ class TestSelectorListForm:
         assert _selector_matches_req(sel, make_req(cpu=8, role="control-plane-learner"))
         assert not _selector_matches_req(sel, make_req(cpu=8, role="worker"))
         assert not _selector_matches_req(None, make_req(cpu=8, role="control-plane"))
+
+    def test_selector_matches_req_labels(self):
+        """Requirement labels follow the same missing-≡-"" rule as VMs."""
+        from app.capacity_planner import _selector_matches_req
+        aaa = make_req(cpu=8).model_copy(update={"labels": {"dedicated": "AAA"}})
+        plain = make_req(cpu=8)
+        sel = GroupSelector(labels={"dedicated": "AAA"})
+        assert _selector_matches_req(sel, aaa)
+        assert not _selector_matches_req(sel, plain)
+        none = GroupSelector(labels={"dedicated": ""})
+        assert _selector_matches_req(none, plain)
+        assert not _selector_matches_req(none, aaa)

@@ -79,7 +79,20 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   echo pins with `PlacementAssignment.pinned=True`; the scheduler marks on
   input and filters on output. Capacity-planner path rejects pins.
 - **Auto-generated rules** group VMs by the key `(cluster_id, ip_type, node_role)`
-  — both C3 (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
+  **+ one `(key, value)` pair per label key in `SolverConfig.auto_group_labels`**
+  (ADR-021; single source of truth `SolverConfig.auto_group_key`, shared by
+  solver Step B and `sizing_floors.headcount_floor`) — both C3
+  (`auto_generate_anti_affinity`) and C4 (`auto_generate_max_per_bm`).
+  `VM.labels` are k8s node labels (identity, carried everywhere incl. splitter
+  synthetics); only the configured keys split groups, **by value**, and a
+  missing key counts as `""` — so `dedicated=AAA`, `dedicated=BBB` and
+  "no dedicated" are three groups, while `dedicated=AAA` vs `other=AAA` never
+  collide. Default `auto_group_labels=[]` ⇒ historical triple, bit-identical
+  ids (`auto/{c}/{ip}/{role}`); with labels the id gains `/{k}={v}[,…]`
+  (`auto/` prefix is load-bearing for the split path's dynamic ceil).
+  `GroupSelector.labels` matches with the same rule (`vm.labels.get(k, "") == v`),
+  so `{"dedicated": ""}` selects the unlabeled group. Labels never merge
+  different roles/clusters — cross-role policy stays an explicit rule (ADR-016).
   C6 has NO auto-generation — exclusivity is always an explicit rule.
 - **node_role is an open string** (`^[\w.-]+$`, ADR-010): the `NodeRole` enum
   is an advisory known-roles catalog (defaults, UI suggestions), not a gate.
@@ -114,8 +127,9 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   the Go scheduler's own role filtering — the production contract is
   unchanged (UI label: Baremetal group; JSON field stays `groups`). Legacy
   pipeline export: one JSON per pool, `BM1…BMn` numbered within the pool
-  (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`;
-  `legacy_bm_map` traces keys to machine ids.
+  (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`
+  plus `labels: {k: v}` only on VMs that carry labels (ADR-021; the UI export
+  card lets the user drop columns); `legacy_bm_map` traces keys to machine ids.
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

@@ -235,7 +235,8 @@ Scheduler                                  Solver
 | `w_slot_score` | int | 0 | 剩餘空間可用性獎勵權重 |
 | `vm_specs` | list[Resources] | [] | 全局 spec pool（原 `slot_tshirt_sizes`） |
 | `w_resource_waste` | int | 5 | 懲罰 over-allocation（split 盡量選 zero-waste spec） |
-| `auto_generate_max_per_bm` | bool | false | 自動為同 `(cluster_id, ip_type, node_role)` 的 VM 生成 C4 規則；為 true 時 `default_max_per_bm` 必填，否則 INPUT_ERROR |
+| `auto_generate_max_per_bm` | bool | false | 自動為同 `(cluster_id, ip_type, node_role)`（+ `auto_group_labels` 的 label 值）的 VM 生成 C4 規則；為 true 時 `default_max_per_bm` 必填，否則 INPUT_ERROR |
+| `auto_group_labels` | list[str] | [] | 參與 auto C3/C4 分組的 `VM.labels` key（ADR-021）。每個 key 以 `(key, value)` 對加進分組 key、缺 key 視為 `""`：`dedicated=AAA`、`dedicated=BBB`、沒有 dedicated 各自一群。不列的 label 只跟著 VM 走 |
 | `default_max_per_bm` | int \| null | null | 自動 C4 規則的每 BM 上限 |
 | `max_pods_per_node` | int | 0 | 每台 VM（K8s node）可承載的 pod 數上限；搭配 `ResourceRequirement.total_pods` 形成節點數下限。0 = 停用 |
 | `w_procurement` | int | 10000 | 採購（capacity planning）：使用可購買 BM 的權重，設高以先填滿 in-stock |

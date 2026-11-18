@@ -10,9 +10,9 @@
  */
 
 import { listExamples, getExample, bmDemandPlan } from "./api.js";
-import { escapeHtml } from "./util.js";
+import { escapeHtml, formatLabels } from "./util.js";
 import { initSidebarChrome } from "./sidebar.js";
-import { rebuildColorScale } from "./colors.js";
+import { rebuildColorScale, clusterShort } from "./colors.js";
 import {
   GROUP_BY_OPTIONS, buildPanels, collectAgSet, renderRackDiagram, showRackEmpty,
 } from "./rackdiagram.js";
@@ -160,7 +160,7 @@ function renderGroups() {
       : "";
     return `<tr>
       <td class="pool">${escapeHtml(g.name)}</td>
-      <td class="clusters">${g.clusters.map(escapeHtml).join(", ")}</td>
+      <td class="clusters" title="${escapeHtml(g.clusters.join(", "))}">${g.clusters.map(escapeHtml).join(", ")}</td>
       <td>${escapeHtml(g.bm_spec)}</td>
       <td class="num"><strong>${g.required_baremetals || "—"}</strong></td>
       <td><span class="step-chip step-chip--${statusKind(g.success ? "OPTIMAL" : g.solver_status)}">${escapeHtml(g.success ? "ok" : chipLabel(g.solver_status))}</span>
@@ -194,18 +194,25 @@ function renderAdvisories() {
         <span>${escapeHtml(a.message ?? "")}</span></li>`).join("")}</ul>`;
 }
 
+/** Labels column helpers: shown only when some row carries labels. */
+const anyLabels = (rows) => rows.some((r) => Object.keys(r.labels || {}).length);
+const labelsTh = (show) => (show ? "<th>Labels</th>" : "");
+const labelsTd = (show, labels) =>
+  (show ? `<td class="labels-cell">${escapeHtml(formatLabels(labels)) || "—"}</td>` : "");
+
 function renderCompiled() {
   const card = $("#compiled-card");
   const rows = (state.result.compiled ?? []).flatMap((g) => g.demands.map((d) => ({ ...d, pool: g.name })));
   if (!rows.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  const showLabels = anyLabels(rows);
   $("#compiled-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
+      <thead><tr><th>Group</th><th>Cluster</th><th>Node type</th><th>IP</th>${labelsTh(showLabels)}<th>Spec</th>
         <th class="num">VMs / BM</th><th class="num">BMs</th><th class="num">VMs</th><th class="num">≥ BMs</th><th>Step</th></tr></thead>
       <tbody>${rows.map((d) => `<tr>
         <td>${escapeHtml(d.pool)}</td><td>${escapeHtml(d.cluster_id)}</td><td>${escapeHtml(d.node_role)}</td>
-        <td class="muted">${escapeHtml(d.ip_type || "—")}</td>
+        <td class="muted">${escapeHtml(d.ip_type || "—")}</td>${labelsTd(showLabels, d.labels)}
         <td>${escapeHtml(d.vm_spec)}${d.exclusive ? ' <span class="muted">· exclusive</span>' : ""}</td>
         <td class="num">${d.fits_per_bm}</td><td class="num">${d.bm_equivalents}</td>
         <td class="num"><strong>${d.vm_count}</strong></td><td class="num">${d.min_distinct_bms || "—"}</td>
@@ -220,14 +227,15 @@ function renderMatrix() {
   card.classList.remove("hidden");
   const ags = [...new Set(rows.flatMap((r) => Object.keys(r.per_ag)))]
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const showLabels = anyLabels(rows);
   $("#matrix-content").innerHTML = `
     <table class="table">
-      <thead><tr><th>Cluster</th><th>Node type</th><th>IP</th><th>Spec</th>
+      <thead><tr><th>Cluster</th><th>Node type</th><th>IP</th>${labelsTh(showLabels)}<th>Spec</th>
         ${ags.map((ag) => `<th class="num">${escapeHtml(ag)}</th>`).join("")}
         <th class="num">VMs</th><th class="num">Distinct BMs</th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
         <td>${escapeHtml(r.cluster_id)}</td><td>${escapeHtml(r.node_role)}</td>
-        <td class="muted">${escapeHtml(r.ip_type || "—")}</td><td>${escapeHtml(r.vm_spec)}</td>
+        <td class="muted">${escapeHtml(r.ip_type || "—")}</td>${labelsTd(showLabels, r.labels)}<td>${escapeHtml(r.vm_spec)}</td>
         ${ags.map((ag) => `<td class="num">${r.per_ag[ag] ?? 0}</td>`).join("")}
         <td class="num"><strong>${r.vm_count}</strong></td><td class="num">${r.distinct_bms}</td></tr>`).join("")}</tbody>
     </table>`;
@@ -361,11 +369,11 @@ function updateFilterControls(view) {
   $("#filter-clear").classList.toggle("hidden", !isFilterActive(state.filter));
 }
 
-function stockCell(used, total) {
+function stockCell(used, total, title = "") {
   if (!total) return `<td class="stock-cell">—</td>`;
   const pct = Math.min(100, Math.round((used / total) * 100));
   const mod = pct >= 100 ? " stock-meter__fill--full" : pct >= 90 ? " stock-meter__fill--hot" : "";
-  return `<td class="stock-cell">${used.toLocaleString()} / ${total.toLocaleString()}
+  return `<td class="stock-cell" title="${escapeHtml(title || `${used.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`)}">${used.toLocaleString()} / ${total.toLocaleString()}
     <span class="stock-meter"><span class="stock-meter__fill${mod}" style="width:${pct}%"></span></span></td>`;
 }
 
@@ -375,16 +383,25 @@ function renderLayouts() {
   if (!layouts.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
   const ipShort = (ip) => ({ routable: "R", "non-routable": "NR" }[ip] ?? ip ?? "");
+  // Every column but VMs is nowrap and narrow; VMs takes the remaining
+  // width and wraps its pills, each pill capped in width (full text in the
+  // title), so a machine with many / long hostnames grows DOWN, never
+  // sideways. The pill's bold prefix is the same short cluster badge the
+  // rack diagram uses (renderRack has rebuilt the colour scale by now), so
+  // a long cluster name does not eat the hostname. Memory is in GiB.
+  const entryText = (e) => `${e.cluster_id} ${e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`} · ${e.vm_spec}`;
+  const gib = (mib) => Math.round((mib ?? 0) / 1024);
   $("#layout-content").innerHTML = `
-    <table class="table">
-      <thead><tr><th>Machine</th><th>Group</th><th>AG</th><th>Rack</th><th>VMs</th><th>CPU</th><th>Memory (MiB)</th><th>Storage (GB)</th></tr></thead>
+    <table class="table layout-table">
+      <thead><tr><th>Machine <span class="muted">· group · AG · rack</span></th><th class="vms">VMs</th><th>CPU</th><th>Memory (GiB)</th><th>Storage (GB)</th></tr></thead>
       <tbody>${layouts.map((l) => `<tr>
-        <td class="cell-mono">${escapeHtml(l.bm_id)}</td><td>${escapeHtml(l.pool)}</td>
-        <td>${escapeHtml(l.ag)}</td><td>${escapeHtml(l.rack)}</td>
-        <td><div class="layout-entries">${l.entries.map((e) =>
-          `<span class="layout-entry" title="${escapeHtml(e.vm_id)}"><b>${escapeHtml(e.cluster_id)}</b> ${escapeHtml(e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`)} · ${escapeHtml(e.vm_spec)}</span>`).join("")}</div></td>
+        <td class="machine" title="${escapeHtml(`${l.bm_id} · ${l.pool || "default"} · ${l.ag} · ${l.rack}`)}">
+          <span class="cell-mono">${escapeHtml(l.bm_id)}</span>
+          <span class="machine__where muted">${escapeHtml(l.pool || "default")} · ${escapeHtml(l.ag)} · ${escapeHtml(l.rack)}</span></td>
+        <td class="vms"><div class="layout-entries">${l.entries.map((e) =>
+          `<span class="layout-entry" title="${escapeHtml(`${entryText(e)} (${e.vm_id})${Object.keys(e.labels || {}).length ? ` · ${formatLabels(e.labels)}` : ""}`)}"><b>${escapeHtml(clusterShort(e.cluster_id))}</b> ${escapeHtml(e.vm_hostname || `${e.node_role} ${ipShort(e.ip_type)}`)} · ${escapeHtml(e.vm_spec)}</span>`).join("")}</div></td>
         ${stockCell(l.used.cpu_cores, l.capacity.cpu_cores)}
-        ${stockCell(l.used.memory_mib, l.capacity.memory_mib)}
+        ${stockCell(gib(l.used.memory_mib), gib(l.capacity.memory_mib), `${(l.used.memory_mib ?? 0).toLocaleString()} / ${(l.capacity.memory_mib ?? 0).toLocaleString()} MiB`)}
         ${stockCell(l.used.storage_gb, l.capacity.storage_gb)}
       </tr>`).join("")}</tbody>
     </table>`;
@@ -447,8 +464,40 @@ function legacySelectedPool() {
   return pools.includes(sel.value) ? sel.value : pools[0];
 }
 
+/* Columns of the legacy document. The server always writes the four
+ * classic keys plus `labels` on labeled VMs; the user picks which of them
+ * the copied / downloaded document keeps (persisted per browser). */
+const LEGACY_FIELDS = ["role", "vm_spec", "routable", "cluster", "labels"];
+const LEGACY_FIELDS_KEY = "solver-legacy-fields";
+function legacyFields() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LEGACY_FIELDS_KEY) || "null");
+    if (Array.isArray(saved)) return LEGACY_FIELDS.filter((f) => saved.includes(f));
+  } catch { /* fall through */ }
+  return [...LEGACY_FIELDS];
+}
+function setLegacyFields(fields) {
+  try { localStorage.setItem(LEGACY_FIELDS_KEY, JSON.stringify(fields)); } catch { /* ignore */ }
+}
+
+function legacyDocFor(pool) {
+  const keep = new Set(legacyFields());
+  const doc = state.result.legacy_template[pool] ?? {};
+  return Object.fromEntries(Object.entries(doc).map(([bm, rows]) => [bm, rows.map((row) =>
+    Object.fromEntries(Object.entries(row).filter(([k]) => keep.has(k))))]));
+}
+
 function legacyJsonFor(pool) {
-  return JSON.stringify(state.result.legacy_template[pool] ?? {}, null, 2);
+  return JSON.stringify(legacyDocFor(pool), null, 2);
+}
+
+function renderLegacyFields() {
+  const chosen = new Set(legacyFields());
+  const anyLabels = Object.values(state.result?.legacy_template ?? {})
+    .some((doc) => Object.values(doc).some((rows) => rows.some((r) => r.labels)));
+  $("#legacy-fields").innerHTML = `<span class="mini__label">Columns</span>` + LEGACY_FIELDS.map((f) => `
+    <label class="${f === "labels" && !anyLabels ? "is-muted" : ""}" title="${f === "labels" ? "present only on VMs that carry labels" : f}">
+      <input type="checkbox" data-legacy-field="${f}" ${chosen.has(f) ? "checked" : ""}><span>${escapeHtml(f)}</span></label>`).join("");
 }
 
 function renderLegacy() {
@@ -456,6 +505,7 @@ function renderLegacy() {
   const pools = legacyPools();
   if (!pools.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
+  renderLegacyFields();
   const sel = $("#legacy-pool");
   const keep = sel.value;
   sel.innerHTML = pools.map((p) => {
@@ -607,6 +657,13 @@ function init() {
   $("#run-btn").addEventListener("click", runPlan);
   $("#dl-result-btn").addEventListener("click", downloadResult);
   $("#legacy-pool").addEventListener("change", () => { $("#legacy-json").value = legacyJsonFor(legacySelectedPool()); });
+  $("#legacy-fields").addEventListener("change", (e) => {
+    if (e.target.dataset?.legacyField === undefined) return;
+    const chosen = [...document.querySelectorAll("#legacy-fields input[data-legacy-field]")]
+      .filter((i) => i.checked).map((i) => i.dataset.legacyField);
+    setLegacyFields(chosen);
+    $("#legacy-json").value = legacyJsonFor(legacySelectedPool());
+  });
   $("#legacy-copy-btn").addEventListener("click", copyLegacy);
   $("#legacy-dl-btn").addEventListener("click", () => downloadLegacy(legacySelectedPool()));
   $("#legacy-dl-all-btn").addEventListener("click", () => {

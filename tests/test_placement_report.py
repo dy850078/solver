@@ -119,3 +119,34 @@ class TestLegacyTemplate:
         a, v, b = _scenario()
         t = legacy_template(bm_layouts(a, v, b, CATALOG))
         assert set(t) == {"default"} and list(t["default"]) == ["BM1", "BM2", "BM3"]
+
+
+class TestLabelsInReports:
+
+    def _labeled(self):
+        a, v, b = _scenario()
+        v[0] = v[0].model_copy(update={"labels": {"dedicated": "AAA"}})
+        v[1] = v[1].model_copy(update={"labels": {"dedicated": "AAA"}})
+        return a, v, b
+
+    def test_matrix_splits_rows_by_labels(self):
+        a, v, b = self._labeled()
+        rows = {(r.cluster_id, r.node_role, tuple(sorted(r.labels.items()))): r
+                for r in placement_matrix(a, v, b, CATALOG)}
+        aaa = rows[("A", "worker", (("dedicated", "AAA"),))]
+        plain = rows[("A", "worker", ())]
+        assert aaa.vm_count == 2 and aaa.distinct_bms == 1 and aaa.per_ag == {"ag-1": 2}
+        assert plain.vm_count == 1 and plain.per_ag == {"ag-2": 1}
+        assert sum(r.vm_count for r in rows.values()) == len(a)
+
+    def test_layout_entries_carry_labels_and_legacy_rows_add_labels_only_when_present(self):
+        a, v, b = self._labeled()
+        layouts = bm_layouts(a, v, b, CATALOG)
+        bm1 = next(l for l in layouts if l.bm_id == "bm-1")
+        assert [e.labels for e in bm1.entries] == [{"dedicated": "AAA"}] * 2
+        t = legacy_template(layouts)
+        # bm-1 hosts the two labeled VMs → five keys; everyone else keeps four
+        assert all(set(r) == {"role", "vm_spec", "routable", "cluster", "labels"}
+                   and r["labels"] == {"dedicated": "AAA"} for r in t["default"]["BM1"])
+        assert all(set(r) == {"role", "vm_spec", "routable", "cluster"}
+                   for key, rows in t["default"].items() if key != "BM1" for r in rows)

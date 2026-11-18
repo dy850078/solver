@@ -563,12 +563,16 @@ class VMPlacementSolver:
         """
         Combine explicit rules with auto-generated ones.
 
-        Auto-generation: group VMs by (cluster_id, ip_type, node_role) and
-        for each group with 2+ VMs, create a rule that spreads them across
-        each dimension in `config.target_spread.keys()` (typically ["ag"]
-        but may include "room", etc.). Including cluster_id is what makes
+        Auto-generation: group VMs by `config.auto_group_key(...)` —
+        (cluster_id, ip_type, node_role) refined by the (key, value) of every
+        label key in `config.auto_group_labels` (ADR-021) — and for each
+        group with 2+ VMs, create a rule that spreads them across each
+        dimension in `config.target_spread.keys()` (typically ["ag"] but may
+        include "room", etc.). Including cluster_id is what makes
         multi-cluster HA correct — each cluster's masters/workers spread
-        independently rather than being pooled into a single budget.
+        independently rather than being pooled into a single budget; the
+        label refinement does the same for e.g. dedicated=AAA vs the plain
+        workers of the same role.
 
         Per-bucket caps are auto-computed at constraint time as
         ⌈N / |buckets(d)|⌉ for each dimension d in spread_on; no explicit
@@ -602,30 +606,38 @@ class VMPlacementSolver:
         for rule in rules:
             covered.update(rule.vm_ids)
 
-        # Group remaining VMs by (cluster_id, ip_type, role). Cluster is part of
-        # the key so two clusters with the same role/ip_type spread independently.
-        groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        # Group remaining VMs by the shared auto key (cluster, ip_type, role,
+        # configured labels). Cluster is part of the key so two clusters with
+        # the same role/ip_type spread independently; label values split a
+        # role further when the caller asked for it via auto_group_labels.
+        groups: dict[tuple, list[str]] = defaultdict(list)
         for vm in self.request.vms:
             if vm.id in covered:
                 continue
             if not vm.ip_type or not vm.cluster_id:
                 continue
-            groups[(vm.cluster_id, vm.ip_type, vm.node_role)].append(vm.id)
+            key = self.config.auto_group_key(
+                vm.cluster_id, vm.ip_type, vm.node_role, vm.labels,
+            )
+            groups[key].append(vm.id)
 
-        for (cluster_id, ip_type, role), vm_ids in groups.items():
+        for key, vm_ids in groups.items():
             if len(vm_ids) < 2 or not auto_spread_dims:
                 continue
 
             has_synthetic = any(vid in self.active_vars for vid in vm_ids)
-            group_id = f"auto/{cluster_id}/{ip_type}/{role}"
+            # The "auto/" prefix is load-bearing: _add_anti_affinity_constraints
+            # keys its dynamic-ceil path for synthetic VMs on it.
+            group_id = self.config.auto_group_id("auto", key)
+            group_label = group_id[len("auto/"):]
             rules.append(AntiAffinityRule(
                 group_id=group_id,
                 vm_ids=vm_ids,
                 spread_on=auto_spread_dims,
             ))
             logger.info(
-                "Auto anti-affinity: %s/%s/%s (%d VMs%s → spread_on=%s)",
-                cluster_id, ip_type, role, len(vm_ids),
+                "Auto anti-affinity: %s (%d VMs%s → spread_on=%s)",
+                group_label, len(vm_ids),
                 " inc. synthetic" if has_synthetic else "",
                 auto_spread_dims,
             )
@@ -641,7 +653,7 @@ class VMPlacementSolver:
                 effective_spread = min(num_buckets, len(vm_ids))
                 if effective_spread < target:
                     msg = (
-                        f"Anti-affinity for {cluster_id}/{ip_type}/{role} below "
+                        f"Anti-affinity for {group_label} below "
                         f"policy target on {dim}: actual spread={effective_spread}, "
                         f"target={target} ({num_buckets} bucket(s), {len(vm_ids)} VMs)."
                     )
@@ -746,7 +758,8 @@ class VMPlacementSolver:
         """
         Combine explicit per-BM rules with auto-generated ones.
 
-        Auto-generation grouping key matches C3: (cluster_id, ip_type, node_role).
+        Auto-generation grouping key matches C3: `config.auto_group_key(...)`
+        — (cluster_id, ip_type, node_role) + configured label values.
         Each group with 2+ VMs gets a rule capped at config.default_max_per_bm.
         VMs already covered by explicit rules (by vm_ids or selector match) are
         not auto-generated.
@@ -787,26 +800,29 @@ class VMPlacementSolver:
         for r in rules:
             covered.update(r.vm_ids)
 
-        groups: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        groups: dict[tuple, list[str]] = defaultdict(list)
         for vm in self.request.vms:
             if vm.id in covered:
                 continue
             if not vm.cluster_id or not vm.ip_type:
                 continue
-            groups[(vm.cluster_id, vm.ip_type, vm.node_role)].append(vm.id)
+            key = self.config.auto_group_key(
+                vm.cluster_id, vm.ip_type, vm.node_role, vm.labels,
+            )
+            groups[key].append(vm.id)
 
-        for (cluster_id, ip_type, role), vm_ids in groups.items():
+        for key, vm_ids in groups.items():
             if len(vm_ids) < 2:
                 continue
-            group_id = f"auto-bm/{cluster_id}/{ip_type}/{role}"
+            group_id = self.config.auto_group_id("auto-bm", key)
             rules.append(MaxPerBaremetalRule(
                 group_id=group_id,
                 vm_ids=vm_ids,
                 max_per_bm=default_cap,
             ))
             logger.info(
-                "Auto max-per-bm: %s/%s/%s (%d VMs, cap=%d)",
-                cluster_id, ip_type, role, len(vm_ids), default_cap,
+                "Auto max-per-bm: %s (%d VMs, cap=%d)",
+                group_id[len("auto-bm/"):], len(vm_ids), default_cap,
             )
 
         return rules
@@ -824,6 +840,10 @@ class VMPlacementSolver:
             # (role charset ^[\w.-]+$ never contains "+", so it's unambiguous).
             "+".join(sorted(roles)) if roles else "*",
         ]
+        if sel.labels:
+            # Same `/k=v,k2=v2` suffix as auto rules (SolverConfig.auto_group_id);
+            # sorted for determinism since a selector has no configured order.
+            parts.append(",".join(f"{k}={v}" for k, v in sorted(sel.labels.items())))
         return "selector/" + "/".join(parts)
 
     # ------------------------------------------------------------------

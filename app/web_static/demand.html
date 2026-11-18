@@ -135,7 +135,8 @@
         </div>
         <button type="button" class="btn btn--add" data-act="vm-add">+ Custom VM spec</button>
 
-        <p class="subhead">Cluster demands <span class="muted">one row per cluster × node type</span></p>
+        <p class="subhead subhead--row">Cluster demands <span class="muted">one row per cluster × node type</span>
+          <label class="subhead__toggle" title="Show ≥ BMs, Step, Baremetal group and Labels on every row. When hidden, rows that set them show the values as chips."><input id="demand-advanced" type="checkbox"> Advanced fields</label></p>
         <div id="demand-rows" class="form-rows"></div>
         <button type="button" class="btn btn--add" data-act="demand-add">+ Demand</button>
 
@@ -296,8 +297,9 @@
         </div>
       </header>
       <div class="card__body">
+        <div id="legacy-fields" class="legacy-fields" title="Columns written for every VM. `labels` appears only on VMs that carry labels."></div>
         <textarea id="legacy-json" class="editor editor--legacy" readonly spellcheck="false"></textarea>
-        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON.</p>
+        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON. Untick a column to leave it out of the copied / downloaded document.</p>
       </div>
     </section>
 
