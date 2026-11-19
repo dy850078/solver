@@ -87,6 +87,13 @@ export function formatLabels(labels, sep = ", ") {
     .join(sep);
 }
 
+/** Demand identity as the server sees it (app/bm_demand.py: cluster, ip,
+ *  role AND labels) — shared by the form's duplicate check and the Excel
+ *  importer so both agree on what "the same demand twice" means. */
+export function demandIdentity({ cluster_id, ip_type, node_role, labels }) {
+  return `${String(cluster_id ?? "").trim()}\u0000${ip_type ?? ""}\u0000${String(node_role ?? "").trim() || "worker"}\u0000${formatLabels(labels, ",")}`;
+}
+
 /** Human-readable GPU summary for displays: {h200:4, a100:2} → "4×h200 + 2×a100". */
 export function gpuSummary(gpu) {
   const parts = Object.entries(gpu || {}).map(([m, c]) => `${c}×${m}`);
