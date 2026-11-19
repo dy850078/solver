@@ -17,7 +17,10 @@
 set -u
 
 # --- repo-specific knobs ----------------------------------------------------
-DEFAULT_BRANCH="origin/main"
+# Trunk to diff against. Leave empty to auto-detect on `origin` (remote HEAD,
+# then main/master); set GO_TRUNK=<remote>/<branch> in the environment to
+# override (e.g. when a mirror is attached as a second remote).
+DEFAULT_BRANCH=""
 # Files whose change demands an ADR: the solver contract wrapper, planning
 # orchestration, candidate derivation, and DB migrations.
 CORE_PATTERN='^(internal/solverclient/|internal/planning/|internal/scheduler/candidates|migrations/)'
@@ -33,7 +36,17 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
 # Changed files = committed-on-branch (vs merge-base with the default branch)
 # + working tree.
-base="$(git merge-base "$DEFAULT_BRANCH" HEAD 2>/dev/null || true)"
+trunk_ref() {
+  for ref in "${GO_TRUNK:-}" "$DEFAULT_BRANCH" \
+             "$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/##')" \
+             origin/main origin/master; do
+    [ -n "$ref" ] || continue
+    git rev-parse --verify -q "$ref" >/dev/null 2>&1 && { echo "$ref"; return; }
+  done
+}
+trunk="$(trunk_ref)"
+[ -z "$trunk" ] && echo "stop-gate: no trunk ref found; only the working tree is checked (set GO_TRUNK=<remote>/<branch>)" >&2
+base="$([ -n "$trunk" ] && git merge-base "$trunk" HEAD 2>/dev/null || true)"
 changed="$(
   {
     [ -n "$base" ] && git diff --name-only "$base" HEAD 2>/dev/null

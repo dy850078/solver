@@ -52,7 +52,11 @@ def _swagger_mounted(api) -> bool:
 
 
 def test_swagger_assets_from_installed_bundle(monkeypatch):
-    """Default path: the package is installed, /docs renders from it."""
+    """Default path: the package is installed, /docs renders from it.
+    Skipped where the optional extra could not be installed (closed-network
+    index without swagger-ui-bundle): /docs then answers 503 with the
+    SWAGGER_STATIC_DIR hint, which the block_bundle tests cover."""
+    pytest.importorskip("swagger_ui_bundle")
     server = _reload_server(monkeypatch, block_bundle=False, static_dir=None)
     assert server._SWAGGER_STATIC_DIR is not None
     assert _swagger_mounted(server.api)
@@ -95,7 +99,9 @@ def test_health_returns_status_object():
 
 
 def test_bad_swagger_static_dir_falls_back_to_bundle(monkeypatch, tmp_path):
-    """A misconfigured override is a warning, not a boot failure."""
+    """A misconfigured override is a warning, not a boot failure.
+    Needs the optional package to fall back to; skipped without it."""
+    pytest.importorskip("swagger_ui_bundle")
     server = _reload_server(
         monkeypatch, block_bundle=False, static_dir=str(tmp_path / "does-not-exist")
     )

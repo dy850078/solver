@@ -37,7 +37,7 @@ cp <此目錄>/decisions-TEMPLATE.md   docs/decisions/TEMPLATE.md
 | 檔案 | 改什麼 |
 |---|---|
 | `CLAUDE.md` | 所有 `<...>` 佔位符;`## Architecture` 的實際套件結構;`## Commands` 的實際指令 |
-| `.claude/hooks/stop-gate.sh` | `DEFAULT_BRANCH`、`CORE_PATTERN`(哪些路徑改動要求 ADR) |
+| `.claude/hooks/stop-gate.sh` | `CORE_PATTERN`(哪些路徑改動要求 ADR);trunk 預設自動偵測 `origin` 的遠端 HEAD,只有 mirror 當第二 remote 之類的情況才設 `DEFAULT_BRANCH` 或環境變數 `GO_TRUNK` |
 | `.claude/skills/*/SKILL.md` | 出現的套件路徑(`internal/...`)換成實際的 |
 
 `CLAUDE.md` 的**領域語意**那一節不要改——那些是設計決議,改了 agent 就會

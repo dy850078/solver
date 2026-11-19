@@ -48,8 +48,12 @@ venv: $(BIN)/python ## Create the virtualenv (.venv)
 install: $(BIN)/python ## Create venv and install the project with dev extras
 	@if [ -n "$(UV)" ]; then \
 	  if [ -n "$$PIP_INDEX_URL" ] && [ -z "$$UV_INDEX_URL" ] && [ -z "$$UV_DEFAULT_INDEX" ]; then \
-	    echo "warning: PIP_INDEX_URL is set but uv does not read it — set UV_INDEX_URL"; \
-	    echo "         (or UV_DEFAULT_INDEX) as well, or uv resolves against public PyPI."; \
+	    echo "error: PIP_INDEX_URL is set but uv does not read it (nor pip.conf) — it would"; \
+	    echo "       silently resolve against public PyPI. Pick one:"; \
+	    echo "         export UV_INDEX_URL=\"$$PIP_INDEX_URL\"      # same index for uv"; \
+	    echo "         ~/.config/uv/uv.toml  [[index]] url = ... default = true"; \
+	    echo "         make install UV=                       # force the venv+pip path"; \
+	    exit 1; \
 	  fi; \
 	  echo "uv pip install -e \".[dev]\""; \
 	  uv pip install --python $(BIN)/python -e ".[dev]"; \

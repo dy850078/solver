@@ -287,7 +287,9 @@ make install
 > `sync-from-upstream.sh` 的 Preflight 會檢查這件事:uv 在 PATH 上、卻只有
 > pip 側(環境變數或 pip.conf)有 index 設定時,直接印出那個 URL 和對應的
 > `export UV_INDEX_URL=…`。它是**警告不是硬擋**(開放網路下 uv 打公開 PyPI
-> 是合法的),看到就先設好再往下跑。
+> 是合法的),看到就先設好再往下跑。`make install` 則是**硬擋**:只設了
+> `PIP_INDEX_URL` 而沒有 `UV_INDEX_URL` / `UV_DEFAULT_INDEX` 就直接 exit 1
+> 並印出三種修法(pip.conf 裡的 index 它看不到,仍靠 Preflight 提醒)。
 >
 > 要讓每個 venv、每種啟動方式都吃到,用 uv 自己的設定檔而不是 `.bashrc`
 > (cron / systemd / `ssh host 'cmd'` 不讀 `.bashrc`):
@@ -372,10 +374,24 @@ git reset --hard origin/master
 
 ## Phase 3 — 例行同步（每次釋出）
 
-### 3.1 GitHub 側（開發）
+### 3.1 開發側（GitHub,或已移到內部的 GitLab repo）
 
-feature branch 開發完 → PR（自動 target `release-to-gitlab`）→ review → merge
-→ Pipeline 掃描 → 流進 mirror
+GitHub 時期:feature branch 開發完 → PR（自動 target `release-to-gitlab`）→ review → merge
+→ Pipeline 掃描 → 流進 mirror。
+
+開發移到內部後,直接在工作 repo（trunk `master`,`git ls-remote --symref origin HEAD`
+可確認）開 feature branch → MR → review → merge;mirror 與 `sync/*` 這一段就不再需要。
+Claude Code 在內部環境要注意的三件事:
+
+- **Stop hook 的 trunk**:`.claude/hooks/stop-gate.sh` 自動在 `origin` 上找主幹
+  （遠端 HEAD → `release-to-gitlab` → `main` → `master`）;只有主幹不在 `origin`
+  時才需要 `SOLVER_TRUNK=<remote>/<branch>`（放 shell 或 `.claude/settings.local.json`
+  的 `env`,不進版控）。掛著 `mirror` 這個第二 remote 不會被誤認。驗證:
+  `echo '{}' | CLAUDE_PROJECT_DIR=$PWD bash .claude/hooks/stop-gate.sh` 沒印
+  `no trunk ref found` 即可。
+- **hook 的註冊已進 repo**:`.claude/settings.json` 的 `hooks.Stop`;clone 下來就生效。
+- **swagger-ui-bundle 裝不到**:`tests/test_server.py` 的兩個相關測試會 `skip`,
+  不會讓 Stop hook 的 `make test` 變紅。
 
 ### 3.2 GitLab 側（工作機，不是生產機器）
 

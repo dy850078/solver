@@ -21,8 +21,32 @@ fi
 cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 
-# Changed files = committed-on-branch (vs merge-base with origin/main) + working tree.
-base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+# The trunk this branch will merge into. SOLVER_TRUNK wins when set; else
+# only `origin` is probed (a GitHub→GitLab mirror may be attached as a second
+# remote and must never be mistaken for the trunk): the remote HEAD the
+# server declares (git clone records it), then the names this project has
+# used. No trunk → only the working tree is checked, and we say so.
+trunk_ref() {
+  if [ -n "${SOLVER_TRUNK:-}" ]; then
+    git rev-parse --verify -q "$SOLVER_TRUNK" >/dev/null 2>&1 && { echo "$SOLVER_TRUNK"; return; }
+    echo "stop-gate: SOLVER_TRUNK='$SOLVER_TRUNK' is not a ref in this clone" >&2
+    return
+  fi
+  head="$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^refs/remotes/##')"
+  for ref in "$head" origin/release-to-gitlab origin/main origin/master; do
+    [ -n "$ref" ] || continue
+    git rev-parse --verify -q "$ref" >/dev/null 2>&1 && { echo "$ref"; return; }
+  done
+}
+
+# Changed files = committed-on-branch (vs merge-base with the trunk) + working tree.
+trunk="$(trunk_ref)"
+if [ -n "$trunk" ]; then
+  base="$(git merge-base "$trunk" HEAD 2>/dev/null || true)"
+else
+  echo "stop-gate: no trunk ref found; only the working tree is checked (set SOLVER_TRUNK=<remote>/<branch>)" >&2
+  base=""
+fi
 changed="$(
   {
     [ -n "$base" ] && git diff --name-only "$base" HEAD 2>/dev/null

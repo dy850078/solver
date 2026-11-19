@@ -156,6 +156,9 @@ make cli INPUT=examples/success_basic.json   # one-shot solve, no server
 ```
 
 Direct: `.venv/bin/python -m pytest` (or `-k <pattern>` for one test).
+Closed network: set `UV_INDEX_URL` (uv ignores `PIP_INDEX_URL` / `pip.conf`;
+`make install` refuses to run with only the pip side configured). The
+`swagger-ui-bundle` extra is optional — its two tests skip when it is absent.
 
 ## Working contract with the engineer (mentor mode)
 
@@ -176,16 +179,22 @@ Non-negotiable communication rules:
 
 ## Workflow
 
-- **Branching**: the trunk is `release-to-gitlab` (`main` is stale — do not
-  base work on it or push to it). Work on a feature branch (`<topic>` or
-  `claude/<topic>`), push with `git push -u origin <branch>`, and open a PR
-  against `release-to-gitlab` only when the user asks. The human reviews every
-  PR before merge. Note: a fresh clone may only carry `main`; fetch the trunk
+- **Branching**: the trunk is the remote's default branch — `release-to-gitlab`
+  on GitHub (`main` there is stale: never base work on it or push to it),
+  `master` on the internal GitLab repo. Work on a feature branch (`<topic>` or
+  `claude/<topic>`), push with `git push -u origin <branch>`, and open a PR / MR
+  against the trunk only when the user asks. The human reviews every PR / MR
+  before merge. A fresh GitHub clone may only carry `main`; fetch the trunk
   explicitly (`git fetch origin release-to-gitlab`) before comparing or basing.
+  The Stop hook finds the trunk by itself (`origin`'s remote HEAD, then the
+  known names); `SOLVER_TRUNK=<remote>/<branch>` overrides it — needed only
+  when the trunk is on another remote (a mirror attached as `mirror` is never
+  the trunk).
 - **Commit** after each completed task with a descriptive message.
 - **ADR required for core changes**: any change to solver/splitter/models
   logic needs a decision record in `docs/decisions/` (use the `/adr` skill;
-  template: `docs/decisions/TEMPLATE.md`). A Stop hook enforces this — and
+  template: `docs/decisions/TEMPLATE.md`). The Stop hook registered in
+  `.claude/settings.json` (`.claude/hooks/stop-gate.sh`) enforces this — and
   runs the test suite — before you can finish a turn.
 - **Delegate mechanical work**: broad searches and long read-only exploration
   go to subagents (Explore/general-purpose); keep the main context for design
