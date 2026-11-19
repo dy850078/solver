@@ -9,6 +9,9 @@ Runs as a sidecar service (HTTP or CLI) that receives VM requirements and bareme
 ```bash
 # Create .venv and install the project + dev extras (deps live in pyproject.toml)
 make install
+# Closed network with an internal index: uv does NOT read PIP_INDEX_URL or
+# pip.conf — set UV_INDEX_URL too (make install stops if only the pip side is set)
+#   export PIP_INDEX_URL=https://<index>/simple UV_INDEX_URL=https://<index>/simple
 
 # Run the HTTP sidecar server (http://localhost:50051)
 make run                        # or: .venv/bin/python -m app.server --port 50051
@@ -382,3 +385,8 @@ it is the "release" step on GitHub. From there:
 The full procedure (one-time pre-checks, delta inventory, the first-time
 migration and the routine sync) is in `docs/prod-sync-runbook.md`;
 `scripts/compare-with-upstream.sh` shows the current delta.
+
+Once development itself moves in-house, the GitHub leg disappears: feature
+branches go straight to the internal repo (trunk `master`) as merge
+requests, and the Stop hook in `.claude/` finds that trunk on its own
+(runbook §3.1).
