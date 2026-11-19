@@ -183,7 +183,7 @@ export function collectAgSet(request, result) {
 }
 
 // ─── Rendering ────────────────────────────────────────────────
-function renderVm(vm) {
+function renderVm(vm, editable) {
   // Neutral chip + solid cluster badge (color scans, "c3" text reads).
   // The hostname drops its ".{cluster_id}" suffix only when it matches
   // exactly — the badge now says it; the full name stays in the tooltip.
@@ -193,7 +193,7 @@ function renderVm(vm) {
   const badge = vm.cluster_id
     ? `<span class="vm-chip__badge" style="background:${colorForCluster(vm.cluster_id)};color:${inkForCluster(vm.cluster_id)};">${escapeHtml(clusterShort(vm.cluster_id))}</span>`
     : "";
-  return `<span class="vm-chip"
+  return `<span class="vm-chip"${editable ? ' draggable="true"' : ""}
     data-vm-id="${escapeHtml(vm.vm_id)}"
     data-vm-hostname="${escapeHtml(full)}"
     data-vm-label="${escapeHtml(shown)}"
@@ -229,33 +229,33 @@ function renderCapacity(rows) {
   }).join("")}</div>`;
 }
 
-function renderBm(bm, showCapacity) {
+function renderBm(bm, showCapacity, editable) {
   const empty = bm.vms.length === 0;
   const ag = bm.ag
     ? `<span class="bm__ag" style="--ag-color: ${colorForAg(bm.ag)};" data-bm-tooltip="1" data-ag="${escapeHtml(bm.ag)}" data-bm-id="${escapeHtml(bm.id)}" data-bm-hostname="${escapeHtml(bm.hostname || "")}">${escapeHtml(bm.ag)}</span>`
     : "";
   const cap = showCapacity && bm.capRows ? renderCapacity(bm.capRows) : "";
   return `
-    <li class="bm ${empty ? "bm--empty" : ""}">
+    <li class="bm ${empty ? "bm--empty" : ""} ${editable ? "bm--droppable" : ""}" data-bm-id="${escapeHtml(bm.id)}" data-bm-ag="${escapeHtml(bm.ag)}">
       <div class="bm__head">
         <span class="bm__name">${escapeHtml(bm.hostname || bm.id)}</span>
         ${ag}
       </div>
       ${cap}
       <div class="bm__body">
-        ${empty ? `<span class="bm__placeholder">no VM assigned</span>` : bm.vms.map(renderVm).join("")}
+        ${empty ? `<span class="bm__placeholder">no VM assigned</span>` : bm.vms.map((vm) => renderVm(vm, editable)).join("")}
       </div>
     </li>`;
 }
 
-function renderSubgroup(g, hasMultiple, showCapacity) {
+function renderSubgroup(g, hasMultiple, showCapacity, editable) {
   const header = hasMultiple && g.label
     ? `<div class="rack__subgroup">${escapeHtml(g.label)}</div>`
     : "";
-  return `${header}<ul class="rack__bms">${g.bms.map((bm) => renderBm(bm, showCapacity)).join("")}</ul>`;
+  return `${header}<ul class="rack__bms">${g.bms.map((bm) => renderBm(bm, showCapacity, editable)).join("")}</ul>`;
 }
 
-function renderPanel(panel, showCapacity) {
+function renderPanel(panel, showCapacity, editable) {
   const accent = panel.accentColor ? `style="--panel-accent: ${panel.accentColor};"` : "";
   const accentClass = panel.accentColor ? "rack--accent" : "";
   const hasMultiple = panel.groups.length > 1 || (panel.groups.length === 1 && panel.groups[0].label);
@@ -266,7 +266,7 @@ function renderPanel(panel, showCapacity) {
         <span class="rack__meta">${escapeHtml(panel.meta)}</span>
       </header>
       <div class="rack__content">
-        ${panel.groups.map((g) => renderSubgroup(g, hasMultiple, showCapacity)).join("")}
+        ${panel.groups.map((g) => renderSubgroup(g, hasMultiple, showCapacity, editable)).join("")}
       </div>
     </article>`;
 }
@@ -304,6 +304,10 @@ function bmAgTooltipNode(el) {
 }
 
 function attachTooltips(container) {
+  // Bound once per container: the diagram is re-rendered on every filter
+  // change (and on every accepted layout edit), the listeners delegate.
+  if (container.dataset.tooltipsBound) return;
+  container.dataset.tooltipsBound = "1";
   container.addEventListener("mouseover", (e) => {
     const vm = e.target.closest(".vm-chip");
     if (vm) { showTooltip(vmTooltipNode(vm), e); return; }
@@ -318,6 +322,7 @@ function attachTooltips(container) {
   });
 }
 
+/** opts: { showCapacity, editable } — see renderRackDiagram body. */
 export function renderRackDiagram(container, panels, opts = {}) {
   const el = typeof container === "string" ? document.querySelector(container) : container;
   if (!el) return;
@@ -326,7 +331,11 @@ export function renderRackDiagram(container, panels, opts = {}) {
     return;
   }
   const showCapacity = !!opts.showCapacity;
-  el.innerHTML = `<div class="rack-grid">${panels.map((p) => renderPanel(p, showCapacity)).join("")}</div>`;
+  // editable: chips become draggable and machine cards announce themselves
+  // as drop targets (data-bm-id); the gestures themselves live in the page
+  // that owns the edit mode (layout-edit.js), not here.
+  const editable = !!opts.editable;
+  el.innerHTML = `<div class="rack-grid">${panels.map((p) => renderPanel(p, showCapacity, editable)).join("")}</div>`;
   attachTooltips(el);
 }
 

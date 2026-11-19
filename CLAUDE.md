@@ -22,6 +22,7 @@ app/
 ├── sizing_floors.py     # Analytic lower bounds on fleet size (strict under-estimates)
 ├── bm_demand.py         # PM "N equivalent BMs" demand → per-tenancy-group rollout/sizing requests + reports (ADR-020)
 ├── placement_report.py  # Pure aggregation: cluster×role×AG matrix, per-BM layouts, legacy BM-VM template (ADR-020)
+│                        # bm_demand.py also hosts edit_layout — hand-made moves validated by a locked re-solve (ADR-022)
 ├── models.py        # Pydantic v2 models — the JSON contract with the Go scheduler
 ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
 ├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
@@ -130,6 +131,9 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`
   plus `labels: {k: v}` only on VMs that carry labels (ADR-021; the UI export
   card lets the user drop columns); `legacy_bm_map` traces keys to machine ids.
+  **Manual layout edits** (`edit_layout`, ADR-022) validate by re-solving the
+  pool with every VM `candidate_baremetals=[bm]` (a requirement) — never
+  `pinned_to` (a fact, grandfathered); rejected moves never change the plan.
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

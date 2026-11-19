@@ -22,6 +22,7 @@ import { createMultiSelect } from "./multiselect.js";
 import {
   initForm, buildRequest, loadIntoForm, resetForm, state as form,
 } from "./demand-form.js";
+import { createLayoutEditor } from "./layout-edit.js";
 
 const $ = (sel) => document.querySelector(sel);
 const DRAFT_KEY = "solver-demand-draft";
@@ -37,6 +38,8 @@ const state = {
 };
 
 let clusterMs, roleMs, ipTypeMs, labelMs;   // filter multi-selects (built in init)
+let editor;                                   // layout editor (ADR-022), built in init
+let editBtn, openBtn;                         // rack-card header buttons
 
 /* ── small helpers ─────────────────────────────────────────────────── */
 
@@ -135,10 +138,15 @@ function renderBanner() {
     el.innerHTML = `<strong>Request rejected.</strong> ${errors.map(escapeHtml).join(" · ")}`;
     return;
   }
+  const moves = (r.groups ?? []).reduce((n, g) => n + (g.manual_moves?.length ?? 0), 0);
+  const edited = r.edited
+    ? ` <span class="muted">· Layout edited by hand (${moves} move${moves === 1 ? "" : "s"}, each validated by the solver); ` +
+      `sizing numbers and advisories are from the run.</span>`
+    : "";
   if (r.success) {
     el.classList.add("alert--ok");
     el.innerHTML = `<strong>${r.total_baremetals} machine(s) in total</strong> across ` +
-      `${r.groups.length} Baremetal group(s) — every group places.`;
+      `${r.groups.length} Baremetal group(s) — every group places.${edited}`;
   } else {
     el.classList.add("alert--error");
     el.innerHTML = `<strong>Not every group places.</strong> ${escapeHtml(r.solver_status)} — ` +
@@ -316,8 +324,46 @@ function renderRack() {
   rebuildColorScale(collectAgSet(view.request, view.result), clusterSet);
   updateFilterControls(view);
   const panels = buildPanels(view.request, view.result, state.groupBy, state.filter);
-  renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity });
+  renderRackDiagram(rackEl, panels, { showCapacity: state.showCapacity, editable: editor?.isOn() });
   renderTopologyLegend($("#ag-legend"));
+}
+
+/** Rack-card header buttons follow the selected tab and the edit mode:
+ *  editing is per pool (never on "All"), and while it is on the tabs and
+ *  the rollout handoff are locked so the edited result cannot drift away
+ *  from under the editor. */
+function syncRackControls() {
+  const g = selectedGroup();
+  const on = !!editor?.isOn();
+  if (editBtn) {
+    editBtn.classList.toggle("hidden", on);
+    editBtn.disabled = !editor?.canEdit();
+    editBtn.title = !g ? "Pick one Baremetal group tab to edit its layout"
+      : !g.success ? "This pool did not place — nothing to edit"
+      : "Move VMs between this pool's machines by hand; every move is validated by the solver";
+  }
+  if (openBtn) openBtn.disabled = on || !g;
+  for (const i of document.querySelectorAll("#group-tabs input")) i.disabled = on;
+}
+
+function selectedGroup() {
+  const groups = state.result?.groups ?? [];
+  if (!groups.length || (state.group === -1 && groups.length > 1)) return null;
+  return groups[Math.min(Math.max(state.group, 0), groups.length - 1)];
+}
+
+/** Re-render after an accepted (or undone) layout edit: everything that
+ *  reads the result, but WITHOUT renderAll's tab reset — the user is
+ *  inside one pool and must stay there. */
+function renderAfterEdit() {
+  renderBanner();
+  renderGroups();
+  renderMatrix();
+  renderGroupTabs();
+  renderRack();
+  syncRackControls();
+  renderLegacy();
+  renderLayouts();
 }
 
 /* "All" tab: one rack section per group, stacked, sharing one colour scale
@@ -426,6 +472,7 @@ function renderAll() {
   state.group = failed >= 0 ? failed : (r.groups.length > 1 ? -1 : 0);
   renderGroupTabs();
   renderRack();
+  syncRackControls();
   renderLegacy();
   renderLayouts();
 }
@@ -435,6 +482,11 @@ function renderAll() {
 async function runPlan() {
   const cur = currentRequest();
   if (!cur) return;
+  if (state.result?.edited) {
+    const n = state.result.groups.reduce((k, g) => k + (g.manual_moves?.length ?? 0), 0);
+    if (!window.confirm(`This plan carries ${n} manual move(s). Running again replaces it with a fresh solve. Continue?`)) return;
+  }
+  editor?.exit();
   const btn = $("#run-btn");
   btn.disabled = true;
   try {
@@ -554,11 +606,30 @@ function openInRollout() {
   const compiled = r?.compiled?.find((c) => c.name === g?.name);
   if (!g || !compiled || !g.baremetals?.length) return;
   const ids = g.baremetals.map((b) => b.id);
-  const steps = compiled.steps.map((s) => ({
-    ...s,
-    vms: (s.vms ?? []).map((v) => ({ ...v, candidate_baremetals: ids })),
-    requirements: (s.requirements ?? []).map((q) => ({ ...q, candidate_baremetals: ids })),
-  }));
+  let steps;
+  if (r.edited && g.rollout?.reports?.length) {
+    // The edited layout is a FACT, not a requirement to re-split: hand over
+    // the explicit VMs, each locked to its machine (candidate = [bm], not a
+    // pin, so the rollout page re-validates exactly as the editor did), one
+    // step per report, rules as compiled.
+    steps = g.rollout.reports.map((rep) => {
+      const src = compiled.steps.find((s) => s.name === rep.name) ?? {};
+      const bmOf = Object.fromEntries((rep.new_assignments ?? []).map((a) => [a.vm_id, a.baremetal_id]));
+      const { requirements: _r, vms: _v, ...rules } = src;
+      return {
+        ...rules,
+        name: rep.name,
+        vms: (rep.new_vms ?? []).map((v) => ({ ...v, candidate_baremetals: [bmOf[v.id]], pinned_to: null })),
+        requirements: [],
+      };
+    });
+  } else {
+    steps = compiled.steps.map((s) => ({
+      ...s,
+      vms: (s.vms ?? []).map((v) => ({ ...v, candidate_baremetals: ids })),
+      requirements: (s.requirements ?? []).map((q) => ({ ...q, candidate_baremetals: ids })),
+    }));
+  }
   const handoff = { baremetals: g.baremetals, steps, config: state.request?.config ?? {} };
   try { localStorage.setItem(HANDOFF_KEY, JSON.stringify(handoff)); }
   catch { return; }
@@ -597,7 +668,7 @@ function init() {
     if (state.result) renderRack();
   });
   $("#group-tabs").addEventListener("change", (e) => {
-    if (e.target.name === "group-tab") { state.group = Number(e.target.value); renderRack(); }
+    if (e.target.name === "group-tab") { state.group = Number(e.target.value); renderRack(); syncRackControls(); }
   });
   const onFilterChange = (key) => (selected) => {
     state.filter[key] = selected;
@@ -676,13 +747,33 @@ function init() {
 
   // "Open in Rollout" lives in the rack card header so it follows the
   // selected pool.
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "btn btn--ghost btn--small";
-  open.textContent = "Open in Rollout";
-  open.title = "Replay this pool's build order on the Rollout page (timeline, filters, stock ledger)";
-  open.addEventListener("click", openInRollout);
-  $("#rack-card .card__header-right").appendChild(open);
+  openBtn = document.createElement("button");
+  openBtn.type = "button";
+  openBtn.className = "btn btn--ghost btn--small";
+  openBtn.textContent = "Open in Rollout";
+  openBtn.title = "Replay this pool's build order on the Rollout page (timeline, filters, stock ledger)";
+  openBtn.addEventListener("click", openInRollout);
+  $("#rack-card .card__header-right").appendChild(openBtn);
+
+  // "Edit layout" (ADR-022): drag VMs between the selected pool's machines;
+  // every drop is validated server-side with the pool's own constraints.
+  editor = createLayoutEditor({
+    request: () => state.request,
+    result: () => state.result,
+    group: selectedGroup,
+    setResult: (result) => { state.result = result; renderAfterEdit(); },
+    onModeChange: () => { renderRack(); syncRackControls(); },
+    barEl: $("#layout-edit-bar"),
+    rackEl: $("#rack-container"),
+  });
+  editor.bindRack();
+  editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.id = "edit-layout-btn";
+  editBtn.className = "btn btn--ghost btn--small";
+  editBtn.textContent = "Edit layout";
+  editBtn.addEventListener("click", () => editor.enter());
+  $("#rack-card .card__header-right").appendChild(editBtn);
 
   populateExamples();
 }

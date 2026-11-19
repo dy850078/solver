@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .models import (
     Baremetal,
     ExclusiveBaremetalRule,
+    PlacementRequest,
     FleetTemplate,
     GroupSelector,
     MinDistinctBaremetalRule,
@@ -69,6 +70,7 @@ from .placement_report import (
 )
 from .rollout import solve_rollout
 from .rollout_sizing import build_fleet, point_steps_at_fleet, size_rollout
+from .solver import VMPlacementSolver
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +226,18 @@ class CompiledGroup(BaseModel):
     demands: list[CompiledDemand]
 
 
+class ManualMove(BaseModel):
+    """One hand-made relocation (ADR-022): `vm_id` as it appears in the
+    group's step reports (e.g. "A1/split-r0-s0-3"), `to_bm` a machine of the
+    SAME pool. `from_bm` / `vm_hostname` are filled in by the server so the
+    result stays auditable without the pre-edit result."""
+    group: str
+    vm_id: str
+    to_bm: str
+    from_bm: str = ""
+    vm_hostname: str = ""
+
+
 class GroupPlanResult(BaseModel):
     name: str
     clusters: list[str]
@@ -234,6 +248,8 @@ class GroupPlanResult(BaseModel):
     sizing: RolloutSizingResult | None = None
     rollout: RolloutResult | None = None
     baremetals: list[Baremetal] = Field(default_factory=list)
+    # Accepted manual relocations, in the order they were applied (ADR-022).
+    manual_moves: list[ManualMove] = Field(default_factory=list)
 
 
 class BmDemandPlanResult(BaseModel):
@@ -259,6 +275,27 @@ class BmDemandPlanResult(BaseModel):
     advisories: list[dict[str, Any]] = Field(default_factory=list)
     config_fingerprint: str = ""
     diagnostics: dict[str, Any] = Field(default_factory=dict)
+    # True once edit_layout() rewrote any placement: the reports describe the
+    # edited layout, while `sizing` probes and `advisories` are from the run.
+    edited: bool = False
+
+
+class LayoutEditRequest(BaseModel):
+    """Validate hand-made moves against a plan (ADR-022). The client echoes
+    the request/result pair it holds; `moves` are applied atomically (a swap
+    is two moves). Zero moves re-validates the layout as it stands."""
+    request: BmDemandPlanRequest
+    result: BmDemandPlanResult
+    moves: list[ManualMove] = Field(default_factory=list)
+
+
+class LayoutEditResult(BaseModel):
+    """ok=False carries the solver's status + diagnostics and no result —
+    a rejected move never changes the plan. Always HTTP 200."""
+    ok: bool
+    solver_status: str = ""
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    result: BmDemandPlanResult | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -721,23 +758,7 @@ def plan_bm_demands(req: BmDemandPlanRequest) -> BmDemandPlanResult:
         )
 
     catalog = {v.name: v.resources for v in req.vm_specs}
-    group_results: list[GroupPlanResult] = []
-    all_assign, all_vms, all_bms = [], [], []
-    for cg in compiled.groups:
-        gr = _run_group(cg, req)
-        group_results.append(gr)
-        if gr.rollout is not None:
-            # Synthetic ids are only unique within one rollout ("A1/split-r0-
-            # s0-3" exists in every group whose build order has a step A1),
-            # so namespace them by group before pooling the reports — the
-            # machines already carry the group prefix via FleetTemplate.
-            for rep in gr.rollout.reports:
-                for a, vm in zip(rep.new_assignments, rep.new_vms):
-                    all_assign.append(a.model_copy(update={"vm_id": f"{gr.name}/{a.vm_id}"}))
-                    all_vms.append(vm.model_copy(update={"id": f"{gr.name}/{vm.id}"}))
-            all_bms.extend(gr.baremetals)
-
-    layouts = bm_layouts(all_assign, all_vms, all_bms, catalog)
+    group_results = [_run_group(cg, req) for cg in compiled.groups]
     success = all(g.success for g in group_results)
     first_bad = next((g for g in group_results if not g.success), None)
     logger.info(
@@ -750,11 +771,180 @@ def plan_bm_demands(req: BmDemandPlanRequest) -> BmDemandPlanResult:
         groups=group_results,
         compiled=compiled.groups,
         total_baremetals=sum(g.required_baremetals for g in group_results),
-        placement_matrix=placement_matrix(all_assign, all_vms, all_bms, catalog),
-        bm_layouts=layouts,
-        legacy_template=legacy_template(layouts),
-        legacy_bm_map=legacy_bm_map(layouts),
+        **_assemble_reports(group_results, catalog),
         advisories=compiled.advisories,
         config_fingerprint=fingerprint,
         diagnostics={"elapsed_seconds": round(time.time() - start, 3)},
     )
+
+
+def _assemble_reports(group_results: list[GroupPlanResult],
+                      catalog: dict[str, Resources]) -> dict[str, Any]:
+    """The four PM-facing reports over EVERY group's placements — a pure
+    function of (assignments, vms, machines), so plan and edit share it."""
+    all_assign, all_vms, all_bms = [], [], []
+    for gr in group_results:
+        if gr.rollout is None:
+            continue
+        # Synthetic ids are only unique within one rollout ("A1/split-r0-
+        # s0-3" exists in every group whose build order has a step A1),
+        # so namespace them by group before pooling the reports — the
+        # machines already carry the group prefix via FleetTemplate.
+        for rep in gr.rollout.reports:
+            for a, vm in zip(rep.new_assignments, rep.new_vms):
+                all_assign.append(a.model_copy(update={"vm_id": f"{gr.name}/{a.vm_id}"}))
+                all_vms.append(vm.model_copy(update={"id": f"{gr.name}/{vm.id}"}))
+        all_bms.extend(gr.baremetals)
+    layouts = bm_layouts(all_assign, all_vms, all_bms, catalog)
+    return {
+        "placement_matrix": placement_matrix(all_assign, all_vms, all_bms, catalog),
+        "bm_layouts": layouts,
+        "legacy_template": legacy_template(layouts),
+        "legacy_bm_map": legacy_bm_map(layouts),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Manual layout edits (ADR-022)
+# ---------------------------------------------------------------------------
+
+def _accumulate_rules(steps: list[RolloutStep]) -> dict[str, list]:
+    """Every rule the build order ever introduced, exactly as solve_rollout
+    accumulates them step by step (app/rollout.py) — the edit check must
+    enforce the same policy the plan was produced under, not a copy."""
+    acc: dict[str, list] = {
+        "anti_affinity_rules": [], "max_per_bm_rules": [], "exclusive_bm_rules": [],
+        "failover_rules": [], "min_distinct_bm_rules": [],
+    }
+    for step in steps:
+        for key in acc:
+            acc[key].extend(getattr(step, key))
+    return acc
+
+
+def _input_error(msg: str) -> LayoutEditResult:
+    return LayoutEditResult(ok=False, solver_status=f"INPUT_ERROR: {msg}",
+                            diagnostics={"input_errors": [msg]})
+
+
+def _validate_group_layout(gr: GroupPlanResult, cg: CompiledGroup, placement: dict[str, str],
+                           config: SolverConfig):
+    """Re-solve the pool with every VM LOCKED to its machine (ADR-022).
+
+    Locking means `candidate_baremetals=[bm]`, never `pinned_to`: a pin is a
+    fact the solver grandfathers (C3/C4/C5 caps are lifted to the pinned
+    count, ADR-012), so a pinned layout can never fail — useless as a check.
+    A single candidate is a requirement: C2 capacity, auto C3 spread (with
+    `auto_group_labels`), C6 exclusivity and C7 footprint all apply at full
+    strength. With C1 fixed the model has exactly one candidate solution, so
+    the solve is a feasibility check: FEASIBLE/OPTIMAL ⇒ the layout is legal,
+    INFEASIBLE ⇒ diagnostics name the violated layer.
+
+    Flat check vs the sequential rollout: bm_demand emits only C6 and C7
+    (step-independent), and the auto-C3 cap at step k is
+    max(⌈N_k/|B|⌉, pinned-in-bucket) where the pinned count is itself bounded
+    by an earlier step's cap — by induction every bucket ends ≤ ⌈N_total/|B|⌉,
+    which is exactly the flat cap. So a rollout-accepted layout passes with
+    zero moves; the check is never looser than the plan.
+
+    Machines start EMPTY (used_capacity zeroed) — the explicit VMs are the
+    whole population — and Step A then never pre-filters a too-small target,
+    so a capacity miss surfaces as C2 (`failed_at=capacity`), not as a VM
+    with no eligible machine.
+    """
+    vms = [
+        vm.model_copy(update={"candidate_baremetals": [placement[vm.id]], "pinned_to": None})
+        for rep in gr.rollout.reports for vm in rep.new_vms
+    ]
+    bms = [b.model_copy(update={"used_capacity": Resources()}) for b in gr.baremetals]
+    return VMPlacementSolver(PlacementRequest(
+        vms=vms, baremetals=bms, config=config, **_accumulate_rules(cg.steps),
+    )).solve()
+
+
+def edit_layout(edit: LayoutEditRequest) -> LayoutEditResult:
+    """Apply `moves` to the plan if — and only if — the resulting layout of
+    every touched pool is still legal; see _validate_group_layout.
+
+    Guards (INPUT_ERROR, nothing solved): request/result pair mismatch,
+    unknown or failed pool, unknown VM, target outside the pool (the solver
+    would only report INFEASIBLE for an unknown candidate), one VM moved
+    twice. On success a deep copy of the result is returned with the
+    assignments rewritten, `manual_moves` appended, stock and reports
+    recomputed, and `edited=True`; `total_baremetals` / `sizing` keep the
+    run's numbers.
+    """
+    req, result = edit.request, edit.result
+    if result.config_fingerprint != config_fingerprint(req.config):
+        return _input_error("result was not produced from this request's config "
+                            f"(fingerprint {result.config_fingerprint!r} vs "
+                            f"{config_fingerprint(req.config)!r})")
+    groups = {g.name: g for g in result.groups}
+    compiled = {c.name: c for c in result.compiled}
+    by_group: dict[str, list[ManualMove]] = OrderedDict()
+    for m in edit.moves:
+        by_group.setdefault(m.group, []).append(m)
+    if not edit.moves:   # zero moves: re-validate every placed pool as it stands
+        by_group = OrderedDict((n, []) for n, g in groups.items() if g.success)
+
+    new_result = result.model_copy(deep=True)
+    new_groups = {g.name: g for g in new_result.groups}
+    for gname, moves in by_group.items():
+        gr = new_groups.get(gname)
+        cg = compiled.get(gname)
+        if gr is None or cg is None:
+            return _input_error(f"unknown tenancy group {gname!r}")
+        if not gr.success or gr.rollout is None:
+            return _input_error(f"tenancy group {gname!r} has no placement to edit "
+                                f"({gr.solver_status or 'failed'})")
+        fleet_ids = {b.id for b in gr.baremetals}
+        assignment_of = {a.vm_id: a for rep in gr.rollout.reports for a in rep.new_assignments}
+        placement = {vid: a.baremetal_id for vid, a in assignment_of.items()}
+        seen: set[str] = set()
+        for m in moves:
+            if m.vm_id not in assignment_of:
+                return _input_error(f"VM {m.vm_id!r} is not placed in tenancy group {gname!r}")
+            if m.to_bm not in fleet_ids:
+                return _input_error(f"machine {m.to_bm!r} is not in tenancy group {gname!r} "
+                                    "(moves stay inside one pool)")
+            if m.vm_id in seen:
+                return _input_error(f"VM {m.vm_id!r} appears in more than one move")
+            seen.add(m.vm_id)
+            placement[m.vm_id] = m.to_bm
+
+        solved = _validate_group_layout(gr, cg, placement, req.config)
+        if not solved.success:
+            logger.info("bm-demand edit-layout rejected for %s: %s", gname, solved.solver_status)
+            return LayoutEditResult(ok=False, solver_status=solved.solver_status,
+                                    diagnostics=solved.diagnostics)
+
+        # Write the (unique) solution back by vm_id — the flat request
+        # concatenates every step, so positions mean nothing here.
+        solved_of = {a.vm_id: a for a in solved.assignments}
+        vm_of = {vm.id: vm for rep in gr.rollout.reports for vm in rep.new_vms}
+        for m in moves:
+            a = assignment_of[m.vm_id]
+            m.from_bm, m.vm_hostname = a.baremetal_id, a.vm_hostname
+        for vid, a in assignment_of.items():
+            s = solved_of[vid]
+            a.baremetal_id, a.bm_hostname, a.ag = s.baremetal_id, s.bm_hostname, s.ag
+        gr.manual_moves.extend(moves)
+
+        # Stock after the edit: empty fleet + every VM's demand on its machine.
+        stock = {b.id: b.model_copy(update={"used_capacity": Resources()}) for b in gr.baremetals}
+        for vid, a in assignment_of.items():
+            host = stock[a.baremetal_id]
+            host.used_capacity = host.used_capacity + vm_of[vid].demand
+        gr.rollout.final_baremetals = list(stock.values())
+        used: set[str] = set()
+        for rep in gr.rollout.reports:
+            used.update(a.baremetal_id for a in rep.new_assignments)
+            rep.bm_used_count = len(used)
+        if gr.sizing is not None:
+            gr.sizing.rollout = gr.rollout   # one object again after the JSON round-trip
+
+    catalog = {v.name: v.resources for v in req.vm_specs}
+    for key, value in _assemble_reports(new_result.groups, catalog).items():
+        setattr(new_result, key, value)
+    new_result.edited = True
+    return LayoutEditResult(ok=True, solver_status="OPTIMAL", result=new_result)

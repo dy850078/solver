@@ -99,6 +99,17 @@ export async function bmDemandCompile(body) {
   return jsonOrThrow(res);
 }
 
+/** Validate manual VM moves against a PM-demand plan (ADR-022). Always
+ *  200; the body's `ok` says whether the moved layout is legal. */
+export async function bmDemandEditLayout(body) {
+  const res = await fetch("/v1/placement/bm-demand/edit-layout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow(res);
+}
+
 export async function bmDemandPlan(body) {
   const res = await fetch("/v1/placement/bm-demand/plan", {
     method: "POST",

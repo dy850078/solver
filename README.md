@@ -63,6 +63,7 @@ solver/
 | POST | `/v1/placement/rollout/size` | Estimate the smallest fleet that lets a whole build order place |
 | POST | `/v1/placement/bm-demand/compile` | Compile PM "N equivalent BMs" demand into per-tenancy-group rollout steps (no solve) |
 | POST | `/v1/placement/bm-demand/plan` | Compile + size/place every tenancy group; returns cluster×role×AG matrix, per-BM layouts, legacy template |
+| POST | `/v1/placement/bm-demand/edit-layout` | Validate hand-made VM moves against a plan (every VM locked to its machine, ADR-022); returns the rewritten plan or the solver's diagnostics |
 | POST | `/v1/capacity/procure` | Procurement sizing: how many BMs of each type to buy |
 | POST | `/v1/capacity/plan` | Multi-period capacity plan (demand book → per-fab monthly report) |
 | POST | `/v1/capacity/reconcile` | Plan-vs-actual drift report |
@@ -235,12 +236,24 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   unlabeled VMs keep the four keys, and the UI's export card lets you untick
   any column before copying / downloading. `examples/bm_demand/dedicated_labels.json`.
 - `/v1/placement/bm-demand/compile` returns the per-pool rollout steps only.
+- **Manual edits** (ADR-022). `POST /v1/placement/bm-demand/edit-layout` takes
+  `{request, result, moves: [{group, vm_id, to_bm}]}` and re-solves the touched
+  pool with every VM locked to its machine (`candidate_baremetals=[bm]`, never
+  `pinned_to` — a pin would be grandfathered). Legal → `ok=true` and a result
+  whose assignments, stock, matrix, layouts and legacy template are rewritten,
+  `edited=true`, the pool's `manual_moves` appended. Illegal → `ok=false` with
+  the solver's `diagnostics` (`constraint_check.failed_at` names the layer) and
+  the plan untouched; always HTTP 200. Moves stay inside one pool; a swap is
+  two moves in one call.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and
   hands any pool to the Rollout page. Each demand row has a free-text
   `Labels` field (`dedicated=AAA, tier=gold`); the Policy card lists every
   key in use with a "spread-grouping" checkbox (`dedicated` is ticked the
-  first time it appears).
+  first time it appears). **Edit layout** on the Machines card lets you drag a
+  VM onto another machine of the same pool (or onto another VM to swap); every
+  drop is validated by the server and a rejected one snaps back with the reason.
+  Undo / Discard all / Done; the Result JSON carries `manual_moves`.
 
 ## Split-and-Solve (`POST /v1/placement/split-and-solve`)
 
