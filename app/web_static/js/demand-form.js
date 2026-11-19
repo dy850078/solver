@@ -509,13 +509,20 @@ function applyFieldEdit(el) {
     return "preview";
   }
   if (sec === "groups") {
-    if (f === "fleetSize") row.fleetSize = el.value.trim() === "" ? null : Math.max(1, Math.round(coerceNum(el)));
-    else if (f === "name") {
+    // fleetSize is typed digit by digit: never rebuild the card under the
+    // cursor (nothing else displays it); the machine-model select commits
+    // on `change`, where a rebuild is safe.
+    if (f === "fleetSize") {
+      row.fleetSize = el.value.trim() === "" ? null : Math.max(1, Math.round(coerceNum(el)));
+      return "preview";
+    }
+    if (f === "name") {
       const old = row.name;
       row.name = el.value.trim();
       for (const d of state.demands) if (d.group === old) d.group = row.name;
       return "deferred";
-    } else row[f] = el.value;
+    }
+    row[f] = el.value;
     return "rerender";
   }
   return "none";
@@ -784,9 +791,10 @@ export function initForm(onChange) {
       onChange?.();
       return;
     }
-    // Text fields commit on blur / Enter: now rebuild the sections that
-    // depend on names (group pickers, exclusive list, build order, datalist).
-    if (el.type === "text") renderForm();
+    // Text / number fields commit on blur / Enter: now rebuild the sections
+    // that depend on them (group pickers, exclusive list, build order,
+    // datalist, the groups' Σ-equivalents hint) — never while typing.
+    if (el.type === "text" || el.type === "number") renderForm();
   });
   root.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-act]");

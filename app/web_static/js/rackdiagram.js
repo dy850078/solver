@@ -196,6 +196,7 @@ function renderVm(vm) {
   return `<span class="vm-chip"
     data-vm-id="${escapeHtml(vm.vm_id)}"
     data-vm-hostname="${escapeHtml(full)}"
+    data-vm-label="${escapeHtml(shown)}"
     data-bm-id="${escapeHtml(vm.bm_id)}"
     data-bm-hostname="${escapeHtml(vm.bm_hostname || "")}"
     data-ag="${escapeHtml(vm.ag)}"
@@ -273,10 +274,14 @@ function renderPanel(panel, showCapacity) {
 function vmTooltipNode(el) {
   const cpu = el.dataset.cpu, mem = el.dataset.mem, st = el.dataset.storage, gpu = el.dataset.gpu;
   const dem = cpu !== "" ? `${cpu} vCPU · ${mem} MiB · ${st} GB · ${gpu || "0"} GPU` : "—";
+  // The tooltip names the VM exactly as the chip does (hostname as shown);
+  // the raw id only appears, as "ID", when it differs from that name.
+  const name = el.dataset.vmLabel || el.dataset.vmHostname || el.dataset.vmId;
   return buildTooltipBody(
-    el.dataset.vmHostname || el.dataset.vmId,
+    name,
     [
-      ["VM", el.dataset.vmId],
+      ["VM", name],
+      ...(el.dataset.vmId && el.dataset.vmId !== name ? [["ID", el.dataset.vmId]] : []),
       ["BM", `${el.dataset.bmId} (${el.dataset.bmHostname || "—"})`],
       ["AG", el.dataset.ag || "—"],
       ["Cluster", el.dataset.cluster || "—"],
