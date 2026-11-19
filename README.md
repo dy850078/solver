@@ -245,6 +245,21 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   the solver's `diagnostics` (`constraint_check.failed_at` names the layer) and
   the plan untouched; always HTTP 200. Moves stay inside one pool; a swap is
   two moves in one call.
+- **Excel import / export** (ADR-023). The PM Demand page reads and writes an
+  `.xlsx` workbook that is the request JSON in spreadsheet form — parsed in the
+  browser with no third-party JS. Sheets (names and column headers are
+  case-insensitive, aliases accepted, order free): `Demands` (required:
+  cluster, node_role, ip = R/NR/blank, vm_spec, count_as = BMs/VMs, count,
+  min_distinct_bms, step, group, labels `k=v, k2=v2`), `VM specs` and
+  `Machine models` (name, cpu_cores, memory_gib, storage_gb, gpu `h200:8`),
+  `Groups` (name, clusters `A1, B1`, bm_spec, fleet_size) and `Settings`
+  (key / value rows: name, description, exclusive_clusters, default_min_distinct_bms,
+  sites … ags, build_order, max_solve_time_seconds, auto_anti_affinity,
+  w_headroom, auto_group_labels, max_baremetals, max_probes, deadline_seconds).
+  A sheet that is missing keeps the form's section; one that is present but
+  empty clears it. Import previews every row, and any error blocks the whole
+  import. **Export Excel** writes the current form in the same layout — use it
+  as the template.
 - UI: `/ui/demand.html` builds the same request from a form, saves / loads
   it as a template (the template **is** the request JSON), runs it and
   hands any pool to the Rollout page. Each demand row has a free-text

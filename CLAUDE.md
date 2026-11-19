@@ -134,6 +134,11 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   **Manual layout edits** (`edit_layout`, ADR-022) validate by re-solving the
   pool with every VM `candidate_baremetals=[bm]` (a requirement) — never
   `pinned_to` (a fact, grandfathered); rejected moves never change the plan.
+- **UI has no third-party JS and no CDN**: `xlsx.js` (writer) and
+  `xlsx-read.js` (reader, ADR-023) are hand-written on top of browser-native
+  `DecompressionStream` / `DOMParser`; never add SheetJS or a CDN script.
+  The PM Demand workbook is the request JSON in sheet form (`demand-xlsx.js`,
+  DOM-free, round-trip tested against `examples/bm_demand/`).
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with

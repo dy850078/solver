@@ -24,7 +24,7 @@
  * memory_mib (×1024).
  */
 
-import { escapeHtml as esc, formatGpu, formatLabels, parseGpu, parseLabels } from "./util.js";
+import { demandIdentity, escapeHtml as esc, formatGpu, formatLabels, parseGpu, parseLabels } from "./util.js";
 
 const GiB = 1024;
 const ROLES = ["worker", "master", "learner", "infra", "l4lb-storage", "bastion"];
@@ -133,8 +133,7 @@ function noteLabelKeys() {
 }
 
 /** Demand identity as the server sees it: cluster, ip, role AND labels. */
-const demandKey = (d) =>
-  `${d.cluster.trim()}\u0000${d.ip}\u0000${(d.role.trim() || "worker")}\u0000${formatLabels(d.labels, ",")}`;
+const demandKey = (d) => demandIdentity({ cluster_id: d.cluster, ip_type: d.ip, node_role: d.role, labels: d.labels });
 
 function groupOf(cluster) {
   return state.groups.find((g) => g.clusters.includes(cluster)) ?? null;
@@ -626,6 +625,13 @@ export function buildRequest({ withMeta = false } = {}) {
     }
   }
   reconcileOrder();
+  return toRequest({ withMeta });
+}
+
+/** The request as the form stands, WITHOUT validation — the pure mapping
+ * buildRequest() applies after its checks. Used as the base an Excel
+ * import merges into (a half-filled form must still serve as the base). */
+export function toRequest({ withMeta = false } = {}) {
   const req = {
     bm_specs: state.bmSpecs.map((b) => ({ name: b.name.trim(), capacity: toRes(b) })),
     vm_specs: state.vmSpecs.map((v) => ({ name: v.name.trim(), resources: toRes(v) })),

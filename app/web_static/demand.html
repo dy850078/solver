@@ -101,6 +101,9 @@
           <input id="load-input" type="file" accept=".json" hidden>
           <button id="save-btn" type="button" class="btn btn--ghost" title="Download this template as JSON">Save template</button>
           <button id="new-btn" type="button" class="btn btn--ghost" title="Start from a blank template">New</button>
+          <button id="xlsx-import-btn" type="button" class="btn btn--ghost" title="Import an Excel workbook (Demands sheet required; VM specs / Machine models / Groups / Settings optional)">Import Excel…</button>
+          <input id="xlsx-input" type="file" accept=".xlsx,.xlsm" hidden>
+          <button id="xlsx-export-btn" type="button" class="btn btn--ghost" title="Download this form as an Excel workbook — fill it in and import it back">Export Excel</button>
         </div>
 
         <div class="field" style="margin-top:8px">
@@ -318,6 +321,27 @@
   </div>
 
 </main>
+
+<dialog id="xlsx-dialog" class="csv-dialog">
+  <header class="csv-dialog__head">
+    <div>
+      <div class="csv-dialog__title">Import Excel — preview</div>
+      <div class="muted" style="font-size:11.5px; margin-top:2px">
+        A sheet that is present replaces that section of the form, a missing one keeps the form's · fix errors in Excel and import again
+      </div>
+    </div>
+    <button id="xlsx-dialog-close" type="button" class="btn btn--ghost btn--small" title="Close">✕</button>
+  </header>
+  <div id="xlsx-dialog-msg" class="alert alert--error hidden" style="margin:0 16px 10px"></div>
+  <div id="xlsx-table-host" class="csv-table-host"></div>
+  <footer class="csv-dialog__foot">
+    <span id="xlsx-dialog-summary" class="muted" style="font-size:12px"></span>
+    <div style="display:flex; gap:8px">
+      <button id="xlsx-dialog-cancel" type="button" class="btn">Cancel</button>
+      <button id="xlsx-dialog-import" type="button" class="btn btn--primary" disabled>Import (replace)</button>
+    </div>
+  </footer>
+</dialog>
 
 <div id="treemap-tooltip" class="tooltip" role="tooltip"></div>
 

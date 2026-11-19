@@ -20,9 +20,12 @@ import { renderTopologyLegend } from "./summary.js";
 import { buildFilterOptions, isFilterActive } from "./filter.js";
 import { createMultiSelect } from "./multiselect.js";
 import {
-  initForm, buildRequest, loadIntoForm, resetForm, state as form,
+  initForm, buildRequest, loadIntoForm, resetForm, toRequest, state as form,
 } from "./demand-form.js";
 import { createLayoutEditor } from "./layout-edit.js";
+import { buildXlsx } from "./xlsx.js";
+import { readXlsx } from "./xlsx-read.js";
+import { requestToSheets, sheetsToRequest, SHEETS } from "./demand-xlsx.js";
 
 const $ = (sel) => document.querySelector(sel);
 const DRAFT_KEY = "solver-demand-draft";
@@ -51,7 +54,12 @@ function download(blob, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-function showFormError(msg) { const el = $("#form-error"); el.textContent = msg; el.classList.remove("hidden"); }
+function showFormError(msg) {
+  const el = $("#form-error");
+  el.textContent = msg;
+  el.classList.remove("hidden", "alert--ok");
+  el.classList.add("alert--error");
+}
 function hideFormError() { $("#form-error").classList.add("hidden"); }
 
 function statusKind(status) {
@@ -636,6 +644,116 @@ function openInRollout() {
   window.open("rollout.html", "_blank", "noopener");
 }
 
+/* ── Excel import / export (ADR-023) ───────────────────────────────── */
+
+function exportExcel() {
+  const cur = currentRequest();
+  if (!cur) return;
+  const req = { ...(cur.name ? { _name: cur.name } : {}), ...(form.description ? { _description: form.description } : {}), ...cur.wire };
+  download(buildXlsx(requestToSheets(req)), `${fileSafe(cur.name)}.xlsx`);
+}
+
+let xlsxPending = null;   // the analysed workbook shown in the dialog
+
+function xlsxDialogError(msg) {
+  const box = $("#xlsx-dialog-msg");
+  box.textContent = msg;
+  box.classList.remove("hidden");
+  $("#xlsx-table-host").innerHTML = "";
+  $("#xlsx-dialog-summary").textContent = "";
+  $("#xlsx-dialog-import").disabled = true;
+  xlsxPending = null;
+}
+
+async function previewExcel(file) {
+  const dlg = $("#xlsx-dialog");
+  $("#xlsx-dialog-msg").classList.add("hidden");
+  $("#xlsx-table-host").innerHTML = `<div class="csv-empty">Reading ${escapeHtml(file.name)}…</div>`;
+  $("#xlsx-dialog-import").disabled = true;
+  if (!dlg.open) dlg.showModal();
+  let sheets;
+  try {
+    sheets = await readXlsx(await file.arrayBuffer());
+  } catch (err) {
+    xlsxDialogError(`Could not read ${file.name}: ${err.message}`);
+    return;
+  }
+  // The form as it stands is the base: sheets that are present replace
+  // their section, absent ones keep what the form already holds.
+  const base = toRequest({ withMeta: true });
+  const res = sheetsToRequest(sheets, base);
+  res.fileName = file.name;
+  xlsxPending = res;
+  renderXlsxPreview(res, sheets);
+}
+
+function renderXlsxPreview(res, sheets) {
+  const host = $("#xlsx-table-host");
+  const parts = [];
+  const sheetNames = sheets.map((s) => s.name);
+  const known = new Set();
+  for (const [id, spec] of Object.entries(SHEETS)) {
+    const sec = res.sheets[id];
+    const errs = sec.errors.length + sec.rows.reduce((n, r) => n + r.errors.length, 0);
+    const status = !sec.found
+      ? (spec.required ? `<span class="step-chip step-chip--err">missing</span>` : `<span class="muted">not in the workbook — the form's ${spec.title} are kept</span>`)
+      : errs ? `<span class="step-chip step-chip--err">${errs} error${errs === 1 ? "" : "s"}</span>`
+      : `<span class="step-chip step-chip--ok">ok</span>`;
+    const count = sec.found ? `<span class="muted">${sec.rows.length} row${sec.rows.length === 1 ? "" : "s"}${sec.found && !sec.rows.length && !spec.kv ? " — section will be emptied" : ""}</span>` : "";
+    let table = "";
+    if (sec.found && (sec.rows.length || sec.errors.length)) {
+      const cols = spec.kv ? ["key", "value"] : spec.columns.map((c) => c.key);
+      table = `<div class="table-wrap"><table class="table csv-table">
+        <thead><tr><th>#</th>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}<th>Status</th></tr></thead>
+        <tbody>${sec.rows.map((r) => `<tr class="${r.errors.length ? "csv-row--bad" : ""}">
+          <td class="muted">${r.line}</td>
+          ${cols.map((c) => `<td>${escapeHtml(cellText(r.cells[c]))}</td>`).join("")}
+          <td class="csv-status">${r.errors.length ? r.errors.map(escapeHtml).join("<br>") : "ok"}</td>
+        </tr>`).join("")}</tbody></table></div>`;
+    }
+    const sheetErrs = sec.errors.length ? `<ul class="csv-warnings" style="color:var(--error)">${sec.errors.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : "";
+    parts.push(`<section class="csv-sheet" data-sheet="${id}">
+      <h4 class="csv-sheet__title">${escapeHtml(spec.title)} ${status} ${count}</h4>${sheetErrs}${table}</section>`);
+    if (sec.found) known.add(id);
+  }
+  const extra = sheetNames.filter((n) => !Object.values(SHEETS).some((sp) => sp.aliases.includes(n.trim().toLowerCase().replace(/[\s_-]+/g, "_"))));
+  const warnings = [...res.warnings, ...extra.map((n) => `sheet "${n}" is not used`)];
+  const warn = warnings.length ? `<ul class="csv-warnings">${warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul>` : "";
+  host.innerHTML = warn + parts.join("");
+  const n = res.request.demands?.length ?? 0;
+  $("#xlsx-dialog-summary").textContent = res.errorCount
+    ? `${res.errorCount} error${res.errorCount === 1 ? "" : "s"} — fix them in ${res.fileName} and import again`
+    : `${n} demand${n === 1 ? "" : "s"} ready · ${[...known].map((k) => SHEETS[k].title).join(", ")}`;
+  $("#xlsx-dialog-import").disabled = res.errorCount > 0;
+}
+
+const cellText = (v) => (v == null ? "" : typeof v === "boolean" ? (v ? "yes" : "no") : String(v));
+
+function applyExcelImport() {
+  const res = xlsxPending;
+  if (!res || res.errorCount) return;
+  $("#xlsx-dialog").close();
+  loadTemplate(res.request);
+  const used = Object.keys(SHEETS).filter((k) => res.sheets[k]?.found).map((k) => SHEETS[k].title);
+  const n = res.request.demands?.length ?? 0;
+  showFormNote(`Imported ${n} demand${n === 1 ? "" : "s"} from ${res.fileName} (${used.join(", ")}).`);
+  xlsxPending = null;
+}
+
+function showFormNote(msg) {
+  const el = $("#form-error");
+  // A form error raised while applying the import (e.g. an imported cluster
+  // that sits in no group) must stay visible: prepend the note to it.
+  if (!el.classList.contains("hidden") && el.classList.contains("alert--error")) {
+    el.textContent = `${msg} ${el.textContent}`;
+    return;
+  }
+  el.textContent = msg;
+  el.classList.remove("hidden", "alert--error");
+  el.classList.add("alert--ok");
+  setTimeout(() => { if (el.textContent === msg) { el.classList.add("hidden"); el.classList.remove("alert--ok"); el.classList.add("alert--error"); } }, 6000);
+}
+
 async function populateExamples() {
   const sel = $("#example-select");
   try {
@@ -728,6 +846,17 @@ function init() {
     syncJson();
   });
   $("#json-override").addEventListener("change", () => { if (!$("#json-override").checked) syncJson(); });
+  $("#xlsx-export-btn").addEventListener("click", exportExcel);
+  $("#xlsx-import-btn").addEventListener("click", () => $("#xlsx-input").click());
+  $("#xlsx-input").addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    if (file) previewExcel(file);
+    e.target.value = "";
+  });
+  $("#xlsx-dialog-import").addEventListener("click", applyExcelImport);
+  for (const id of ["#xlsx-dialog-cancel", "#xlsx-dialog-close"]) {
+    $(id).addEventListener("click", () => { $("#xlsx-dialog").close(); xlsxPending = null; });
+  }
   $("#run-btn").addEventListener("click", runPlan);
   $("#dl-result-btn").addEventListener("click", downloadResult);
   $("#legacy-pool").addEventListener("change", () => { $("#legacy-json").value = legacyJsonFor(legacySelectedPool()); });
