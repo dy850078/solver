@@ -630,3 +630,250 @@ class TestLabels:
         r = plan_bm_demands(req)
         assert r.success, r.solver_status
         assert len(r.placement_matrix) == 3
+
+
+# ===========================================================================
+# Manual layout edits (ADR-022)
+# ===========================================================================
+
+from app.bm_demand import LayoutEditRequest, ManualMove, edit_layout  # noqa: E402
+
+
+def _edit(req, res, *moves):
+    return edit_layout(LayoutEditRequest(request=req, result=res, moves=list(moves)))
+
+
+def _placement(res, group):
+    g = next(g for g in res.groups if g.name == group)
+    return {a.vm_id: a.baremetal_id for rep in g.rollout.reports for a in rep.new_assignments}
+
+
+@pytest.fixture(scope="module")
+def scenario():
+    """27 thirds (9 AAA / 9 BBB / 9 plain) on a FIXED fleet of 12 so the
+    pool has empty machines to move into: 9 machines hold three VMs each,
+    three stand empty (one per AG). The sized fleet (9) would be full and
+    every single move would hit capacity only."""
+    logging.disable(logging.CRITICAL)
+    try:
+        req = request(
+            [D("A1", "third", n=3, labels={"dedicated": "AAA"}),
+             D("A1", "third", n=3, labels={"dedicated": "BBB"}),
+             D("A1", "third", n=3)],
+            groups=[TenancyGroup(name="shared", clusters=["A1"], bm_spec="bm", fleet_size=12)],
+            min_distinct=3, config=LABELED,
+        )
+        res = plan_bm_demands(req)
+        assert res.success, res.solver_status
+        return req, res
+    finally:
+        logging.disable(logging.NOTSET)
+
+
+class TestLayoutEdit:
+
+    @staticmethod
+    def _targets(res):
+        """An AAA VM, its machine, an EMPTY machine in the same AG, an empty
+        machine in another AG, and a full machine elsewhere."""
+        aaa = next(e for l in res.bm_layouts for e in l.entries if e.labels.get("dedicated") == "AAA")
+        src = next(l for l in res.bm_layouts if any(e.vm_id == aaa.vm_id for e in l.entries))
+        occupied = {l.bm_id for l in res.bm_layouts}
+        fleet = res.groups[0].baremetals
+        same_ag = next(b.id for b in fleet if b.topology.ag == src.ag and b.id not in occupied)
+        other_ag = next(b.id for b in fleet if b.topology.ag != src.ag and b.id not in occupied)
+        full = next(l.bm_id for l in res.bm_layouts if len(l.entries) == 3 and l.bm_id != src.bm_id)
+        return aaa.vm_id.split("/", 1)[1], src.bm_id, same_ag, other_ag, full
+
+    def test_zero_moves_revalidates_the_plan_as_is(self, scenario):
+        """Flat check vs sequential rollout: a rollout-accepted layout must
+        pass when re-solved with every VM locked (regression guard for the
+        argument in _validate_group_layout's docstring)."""
+        req, res = scenario
+        out = _edit(req, res)
+        assert out.ok, out.solver_status
+        assert _placement(out.result, "shared") == _placement(res, "shared")
+        assert out.result.edited and out.result.groups[0].manual_moves == []
+
+    def test_move_into_same_ag_is_accepted_and_reports_follow(self, scenario):
+        req, res = scenario
+        vid, src, same_ag, _, _ = self._targets(res)
+        out = _edit(req, res, ManualMove(group="shared", vm_id=vid, to_bm=same_ag))
+        assert out.ok, (out.solver_status, out.diagnostics)
+        new = out.result
+        assert new.edited and res.edited is False          # input untouched
+        assert _placement(new, "shared")[vid] == same_ag
+        assert _placement(res, "shared")[vid] == src
+        (mv,) = new.groups[0].manual_moves
+        assert (mv.from_bm, mv.to_bm) == (src, same_ag) and mv.vm_hostname.startswith("worker-R-AAA-")
+        # matrix: same population, same per-AG histogram (moved within the AG)
+        tot = lambda r: sorted((row.labels.get("dedicated", ""), row.vm_count, sorted(row.per_ag.items()))
+                               for row in r.placement_matrix)
+        assert tot(new) == tot(res)
+        # layouts + legacy export: the VM left `src` and sits on `same_ag`
+        lay = {l.bm_id: l for l in new.bm_layouts}
+        assert vid not in {e.vm_id.split("/", 1)[1] for e in lay[src].entries}
+        assert [e.vm_id.split("/", 1)[1] for e in lay[same_ag].entries] == [vid]
+        bm_no = {v: k for k, v in new.legacy_bm_map["shared"].items()}[same_ag]
+        assert new.legacy_template["shared"][bm_no] == [
+            {"role": "worker", "vm_spec": "third", "routable": "R", "cluster": "A1",
+             "labels": {"dedicated": "AAA"}}]
+        # stock follows: the target now carries one third, the source two
+        stock = {b.id: b for b in new.groups[0].rollout.final_baremetals}
+        assert stock[same_ag].used_capacity.cpu_cores == 30 and stock[src].used_capacity.cpu_cores == 60
+        assert new.groups[0].sizing is None   # fixed fleet; sizing alias covered by sized scenario
+        assert new.total_baremetals == res.total_baremetals
+
+    def test_move_into_other_ag_is_rejected_by_auto_anti_affinity(self, scenario):
+        """Three AAA per AG is the cap (⌈9/3⌉); a fourth is a C3 violation
+        even though the machine is empty — exactly what a `pinned_to` lock
+        would have grandfathered."""
+        req, res = scenario
+        vid, _, _, other_ag, _ = self._targets(res)
+        out = _edit(req, res, ManualMove(group="shared", vm_id=vid, to_bm=other_ag))
+        assert not out.ok and out.result is None
+        assert out.solver_status == "INFEASIBLE"
+        assert out.diagnostics["constraint_check"]["failed_at"] == "anti_affinity"
+
+    def test_move_onto_full_machine_is_rejected_by_capacity(self, scenario):
+        req, res = scenario
+        vid, _, _, _, full = self._targets(res)
+        out = _edit(req, res, ManualMove(group="shared", vm_id=vid, to_bm=full))
+        assert not out.ok and out.solver_status == "INFEASIBLE"
+        assert out.diagnostics["constraint_check"]["failed_at"] == "capacity"
+
+    def test_swap_is_two_moves_applied_atomically(self, scenario):
+        req, res = scenario
+        place = _placement(res, "shared")
+        lay = {l.bm_id: l for l in res.bm_layouts}
+        # two AAA VMs on different machines in the same AG
+        by_ag = {}
+        for l in res.bm_layouts:
+            for e in l.entries:
+                if e.labels.get("dedicated") == "AAA":
+                    by_ag.setdefault(l.ag, []).append(e.vm_id.split("/", 1)[1])
+        ag, ids = next((ag, ids) for ag, ids in by_ag.items() if len({place[i] for i in ids}) >= 2)
+        a, b = next((x, y) for x in ids for y in ids if place[x] != place[y])
+        out = _edit(req, res,
+                    ManualMove(group="shared", vm_id=a, to_bm=place[b]),
+                    ManualMove(group="shared", vm_id=b, to_bm=place[a]))
+        assert out.ok, (out.solver_status, out.diagnostics)
+        new = _placement(out.result, "shared")
+        assert new[a] == place[b] and new[b] == place[a]
+        assert len(out.result.groups[0].manual_moves) == 2
+
+    def test_edits_accumulate_when_the_edited_result_is_sent_back(self, scenario):
+        req, res = scenario
+        vid, src, same_ag, _, _ = self._targets(res)
+        first = _edit(req, res, ManualMove(group="shared", vm_id=vid, to_bm=same_ag))
+        # move it back: validated against the edited result, history keeps both
+        second = _edit(req, first.result, ManualMove(group="shared", vm_id=vid, to_bm=src))
+        assert second.ok, second.solver_status
+        assert _placement(second.result, "shared") == _placement(res, "shared")
+        assert [(m.from_bm, m.to_bm) for m in second.result.groups[0].manual_moves] == [
+            (src, same_ag), (same_ag, src)]
+        # bm_used_count tracks the edited layout, not the run
+        assert second.result.groups[0].rollout.reports[-1].bm_used_count == 9
+        assert first.result.groups[0].rollout.reports[-1].bm_used_count == 10
+
+    def test_guards_are_input_errors(self, scenario):
+        req, res = scenario
+        vid, _, same_ag, _, _ = self._targets(res)
+        cases = {
+            "unknown tenancy group": ManualMove(group="nope", vm_id=vid, to_bm=same_ag),
+            "is not placed": ManualMove(group="shared", vm_id="A1/ghost", to_bm=same_ag),
+            "moves stay inside one pool": ManualMove(group="shared", vm_id=vid, to_bm="other/bm-001"),
+        }
+        for needle, mv in cases.items():
+            out = _edit(req, res, mv)
+            assert not out.ok and out.solver_status.startswith("INPUT_ERROR") and needle in out.solver_status
+        dup = _edit(req, res, ManualMove(group="shared", vm_id=vid, to_bm=same_ag),
+                    ManualMove(group="shared", vm_id=vid, to_bm=same_ag))
+        assert "more than one move" in dup.solver_status
+        other = request([D("A1", "third", n=3)], min_distinct=0, config=FAST)
+        assert "fingerprint" in _edit(other, res).solver_status
+
+    def test_failed_pool_cannot_be_edited(self):
+        req = request([D("B1", "full", n=5)], min_distinct=0,
+                      groups=[TenancyGroup(name="tiny", clusters=["B1"], bm_spec="bm", fleet_size=2)])
+        res = plan_bm_demands(req)
+        assert not res.success
+        out = _edit(req, res, ManualMove(group="tiny", vm_id="B1/x", to_bm="tiny/bm-001"))
+        assert "has no placement to edit" in out.solver_status
+
+    def test_exclusive_pool_rejects_sharing_a_machine(self):
+        """C1 owns its machines (C6, k forced to 1): six thirds, one per
+        machine, two machines per AG. Doubling up inside one AG passes C2
+        (two thirds fit) and the AG cap (still two per AG) — only
+        exclusivity says no, so `failed_at` must name it."""
+        req = request([D("C1", "third", n=6)], exclusive=["C1"], min_distinct=0,
+                      groups=[TenancyGroup(name="c1-own", clusters=["C1"], bm_spec="bm", fleet_size=6)])
+        logging.disable(logging.CRITICAL)
+        try:
+            res = plan_bm_demands(req)
+        finally:
+            logging.disable(logging.NOTSET)
+        assert res.success, res.solver_status
+        assign = [a for rep in res.groups[0].rollout.reports for a in rep.new_assignments]
+        assert len({a.baremetal_id for a in assign}) == 6
+        a = assign[0]
+        b = next(x for x in assign if x.ag == a.ag and x.baremetal_id != a.baremetal_id)
+        out = _edit(req, res, ManualMove(group="c1-own", vm_id=a.vm_id, to_bm=b.baremetal_id))
+        assert not out.ok and out.solver_status == "INFEASIBLE"
+        assert out.diagnostics["constraint_check"]["failed_at"] == "exclusive"
+        assert res.edited is False
+
+    def test_sized_pool_keeps_sizing_alias_in_sync(self, scenario):
+        """The sizing path returns `sizing.rollout` and `rollout` as one
+        object; after a JSON round-trip they are two, and the edit must
+        rewrite both (the UI reads either)."""
+        req, _ = scenario
+        sized_req = request(
+            [D("A1", "third", n=3, labels={"dedicated": "AAA"}),
+             D("A1", "third", n=3, labels={"dedicated": "BBB"}),
+             D("A1", "third", n=3)],
+            min_distinct=3, config=LABELED, max_baremetals=12,
+        )
+        logging.disable(logging.CRITICAL)
+        try:
+            res = plan_bm_demands(sized_req)
+        finally:
+            logging.disable(logging.NOTSET)
+        assert res.success and res.groups[0].sizing is not None
+        res = type(res).model_validate_json(res.model_dump_json())   # two objects now
+        place = _placement(res, "shared")
+        vid, src = next(iter(place.items()))
+        g = res.groups[0]
+        same_ag = next(a.baremetal_id for rep in g.rollout.reports for a in rep.new_assignments
+                       if a.ag == next(x.ag for rep2 in g.rollout.reports for x in rep2.new_assignments if x.vm_id == vid)
+                       and a.baremetal_id != src)
+        # swapping two VMs of the same spec on different machines in one AG is always legal
+        other_vid = next(v for v, bm in place.items() if bm == same_ag)
+        out = _edit(sized_req, res,
+                    ManualMove(group="shared", vm_id=vid, to_bm=same_ag),
+                    ManualMove(group="shared", vm_id=other_vid, to_bm=src))
+        assert out.ok, (out.solver_status, out.diagnostics)
+        g = out.result.groups[0]
+        assert g.sizing.rollout is g.rollout
+        assert {a.vm_id: a.baremetal_id for rep in g.sizing.rollout.reports for a in rep.new_assignments}[vid] == same_ag
+
+
+class TestLayoutEditEndpoint:
+
+    def test_endpoint_is_always_200(self, client):
+        req = request([D("A1", "third", n=2)], min_distinct=0,
+                      groups=[TenancyGroup(name="shared", clusters=["A1"], bm_spec="bm", fleet_size=4)])
+        res = plan_bm_demands(req)
+        assert res.success
+        body = {"request": json.loads(req.model_dump_json()),
+                "result": json.loads(res.model_dump_json()),
+                "moves": [{"group": "shared", "vm_id": "A1/ghost", "to_bm": "shared/bm-001"}]}
+        resp = client.post("/v1/placement/bm-demand/edit-layout", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False and data["result"] is None
+        assert data["solver_status"].startswith("INPUT_ERROR")
+        body["moves"] = []
+        data = client.post("/v1/placement/bm-demand/edit-layout", json=body).json()
+        assert data["ok"] and data["result"]["edited"] is True
+        assert "manual_moves" in data["result"]["groups"][0]

@@ -41,7 +41,10 @@ from .bm_demand import (
     BmDemandPlanRequest,
     BmDemandPlanResult,
     CompiledGroup,
+    LayoutEditRequest,
+    LayoutEditResult,
     compile_bm_demands,
+    edit_layout,
     plan_bm_demands,
 )
 from .capacity_planner import solve_capacity_horizon, solve_capacity_plan
@@ -197,6 +200,14 @@ def bm_demand_plan(request: BmDemandPlanRequest) -> BmDemandPlanResult:
     """Compile BM-equivalent demand, size or place every tenancy group, and
     return the cluster × role × AG matrix, per-BM layouts and legacy template."""
     return plan_bm_demands(request)
+
+
+@api.post("/v1/placement/bm-demand/edit-layout", response_model=LayoutEditResult)
+def bm_demand_edit_layout(request: LayoutEditRequest) -> LayoutEditResult:
+    """Validate hand-made VM relocations against the plan's own constraints
+    (every VM locked to its machine, ADR-022). Always 200: ok=False carries
+    the solver diagnostics and leaves the plan untouched."""
+    return edit_layout(request)
 
 
 @api.post("/v1/capacity/procure", response_model=ProcurementResult)

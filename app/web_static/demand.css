@@ -144,3 +144,31 @@
 .legacy-fields input { accent-color: var(--accent); width: 13px; height: 13px; margin: 0; }
 .legacy-hint { font-size: 11.5px; margin: 8px 0 0; }
 #legacy-card .toolbar { gap: 6px; }
+
+/* Edit layout (ADR-022): drag chips between machines of one pool. */
+.edit-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  padding: 10px 12px; margin-bottom: 12px;
+  border: 1px solid var(--accent); border-radius: var(--radius-md);
+  background: var(--accent-soft); font-size: 12.5px;
+}
+.edit-bar__title { font-weight: 600; color: var(--text-base); }
+.edit-bar__hint { color: var(--text-muted); font-size: 12px; }
+.edit-bar__move { display: inline-flex; align-items: center; gap: 6px; }
+.edit-bar__move .select { max-width: 220px; }
+.edit-bar__actions { display: inline-flex; gap: 6px; margin-left: auto; }
+.edit-bar__msg {
+  flex-basis: 100%; margin: 0; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; border: 1px solid var(--error-border); color: var(--error); background: var(--error-soft);
+}
+.edit-bar__msg--busy { border-color: var(--border-base); color: var(--text-muted); background: var(--bg-surface); }
+.bm--droppable { border-style: dashed; }
+.bm--droppable .bm__placeholder::after { content: " — drop a VM here"; }
+.bm--over { border-color: var(--accent) !important; box-shadow: inset 0 0 0 1.5px var(--accent); background: var(--accent-soft); }
+.bm--busy { opacity: 0.55; pointer-events: none; }
+.vm-chip[draggable="true"] { cursor: grab; }
+.vm-chip[draggable="true"]:active { cursor: grabbing; }
+.vm-chip--dragging { opacity: 0.4; }
+.vm-chip--selected { box-shadow: 0 0 0 2px var(--accent); border-color: var(--accent); }
+.bm--over .vm-chip:hover { box-shadow: 0 0 0 2px var(--accent); }
+#group-tabs input:disabled + span { opacity: 0.5; cursor: not-allowed; }
