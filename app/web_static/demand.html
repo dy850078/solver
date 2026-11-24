@@ -289,8 +289,8 @@
 
     <section id="legacy-card" class="card hidden">
       <header class="card__header">
-        <h2 class="card__title">Legacy pipeline export</h2>
-        <span class="card__hint">one document per Baremetal group · BM1…BMn in layout order · every VM tagged with its cluster</span>
+        <h2 class="card__title">Blueprint export <span class="muted">(legacy pipeline)</span></h2>
+        <span class="card__hint">one document per Baremetal group · BM1…BMn in layout order · every VM tagged with its cluster · <code>_topology</code> / <code>_binding</code> per machine</span>
         <div class="card__header-right toolbar">
           <label class="select-inline">
             <span class="select-inline__label">Group</span>
@@ -302,9 +302,9 @@
         </div>
       </header>
       <div class="card__body">
-        <div id="legacy-fields" class="legacy-fields" title="Columns written for every VM. `labels` appears only on VMs that carry labels."></div>
+        <div id="legacy-fields" class="legacy-fields" title="What goes into the copied / downloaded document: the columns of every VM row, the two blueprint keys, and the topology dimensions kept under _topology."></div>
         <textarea id="legacy-json" class="editor editor--legacy" readonly spellcheck="false"></textarea>
-        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON. Untick a column to leave it out of the copied / downloaded document.</p>
+        <p class="muted legacy-hint">Keys BM1…BMn are numbered per group in layout order and only cover machines that host a VM; the planned machine behind each key is <code>legacy_bm_map</code> in the Result JSON. <code>_topology</code> gives each machine's topology as numbers (the API carries all six dimensions; <code>dc</code> is exported by default) and <code>_binding</code> is the empty slot the inventory-generator fills with the real hostname. Untick anything to leave it out of the copied / downloaded document.</p>
       </div>
     </section>
 

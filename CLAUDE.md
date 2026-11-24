@@ -131,6 +131,12 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   (occupied machines only), entries `{role, vm_spec, routable: R|NR|"", cluster}`
   plus `labels: {k: v}` only on VMs that carry labels (ADR-021; the UI export
   card lets the user drop columns); `legacy_bm_map` traces keys to machine ids.
+  Each pool document ("blueprint") also carries `_topology` (BMn → numeric
+  topology, short keys `site/phase/dc/room/rack/ag`, trailing number of the
+  name, non-numeric names kept verbatim) and `_binding` (BMn → `""`, filled
+  later by the inventory-generator) — keys starting with `_` are never
+  machines (ADR-024). The API emits all six dimensions; the UI exports `dc`
+  by default.
   **Manual layout edits** (`edit_layout`, ADR-022) validate by re-solving the
   pool with every VM `candidate_baremetals=[bm]` (a requirement) — never
   `pinned_to` (a fact, grandfathered); rejected moves never change the plan.

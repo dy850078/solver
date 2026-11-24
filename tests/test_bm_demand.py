@@ -19,6 +19,12 @@ from app.bm_demand import (
     VmSpec, compile_bm_demands, fits_per_bm, plan_bm_demands,
 )
 from app.models import Resources, SolverConfig
+from app.placement_report import LEGACY_META_KEYS, topology_numbers
+
+
+def bm_rows(doc):
+    """(key, rows) of the machine entries of a blueprint document."""
+    return [(k, v) for k, v in doc.items() if not k.startswith("_")]
 
 GiB = 1024
 
@@ -297,14 +303,30 @@ class TestPlanEndToEnd:
         t = plan.legacy_template
         assert set(t) == {"shared", "c1-own"}
         shared_used = [l for l in plan.bm_layouts if l.pool == "shared" and l.entries]
-        assert list(t["shared"]) == [f"BM{i}" for i in range(1, len(shared_used) + 1)]
-        assert sum(len(rows) for rows in t["shared"].values()) == 36 + 10
+        assert list(t["shared"]) == [f"BM{i}" for i in range(1, len(shared_used) + 1)] + list(LEGACY_META_KEYS)
+        assert sum(len(rows) for _, rows in bm_rows(t["shared"])) == 36 + 10
         assert all(rows == [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]
-                   for rows in t["c1-own"].values())
-        b1 = [e for rows in t["shared"].values() for e in rows if e["cluster"] == "B1"]
+                   for _, rows in bm_rows(t["c1-own"]))
+        b1 = [e for _, rows in bm_rows(t["shared"]) for e in rows if e["cluster"] == "B1"]
         assert len(b1) == 10 and all(e["routable"] == "NR" and e["vm_spec"] == "half" for e in b1)
         assert plan.legacy_bm_map["shared"]["BM1"].startswith("shared/")
         assert set(plan.legacy_bm_map["shared"].values()) == {l.bm_id for l in shared_used}
+
+    def test_blueprint_meta_keys_describe_the_planned_machines(self, plan):
+        """ADR-024: `_topology` is the fleet machine's topology as numbers,
+        `_binding` an empty slot per BM, both keyed like the BM entries."""
+        for g in plan.groups:
+            doc = plan.legacy_template[g.name]
+            keys = [k for k, _ in bm_rows(doc)]
+            assert list(doc["_topology"]) == keys and list(doc["_binding"]) == keys
+            assert set(doc["_binding"].values()) == {""}
+            machines = {b.id: b for b in g.baremetals}
+            for key in keys:
+                bm = machines[plan.legacy_bm_map[g.name][key]]
+                topo = doc["_topology"][key]
+                assert topo == topology_numbers(bm.topology)
+                assert set(topo) == {"site", "phase", "dc", "room", "rack", "ag"}
+                assert all(isinstance(v, int) for v in topo.values())
 
     def test_vms_get_readable_hostnames(self, plan):
         """Synthetic ids are for machines; chips and templates show
@@ -457,7 +479,7 @@ class TestDemandGroupOverride:
         assert gpu_layouts and all(e.node_role == "gpu-worker" for l in gpu_layouts for e in l.entries)
         gpu_doc = r.legacy_template["gpu-nodes"]
         assert all(e == {"role": "gpu-worker", "vm_spec": "gpu-half", "routable": "R", "cluster": "A1"}
-                   for rows in gpu_doc.values() for e in rows)
+                   for _, rows in bm_rows(gpu_doc) for e in rows)
 
     def test_unknown_group_is_input_error(self):
         req = self._req()
@@ -597,7 +619,7 @@ class TestLabels:
         # legacy export: four columns, plus `labels` only on labeled VMs
         seen_labels = set()
         for pool in r.legacy_template.values():
-            for entries in pool.values():
+            for _, entries in bm_rows(pool):
                 for e in entries:
                     assert set(e) - {"labels"} == {"role", "vm_spec", "routable", "cluster"}
                     if "labels" in e:
@@ -718,6 +740,11 @@ class TestLayoutEdit:
         assert new.legacy_template["shared"][bm_no] == [
             {"role": "worker", "vm_spec": "third", "routable": "R", "cluster": "A1",
              "labels": {"dedicated": "AAA"}}]
+        # blueprint meta keys follow the edit: the new BMn describes `same_ag`
+        target = next(b for b in new.groups[0].baremetals if b.id == same_ag)
+        assert new.legacy_template["shared"]["_topology"][bm_no] == topology_numbers(target.topology)
+        assert new.legacy_template["shared"]["_binding"][bm_no] == ""
+        assert len(new.legacy_template["shared"]["_topology"]) == len(res.legacy_template["shared"]["_topology"]) + 1
         # stock follows: the target now carries one third, the source two
         stock = {b.id: b for b in new.groups[0].rollout.final_baremetals}
         assert stock[same_ag].used_capacity.cpu_cores == 30 and stock[src].used_capacity.cpu_cores == 60

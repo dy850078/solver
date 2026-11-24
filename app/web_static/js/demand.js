@@ -528,24 +528,49 @@ function legacySelectedPool() {
 /* Columns of the legacy document. The server always writes the four
  * classic keys plus `labels` on labeled VMs; the user picks which of them
  * the copied / downloaded document keeps (persisted per browser). */
-const LEGACY_FIELDS = ["role", "vm_spec", "routable", "cluster", "labels"];
-const LEGACY_FIELDS_KEY = "solver-legacy-fields";
+/* Blueprint export choices (ADR-024). Three groups: the columns written for
+ * every VM row, the two meta keys, and — under `_topology` — which
+ * dimensions to keep. The API always carries all six dimensions; the
+ * default export keeps `dc` only, which is what the pipeline reads today.
+ * Persisted as one list of ticked ids; the key is versioned because an
+ * older saved list would lack the new ids. */
+const LEGACY_COLUMNS = ["role", "vm_spec", "routable", "cluster", "labels"];
+const LEGACY_META = ["_topology", "_binding"];
+const LEGACY_DIMS = ["site", "phase", "dc", "room", "rack", "ag"];
+const LEGACY_FIELDS = [...LEGACY_COLUMNS, ...LEGACY_META, ...LEGACY_DIMS];
+const LEGACY_DEFAULT = [...LEGACY_COLUMNS, ...LEGACY_META, "dc"];
+const LEGACY_FIELDS_KEY = "solver-legacy-fields-v2";
 function legacyFields() {
   try {
     const saved = JSON.parse(localStorage.getItem(LEGACY_FIELDS_KEY) || "null");
     if (Array.isArray(saved)) return LEGACY_FIELDS.filter((f) => saved.includes(f));
   } catch { /* fall through */ }
-  return [...LEGACY_FIELDS];
+  return [...LEGACY_DEFAULT];
 }
 function setLegacyFields(fields) {
   try { localStorage.setItem(LEGACY_FIELDS_KEY, JSON.stringify(fields)); } catch { /* ignore */ }
 }
 
+const isMetaKey = (k) => k.startsWith("_");
+/** Only the BMn entries of a pool document (never the "_" meta keys). */
+const bmEntries = (doc) => Object.entries(doc ?? {}).filter(([k]) => !isMetaKey(k));
+
 function legacyDocFor(pool) {
   const keep = new Set(legacyFields());
   const doc = state.result.legacy_template[pool] ?? {};
-  return Object.fromEntries(Object.entries(doc).map(([bm, rows]) => [bm, rows.map((row) =>
-    Object.fromEntries(Object.entries(row).filter(([k]) => keep.has(k))))]));
+  const out = {};
+  for (const [key, value] of Object.entries(doc)) {
+    if (key === "_topology") {
+      if (!keep.has(key)) continue;
+      out[key] = Object.fromEntries(Object.entries(value).map(([bm, topo]) =>
+        [bm, Object.fromEntries(Object.entries(topo).filter(([d]) => keep.has(d)))]));
+    } else if (isMetaKey(key)) {
+      if (keep.has(key)) out[key] = value;
+    } else {
+      out[key] = value.map((row) => Object.fromEntries(Object.entries(row).filter(([k]) => keep.has(k))));
+    }
+  }
+  return out;
 }
 
 function legacyJsonFor(pool) {
@@ -555,10 +580,19 @@ function legacyJsonFor(pool) {
 function renderLegacyFields() {
   const chosen = new Set(legacyFields());
   const anyLabels = Object.values(state.result?.legacy_template ?? {})
-    .some((doc) => Object.values(doc).some((rows) => rows.some((r) => r.labels)));
-  $("#legacy-fields").innerHTML = `<span class="mini__label">Columns</span>` + LEGACY_FIELDS.map((f) => `
-    <label class="${f === "labels" && !anyLabels ? "is-muted" : ""}" title="${f === "labels" ? "present only on VMs that carry labels" : f}">
-      <input type="checkbox" data-legacy-field="${f}" ${chosen.has(f) ? "checked" : ""}><span>${escapeHtml(f)}</span></label>`).join("");
+    .some((doc) => bmEntries(doc).some(([, rows]) => rows.some((r) => r.labels)));
+  const box = (f, { muted = false, disabled = false, title = f } = {}) => `
+    <label class="${muted ? "is-muted" : ""}" title="${escapeHtml(title)}">
+      <input type="checkbox" data-legacy-field="${f}" ${chosen.has(f) ? "checked" : ""} ${disabled ? "disabled" : ""}><span>${escapeHtml(f)}</span></label>`;
+  const topoOn = chosen.has("_topology");
+  $("#legacy-fields").innerHTML =
+    `<span class="mini__label">Columns</span>` +
+    LEGACY_COLUMNS.map((f) => box(f, { muted: f === "labels" && !anyLabels, title: f === "labels" ? "present only on VMs that carry labels" : f })).join("") +
+    `<span class="mini__label legacy-fields__sep">Blueprint keys</span>` +
+    box("_topology", { title: "BMn → topology of the planned machine (numbers)" }) +
+    box("_binding", { title: "BMn → \"\" — the inventory-generator fills in the real hostname" }) +
+    `<span class="mini__label legacy-fields__sep">Topology dims</span>` +
+    LEGACY_DIMS.map((d) => box(d, { disabled: !topoOn, muted: !topoOn, title: `_topology.${d}` })).join("");
 }
 
 function renderLegacy() {
@@ -570,7 +604,7 @@ function renderLegacy() {
   const sel = $("#legacy-pool");
   const keep = sel.value;
   sel.innerHTML = pools.map((p) => {
-    const n = Object.keys(state.result.legacy_template[p]).length;
+    const n = bmEntries(state.result.legacy_template[p]).length;
     return `<option value="${escapeHtml(p)}">${escapeHtml(p)} · ${n} BM</option>`;
   }).join("");
   sel.value = pools.includes(keep) ? keep : pools[0];
@@ -865,6 +899,7 @@ function init() {
     const chosen = [...document.querySelectorAll("#legacy-fields input[data-legacy-field]")]
       .filter((i) => i.checked).map((i) => i.dataset.legacyField);
     setLegacyFields(chosen);
+    if (e.target.dataset.legacyField === "_topology") renderLegacyFields();   // dims follow the parent
     $("#legacy-json").value = legacyJsonFor(legacySelectedPool());
   });
   $("#legacy-copy-btn").addEventListener("click", copyLegacy);

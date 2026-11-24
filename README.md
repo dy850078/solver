@@ -217,16 +217,29 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   to `candidate_baremetals`, the same mechanism the scheduler uses for its
   own role filtering; the production `/solve` contract is unchanged.
 - `legacy_template` in the result is the document the legacy provisioning
-  pipeline consumes, one per Baremetal group, machines numbered `BM1…BMn`
-  within the group (occupied machines only), every VM tagged with its
-  cluster; `legacy_bm_map` traces each key back to the planned machine:
+  pipeline consumes (the "blueprint"), one per Baremetal group, machines
+  numbered `BM1…BMn` within the group (occupied machines only), every VM
+  tagged with its cluster, plus two meta keys (ADR-024): `_topology` gives
+  each machine's topology as numbers (short keys `site, phase, dc, room,
+  rack, ag`; a name without a trailing number is kept as-is) and `_binding`
+  is the empty slot the inventory-generator fills with the real hostname.
+  **Keys starting with `_` are never machines.** `legacy_bm_map` traces each
+  key back to the planned machine:
 
   ```json
   {"shared": {"BM1": [{"role": "worker", "vm_spec": "third", "routable": "R", "cluster": "A1"},
                       {"role": "master", "vm_spec": "third", "routable": "R", "cluster": "A1"}],
-              "BM2": [...]},
-   "c1-own": {"BM1": [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}]}}
+              "BM2": [...],
+              "_topology": {"BM1": {"site": 1, "phase": 1, "dc": 1, "room": 1, "rack": 1, "ag": 1},
+                            "BM2": {"site": 1, "phase": 1, "dc": 1, "room": 1, "rack": 2, "ag": 2}},
+              "_binding": {"BM1": "", "BM2": ""}},
+   "c1-own": {"BM1": [{"role": "worker", "vm_spec": "full", "routable": "R", "cluster": "C1"}],
+              "_topology": {"BM1": {"site": 1, "phase": 1, "dc": 1, "room": 1, "rack": 3, "ag": 3}},
+              "_binding": {"BM1": ""}}}
   ```
+  The UI's Blueprint export card lets you untick VM columns, either meta
+  key, and which topology dimensions to keep (default: `dc` only); the API
+  always carries all six.
 - A demand row may carry `labels` (`{"dedicated": "AAA"}`): rows that differ
   only in labels are separate node types, each with its own footprint (C7)
   rule pinned to its own label values (the unlabeled row's selector says

@@ -136,6 +136,7 @@
 #legacy-json.editor--legacy { min-height: 220px; max-height: 420px; font-size: 12px; }
 .legacy-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 8px; }
 .legacy-fields .mini__label { font-size: 10.5px; color: var(--text-subtle); }
+.legacy-fields .legacy-fields__sep { margin-left: 10px; padding-left: 12px; border-left: 1px solid var(--border-base); }
 .legacy-fields label {
   display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted);
   font-family: var(--font-mono, ui-monospace, monospace); cursor: pointer;

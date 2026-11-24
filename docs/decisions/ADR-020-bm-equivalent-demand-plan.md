@@ -222,6 +222,7 @@ VM 的機器),每顆 VM 一筆 `{"role", "vm_spec", "routable": "R"|"NR"|"", "cl
 的情境);`routable` 的 R/NR 映射只在這一層做,solver / rollout 仍用完整的 `ip_type`。
 落選:全域連號(同一台機器在各 cluster 的視角裡跳號);每 cluster 一份各自從 1
 起算(共住機器在不同文件裡編號不同,對不起來)。`legacy_bm_map` 另附
+  → ADR-024 之後每份文件多了 `_topology` / `_binding` 兩個 `_` 前綴的 meta 鍵（不是機器）。
 `{pool: {"BM1": "<bm_id>"}}` 供人追溯,不混進 pipeline 文件。UI 卡片「Legacy
 pipeline export」提供 group 下拉、Copy JSON(clipboard API,退回 execCommand)、
 Download、Download all groups。

@@ -265,12 +265,12 @@ class BmDemandPlanResult(BaseModel):
     total_baremetals: int = 0
     placement_matrix: list[PlacementMatrixRow] = Field(default_factory=list)
     bm_layouts: list[BmLayout] = Field(default_factory=list)
-    # One pipeline document per pool: {"<pool>": {"BM1": [{role, vm_spec,
-    # routable, cluster}, …]}} (placement_report.legacy_template); the map
+    # One pipeline document ("blueprint") per pool: {"<pool>": {"BM1": [{role,
+    # vm_spec, routable, cluster[, labels]}, …], "_topology": {"BM1": {dc: 1,
+    # …}}, "_binding": {"BM1": ""}}} (placement_report.legacy_template,
+    # ADR-024). Keys starting with "_" are meta, never machines; the map
     # traces BMn back to the planned machine id.
-    # Rows are {role, vm_spec, routable, cluster} plus an optional `labels`
-    # dict (ADR-021), hence Any.
-    legacy_template: dict[str, dict[str, list[dict[str, Any]]]] = Field(default_factory=dict)
+    legacy_template: dict[str, dict[str, Any]] = Field(default_factory=dict)
     legacy_bm_map: dict[str, dict[str, str]] = Field(default_factory=dict)
     advisories: list[dict[str, Any]] = Field(default_factory=list)
     config_fingerprint: str = ""
