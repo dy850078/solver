@@ -1,9 +1,17 @@
 """placement_report — pure aggregation over a solved placement (ADR-020)."""
 
-from app.models import PlacementAssignment, Resources
+from app.models import PlacementAssignment, Resources, Topology
 from app.placement_report import (
-    bm_layouts, legacy_bm_map, legacy_template, placement_matrix, spec_name_of,
+    LEGACY_META_KEYS, bm_layouts, legacy_bm_map, legacy_template, placement_matrix,
+    spec_name_of, topology_numbers,
 )
+
+META = list(LEGACY_META_KEYS)
+
+
+def bm_keys(doc):
+    """The machine keys of a blueprint document (never the "_" meta keys)."""
+    return [k for k in doc if not k.startswith("_")]
 
 from .conftest import make_bm, make_vm
 
@@ -94,8 +102,8 @@ class TestLegacyTemplate:
     def test_one_document_per_pool_numbered_within_pool(self):
         t = legacy_template(self._layouts())
         assert set(t) == {"pool-ap", "pool-cp"}
-        assert list(t["pool-ap"]) == ["BM1", "BM2"]
-        assert list(t["pool-cp"]) == ["BM1"]
+        assert list(t["pool-ap"]) == ["BM1", "BM2", *META]
+        assert list(t["pool-cp"]) == ["BM1", *META]
         assert t["pool-ap"]["BM1"] == [
             {"role": "worker", "vm_spec": "big", "routable": "R", "cluster": "A"},
             {"role": "worker", "vm_spec": "big", "routable": "R", "cluster": "A"},
@@ -118,7 +126,7 @@ class TestLegacyTemplate:
     def test_empty_pool_name_groups_under_default(self):
         a, v, b = _scenario()
         t = legacy_template(bm_layouts(a, v, b, CATALOG))
-        assert set(t) == {"default"} and list(t["default"]) == ["BM1", "BM2", "BM3"]
+        assert set(t) == {"default"} and bm_keys(t["default"]) == ["BM1", "BM2", "BM3"]
 
 
 class TestLabelsInReports:
@@ -149,4 +157,45 @@ class TestLabelsInReports:
         assert all(set(r) == {"role", "vm_spec", "routable", "cluster", "labels"}
                    and r["labels"] == {"dedicated": "AAA"} for r in t["default"]["BM1"])
         assert all(set(r) == {"role", "vm_spec", "routable", "cluster"}
-                   for key, rows in t["default"].items() if key != "BM1" for r in rows)
+                   for key in bm_keys(t["default"]) if key != "BM1" for r in t["default"][key])
+
+
+class TestBlueprintMetaKeys:
+    """ADR-024: every pool document carries `_topology` (BMn → numeric
+    topology) and `_binding` (BMn → "" placeholder), keyed exactly like the
+    BM entries."""
+
+    def test_topology_numbers_trailing_digits_verbatim_and_empty(self):
+        t = Topology(site="site-1", phase="p1", datacenter="dc-12", room="room-1", rack="rack-3", ag="ag-2")
+        assert topology_numbers(t) == {"site": 1, "phase": 1, "dc": 12, "room": 1, "rack": 3, "ag": 2}
+        # no trailing number → kept verbatim, never silently 0; blanks left out
+        assert topology_numbers(Topology(site="site-a", rack="rack-7")) == {"site": "site-a", "rack": 7}
+        assert topology_numbers(Topology()) == {}
+
+    def test_layouts_carry_the_full_topology(self):
+        a, v, b = _scenario()
+        lay = {l.bm_id: l for l in bm_layouts(a, v, b, CATALOG)}
+        assert lay["bm-2"].topology == b[1].topology
+        assert lay["bm-2"].ag == "ag-2" and lay["bm-2"].rack == "rack-1"   # flat fields unchanged
+
+    def test_meta_keys_follow_the_bm_numbering(self):
+        a, v, b = _scenario()
+        layouts = bm_layouts(a, v, b, CATALOG)
+        doc = legacy_template(layouts)["default"]
+        trace = legacy_bm_map(layouts)["default"]
+        keys = bm_keys(doc)
+        assert list(doc) == [*keys, "_topology", "_binding"]
+        assert list(doc["_topology"]) == keys and list(doc["_binding"]) == keys
+        assert all(v == "" for v in doc["_binding"].values())
+        by_id = {bm.id: bm for bm in b}
+        for key in keys:
+            assert doc["_topology"][key] == topology_numbers(by_id[trace[key]].topology)
+        # conftest machines: site has no trailing number, the rest do
+        assert doc["_topology"]["BM1"] == {"site": "site-a", "phase": 1, "dc": 1, "room": 1, "rack": 1, "ag": 1}
+
+    def test_idle_machine_has_no_meta_entry(self):
+        a, v, b = _scenario()
+        b.append(make_bm("bm-idle", ag="ag-1", rack="rack-9"))
+        doc = legacy_template(bm_layouts(a, v, b, CATALOG))["default"]
+        assert set(doc["_topology"]) == set(bm_keys(doc))
+        assert all(t["rack"] != 9 for t in doc["_topology"].values())
