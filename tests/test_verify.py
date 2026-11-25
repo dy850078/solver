@@ -271,6 +271,19 @@ def test_no_verify_marker_switches_the_hook_off(monkeypatch):
     assert res.success and len(set(res.to_assignment_map().values())) == 1
 
 
+def test_every_solver_constraint_label_has_a_verifier_section():
+    """A new `CONSTRAINT Cn` in the solver with no `# ---- Cn:` section in
+    the verifier would pass every other test here — nothing fails when a
+    check simply does not exist. This makes the omission loud."""
+    import re
+    app = EXAMPLES.parent / "app"
+    in_solver = set(re.findall(r"CONSTRAINT \(?(C\d+)", (app / "solver.py").read_text()))
+    in_verifier = set(re.findall(r"# ---- (C\d+):", (app / "verify.py").read_text()))
+    assert in_solver, "label convention changed — update this test"
+    assert in_solver <= in_verifier, (
+        f"solver constraints without a verifier section: {sorted(in_solver - in_verifier)}")
+
+
 # ---------------------------------------------------------------------------
 # 3. Sweep + CLI
 # ---------------------------------------------------------------------------

@@ -61,6 +61,14 @@ changed="$(
 code_changed="$(printf '%s\n' "$changed" | grep -E '\.py$|^app/web_static/|^tests/js/|^examples/' || true)"
 [ -z "$code_changed" ] && exit 0
 
+# UI changes on a machine that has a browser configured (SOLVER_CHROMIUM):
+# the node and browser tests must RUN, not skip. Without SOLVER_CHROMIUM
+# they keep skipping, so the hook still works on a Python-only machine.
+ui_changed="$(printf '%s\n' "$changed" | grep -E '^app/web_static/|^tests/js/|^tests/test_ui_' || true)"
+if [ -n "$ui_changed" ] && [ -n "${SOLVER_CHROMIUM:-}" ]; then
+  export SOLVER_REQUIRE_NODE=1 SOLVER_REQUIRE_BROWSER=1
+fi
+
 # Gate 1: tests must pass.
 if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi
 test_output="$("$PY" -m pytest -q --no-header 2>&1)"
