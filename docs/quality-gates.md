@@ -127,9 +127,53 @@ include:
 
 ## 4. 搬到內部之後的檢查清單
 
-- [ ] `.gitlab-ci.yml` 加上 `include`,確認 `test` stage 在 deploy 之前
-- [ ] 設定 `SOLVER_CI_PYTHON_IMAGE` / `SOLVER_CI_NODE_IMAGE`
-- [ ] 開發機上 `make install && make test` 全綠,且 `tests/test_ui_js.py` 不是 skip(有 Node)
-- [ ] 開發機上 `make install-ui && SOLVER_CHROMIUM=… make test-ui` 全綠
-- [ ] GitLab 專案設定:`master` 設為 protected,merge 需 pipeline 成功
-- [ ] `.claude/` 目錄(settings、hooks、skills)有跟著 repo 進到內部
+關卡「存在」不等於「有在擋」。搬過去後依序做一次,每一步都寫了預期結果;
+結果不符就代表那一關在內部沒有生效。
+
+### A. 基準:環境本身是對的
+
+- [ ] `.claude/` 有跟著進來,且 hook 可執行:`ls -l .claude/hooks/stop-gate.sh`(要有 `x`)
+- [ ] `make install && make test` → 全綠
+- [ ] `.venv/bin/python -m pytest tests/test_ui_js.py -v` → 是 **PASSED 不是 SKIPPED**(有 Node ≥ 18)
+- [ ] `make install-ui && SOLVER_CHROMIUM=<路徑> make test-ui` → 7 passed
+- [ ] OR-Tools 版本與 `uv.lock` 一致:`.venv/bin/python -c "import ortools; print(ortools.__version__)"`
+      (`make install` 不是照 lock 安裝;版本不同時求解結果可能不同,`config_fingerprint` 也會變)
+- [ ] `git symbolic-ref refs/remotes/origin/HEAD` → 指向 `origin/master`(Stop hook 靠它找主幹;
+      沒有輸出就執行 `git remote set-head origin -a`)
+
+### B. 破壞測試:每一關都真的會擋
+
+每項做完用 `git checkout -- <檔案>` 還原。
+
+| # | 故意弄壞 | 執行 | 預期 |
+|---|---|---|---|
+| 1 | `app/solver.py` 的 `_add_max_per_bm_constraints` 開頭加一行 `return` | `make test` | 失敗,訊息含 `[C4]`(獨立驗證器抓到) |
+| 2 | `app/web_static/js/util.js` 的 `formatGpu` 把 `:` 改成 `=` | `make test-js` | 失敗 |
+| 3 | `app/web_static/js/summary.js` 最後加 `import "./nope.js";` | `make test-ui` | 失敗,訊息含 `HTTP 404` |
+| 4 | `app/web_static/index.html` 加 `<script src="https://example.com/x.js"></script>` | `make test-ui` | 失敗,訊息含 `off-site request` |
+| 5 | 維持 #3 的狀態 | `echo '{}' \| CLAUDE_PROJECT_DIR=$PWD .claude/hooks/stop-gate.sh; echo $?` | 印出 `BLOCKED`,結束碼 `2` |
+| 6 | `app/solver.py` 只加一行註解(不寫 ADR) | 同 #5 的指令 | `BLOCKED … no ADR was added`,結束碼 `2` |
+
+#5 若結束碼是 `0`:多半是瀏覽器測試被 skip 了 —— 確認 `SOLVER_CHROMIUM` 有設。
+
+### C. Claude CLI 端
+
+- [ ] 在 `.claude/settings.local.json` 設 `"env": {"SOLVER_CHROMIUM": "<路徑>"}`
+- [ ] 維持 B-3 的破壞,請 Claude 做任何小事後結束回合 → 應該被 Stop hook 擋下並開始修。
+      沒被擋 = `env` 沒傳進 hook,改在 shell profile `export SOLVER_CHROMIUM=…`
+- [ ] 在 CLI 輸入 `/` 看得到 `adr`、`cpsat-anti-patterns`、`teach-back`、`verify-solver` 四個 skill
+- [ ] 問 Claude「改約束語意時要改哪些檔案」→ 應回答 solver 與 `app/verify.py` 都要改(確認 CLAUDE.md 有被讀到)
+
+### D. GitLab 端
+
+- [ ] `.gitlab-ci.yml` 加上 `include`,`test` stage 排在 deploy 之前
+- [ ] 設定 `SOLVER_CI_PYTHON_IMAGE` / `SOLVER_CI_NODE_IMAGE` 指到內部 registry
+- [ ] 專案設定:`master` 設為 protected;Merge requests 勾選 *Pipelines must succeed*
+- [ ] **CI 破壞測試**:開一個帶 B-1 破壞的分支並發 MR → `solver-quality:python` 變紅、
+      MR 無法 merge、**deploy job 沒有執行**。確認後關掉 MR、刪分支
+- [ ] (建議)啟用 `.solver-quality:ui-browser`,並用帶 B-3 破壞的分支確認它會變紅
+
+### E. 之後定期
+
+- 每次升級 OR-Tools、Node 或 Chromium 後,重跑 A。
+- 每新增一條約束(C8+),B-1 的做法對新 builder 再做一次。
