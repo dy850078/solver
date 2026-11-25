@@ -260,7 +260,10 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   `edited=true`, the pool's `manual_moves` appended. Illegal → `ok=false` with
   the solver's `diagnostics` (`constraint_check.failed_at` names the layer) and
   the plan untouched; always HTTP 200. Moves stay inside one pool; a swap is
-  two moves in one call.
+  two moves in one call. The UI stages drops (ADR-025): every drop lands,
+  the whole pending set is validated after each one, the report cards show
+  the last valid layout (marked pending) meanwhile, and Done needs a valid
+  layout — so "move A in, then move B out" works without a spare machine.
 - **Excel import / export** (ADR-023). The PM Demand page reads and writes an
   `.xlsx` workbook that is the request JSON in spreadsheet form — parsed in the
   browser with no third-party JS. Sheets (names and column headers are
@@ -284,7 +287,8 @@ curl -s -X POST http://localhost:50051/v1/placement/bm-demand/plan \
   first time it appears). **Edit layout** on the Machines card lets you drag a
   VM onto another machine of the same pool (or onto another VM to swap); every
   drop is validated by the server and a rejected one snaps back with the reason.
-  Undo / Discard all / Done; the Result JSON carries `manual_moves`.
+  Undo / Discard all / Done; the Result JSON carries `manual_moves` (net
+  moves relative to the layout when editing started).
 
 ## Split-and-Solve (`POST /v1/placement/split-and-solve`)
 

@@ -802,6 +802,11 @@ html[data-theme="dark"] .vm-chip:hover { filter: brightness(1.15); }
   white-space: nowrap;
 }
 .cap--hot .cap__num { color: var(--chip-warning-text); font-weight: 600; }
+/* Over capacity: only a staged (unvalidated) edit can get here — ADR-025. */
+.cap--over .cap__placed { background: var(--error); }
+.cap--over .cap__pre { background: color-mix(in srgb, var(--error) 45%, transparent); }
+.cap--over .cap__num { color: var(--error); font-weight: 600; }
+.bm--overfull { border-color: var(--error) !important; box-shadow: inset 0 0 0 1.5px var(--error); }
 
 /* Capacity toggle in the Topology card header */
 .cap-toggle {

@@ -803,6 +803,39 @@ class TestLayoutEdit:
         assert second.result.groups[0].rollout.reports[-1].bm_used_count == 9
         assert first.result.groups[0].rollout.reports[-1].bm_used_count == 10
 
+    def test_batch_of_moves_valid_only_as_a_whole(self, scenario):
+        """ADR-025: the UI stages drops and validates the whole pending set
+        at once. Three VMs on three FULL machines of one AG rotate
+        (a→m_b, b→m_c, c→m_a): every single move overfills a machine, the
+        batch is a legal layout. And a batch is atomic — one bad move in it
+        rejects the whole batch and leaves the result untouched."""
+        req, res = scenario
+        by_bm = {}
+        for l in res.bm_layouts:
+            if len(l.entries) == 3:
+                by_bm.setdefault(l.ag, []).append(l)
+        ag, full = next((ag, ls) for ag, ls in by_bm.items() if len(ls) >= 3)
+        m = [l.bm_id for l in full[:3]]
+        v = [full[i].entries[0].vm_id.split("/", 1)[1] for i in range(3)]
+        rotation = [ManualMove(group="shared", vm_id=v[0], to_bm=m[1]),
+                    ManualMove(group="shared", vm_id=v[1], to_bm=m[2]),
+                    ManualMove(group="shared", vm_id=v[2], to_bm=m[0])]
+        for mv in rotation:
+            single = _edit(req, res, mv)
+            assert not single.ok and single.diagnostics["constraint_check"]["failed_at"] == "capacity"
+        out = _edit(req, res, *rotation)
+        assert out.ok, (out.solver_status, out.diagnostics)
+        place = _placement(out.result, "shared")
+        assert [place[x] for x in v] == [m[1], m[2], m[0]]
+        assert len(out.result.groups[0].manual_moves) == 3
+        # atomic: add a fourth move onto a full machine of another AG
+        other_full = next(l.bm_id for l in res.bm_layouts if len(l.entries) == 3 and l.ag != ag)
+        extra = next(e.vm_id.split("/", 1)[1] for l in res.bm_layouts if l.ag != ag and l.bm_id != other_full
+                     for e in l.entries)
+        bad = _edit(req, res, *rotation, ManualMove(group="shared", vm_id=extra, to_bm=other_full))
+        assert not bad.ok and bad.result is None
+        assert _placement(res, "shared")[v[0]] == m[0]          # input untouched
+
     def test_guards_are_input_errors(self, scenario):
         req, res = scenario
         vid, _, same_ag, _, _ = self._targets(res)

@@ -140,6 +140,9 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   **Manual layout edits** (`edit_layout`, ADR-022) validate by re-solving the
   pool with every VM `candidate_baremetals=[bm]` (a requirement) — never
   `pinned_to` (a fact, grandfathered); rejected moves never change the plan.
+  The UI stages drops and validates the whole pending set per drop
+  (ADR-025): transient violations may show on screen, but only a validated
+  layout ever reaches `state.result` / Done / downloads.
 - **UI has no third-party JS and no CDN**: `xlsx.js` (writer) and
   `xlsx-read.js` (reader, ADR-023) are hand-written on top of browser-native
   `DecompressionStream` / `DOMParser`; never add SheetJS or a CDN script.

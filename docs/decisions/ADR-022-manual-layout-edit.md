@@ -78,6 +78,8 @@ UI 會翻譯成「放不下」，誤導；所以要自己擋。寫回時以 **vm
 
 ## 5. 取捨與風險
 
+> 2026-11-25 修訂：逐步驗證改為「放下先成立、整個 pool 一次驗、Done 才要求合法」，見 ADR-025。驗證器本身不變。
+
 - 每次放下一次 solve。鎖死後幾乎即時；只有被拒時分層診斷最多 7×5s。可接受，因為失敗是少數路徑。
 - 驗證的「盲點」只剩本來就不是硬規則的東西：advisories（`spread_below_target`、`label_not_in_auto_group`、`ag_spread_exceeds_equivalents`）
   維持 Run 當時的內容、不重算（banner 已標示）；Go scheduler 自己的政策（taint / affinity）本來就不在 solver 契約內；

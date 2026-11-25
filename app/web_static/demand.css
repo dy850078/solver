@@ -166,7 +166,17 @@
 .bm--droppable { border-style: dashed; }
 .bm--droppable .bm__placeholder::after { content: " — drop a VM here"; }
 .bm--over { border-color: var(--accent) !important; box-shadow: inset 0 0 0 1.5px var(--accent); background: var(--accent-soft); }
-.bm--busy { opacity: 0.55; pointer-events: none; }
+.edit-bar__status {
+  font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full);
+  border: 1px solid var(--border-base); white-space: nowrap;
+}
+.edit-bar__status--valid { color: var(--success); background: var(--success-soft); border-color: var(--success-border); }
+.edit-bar__status--invalid { color: var(--error); background: var(--error-soft); border-color: var(--error-border); }
+.edit-bar__status--checking { color: var(--text-muted); background: var(--bg-surface); }
+.card__pending {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; margin-left: 8px; border-radius: var(--radius-full);
+  color: var(--warning); background: var(--warning-soft); border: 1px solid var(--warning-border); white-space: nowrap;
+}
 .vm-chip[draggable="true"] { cursor: grab; }
 .vm-chip[draggable="true"]:active { cursor: grabbing; }
 .vm-chip--dragging { opacity: 0.4; }
