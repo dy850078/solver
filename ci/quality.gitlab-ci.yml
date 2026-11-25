@@ -1,0 +1,86 @@
+# Quality gates for the solver — meant to be INCLUDED, not to be the pipeline.
+#
+# This file deliberately defines no `stages`, `workflow`, `default`,
+# top-level `image` or deploy job, and every job name starts with
+# `solver-quality:`, so it cannot collide with an existing .gitlab-ci.yml.
+# Hook it up from that file with one line:
+#
+#     include:
+#       - local: ci/quality.gitlab-ci.yml
+#
+# Checklist for the including file:
+#   1. `stages:` must contain `test`, placed BEFORE the deploy stage — a
+#      failing gate then stops the pipeline before anything ships. (If the
+#      file has no `stages:` key, GitLab's default order already does this.)
+#   2. No `rules:` are set here on purpose: the jobs run in exactly the
+#      pipelines the including file already creates. To also gate merge
+#      requests, override the template in the including file, e.g.
+#
+#          .solver-quality:
+#            rules:
+#              - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+#              - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+#
+#      and give the deploy jobs matching rules, or GitLab will run a branch
+#      pipeline AND a merge-request pipeline for the same push.
+#   3. Images default to Docker Hub names; on a closed network point the two
+#      variables below at the internal registry (project CI/CD variables or
+#      a `variables:` block in the including file).
+#   4. Package installs use pip, which honours PIP_INDEX_URL / pip.conf on
+#      the runner. (uv is not used here: it ignores both — see CLAUDE.md.)
+
+variables:
+  SOLVER_CI_PYTHON_IMAGE: "python:3.13"
+  SOLVER_CI_NODE_IMAGE: "node:22"
+
+.solver-quality:
+  stage: test
+  interruptible: true
+
+# Python suite: solver, splitter, planners, API — and, through the autouse
+# hook in tests/conftest.py, an independent C1–C7 re-check (app/verify.py)
+# of every successful solve the suite performs. The UI tests skip here
+# (no node / browser in a plain Python image); the next two jobs own them.
+solver-quality:python:
+  extends: .solver-quality
+  image: $SOLVER_CI_PYTHON_IMAGE
+  before_script:
+    - python -m pip install -e ".[dev]"
+  script:
+    - python -m pytest -q -p no:cacheprovider --junitxml=pytest.xml
+  artifacts:
+    when: always
+    reports:
+      junit: pytest.xml
+
+# UI unit tests: the DOM-free JS modules under Node's built-in runner.
+# No npm install — nothing is fetched.
+solver-quality:ui-js:
+  extends: .solver-quality
+  image: $SOLVER_CI_NODE_IMAGE
+  script:
+    - node --version
+    - node --test tests/js/*.test.mjs
+
+# Full UI gate: JS↔Python workbook cross-check and the real-browser smoke
+# test. Needs ONE image carrying python3 + node + a chromium binary, which
+# only you can name — so it ships as a hidden template. Activate it from the
+# including file:
+#
+#     solver-quality:ui-browser:
+#       extends: .solver-quality:ui-browser
+#       image: registry.internal/your/python-node-chromium:tag
+#       variables:
+#         SOLVER_CHROMIUM: /usr/bin/chromium
+#
+# SOLVER_REQUIRE_* turn "tool missing → skip" into a failure, so an image
+# that lost node or the browser cannot go quietly green.
+.solver-quality:ui-browser:
+  extends: .solver-quality
+  variables:
+    SOLVER_REQUIRE_NODE: "1"
+    SOLVER_REQUIRE_BROWSER: "1"
+  before_script:
+    - python -m pip install -e ".[dev,ui]"
+  script:
+    - python -m pytest -q -p no:cacheprovider tests/test_ui_js.py tests/test_ui_smoke.py

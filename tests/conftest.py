@@ -82,3 +82,42 @@ def solve(vms, bms, rules=None, failover_rules=None, exclusive_rules=None,
 def amap(result):
     """Shorthand: vm_id -> bm_id dict."""
     return result.to_assignment_map()
+
+
+# ---------------------------------------------------------------------------
+# Suite-wide second opinion: every successful solve is re-checked by the
+# independent verifier (app/verify.py), whatever path reached the solver —
+# plain placement, split-and-solve, rollout, sizing, capacity planning,
+# BM-demand. A test that only asserts "success" still fails if the layout
+# breaks C1–C7. Opt out per test with @pytest.mark.no_verify (none needed
+# today; the marker exists so an intentional exception is visible in a diff).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _verify_every_solve(request, monkeypatch):
+    if request.node.get_closest_marker("no_verify"):
+        return
+    from app.verify import verify_placement
+
+    orig_init = VMPlacementSolver.__init__
+    orig_solve = VMPlacementSolver.solve
+
+    def init(self, placement_request, **kwargs):
+        # Keep the request as the caller sent it: the solver stores a
+        # pin-normalized copy, and the verifier must judge the contract
+        # input, not the solver's own rewrite of it.
+        self._request_as_sent = placement_request
+        orig_init(self, placement_request, **kwargs)
+
+    def solve(self):
+        result = orig_solve(self)
+        if result.success:
+            violations = verify_placement(
+                self._request_as_sent, result, slots=self.active_vars)
+            assert not violations, (
+                "solver reported success but the layout violates:\n  "
+                + "\n  ".join(str(v) for v in violations))
+        return result
+
+    monkeypatch.setattr(VMPlacementSolver, "__init__", init)
+    monkeypatch.setattr(VMPlacementSolver, "solve", solve)

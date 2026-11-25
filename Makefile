@@ -81,8 +81,30 @@ cli: ## Run the solver in CLI mode (requires INPUT=path; optional OUTPUT=path)
 	$(BIN)/python -m app.server --cli --input $(INPUT) $(if $(OUTPUT),--output $(OUTPUT),)
 
 .PHONY: test
-test: ## Run the test suite
+test: ## Run the test suite (Python + UI JS units when node is on PATH)
 	$(BIN)/python -m pytest
+
+.PHONY: test-js
+test-js: ## Run only the UI JS unit tests (node >= 18, no npm install)
+	node --test tests/js/*.test.mjs
+
+.PHONY: install-ui
+install-ui: $(BIN)/python ## Install Playwright for the browser smoke test (optional)
+	@if [ -n "$(UV)" ]; then \
+	  uv pip install --python $(BIN)/python -e ".[dev,ui]"; \
+	else \
+	  $(BIN)/python -m pip install -e ".[dev,ui]"; \
+	fi
+	@echo "Browser: export SOLVER_CHROMIUM=/path/to/chromium  (or: $(BIN)/playwright install chromium)"
+
+.PHONY: test-ui
+test-ui: ## Browser smoke test of the web UI (needs install-ui + a Chromium; fails instead of skipping)
+	SOLVER_REQUIRE_BROWSER=1 $(BIN)/python -m pytest tests/test_ui_smoke.py
+
+.PHONY: verify
+verify: ## Independently re-check C1-C7 (INPUT=request.json; optional OUTPUT=result.json, else solves first)
+	@test -n "$(INPUT)" || { echo "ERROR: set INPUT=<request.json>"; exit 1; }
+	$(BIN)/python -m app.verify --request $(INPUT) $(if $(OUTPUT),--result $(OUTPUT),)
 
 .PHONY: clean
 clean: ## Remove the venv and Python caches

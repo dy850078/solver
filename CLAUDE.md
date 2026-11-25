@@ -27,11 +27,14 @@ app/
 ├── capacity_planner.py  # Procurement sizing + multi-period horizon roll-forward
 ├── reconcile.py     # Plan-vs-actual drift report (pure function; landable recount)
 ├── diagnostics.py   # Advisory diagnostics (e.g. spread_below_target)
+├── verify.py        # Independent C1–C7 re-check of a result — NO CP-SAT, NO solver imports (see Quality gates)
 ├── server.py        # FastAPI app + CLI mode; UI gated behind ENABLE_UI
 ├── mockgen.py       # Mock request generator for testing/demo
 ├── compare.py       # Compare sets — catalogs + referenced scenarios, each sized by mockgen, tabulated (ADR-018)
 └── examples_api.py  # Serves examples/ to the UI
 tests/               # pytest suite; test files mirror app/ modules
+tests/js/            # UI unit tests for the DOM-free JS modules (node --test, no npm)
+ci/                  # GitLab CI include with the quality jobs (never the pipeline itself)
 examples/            # Canonical request JSONs (also used by README curl examples)
 docs/decisions/      # ADRs — mentor-style decision records (see Workflow below)
 ```
@@ -147,7 +150,10 @@ docs/decisions/      # ADRs — mentor-style decision records (see Workflow belo
   `xlsx-read.js` (reader, ADR-023) are hand-written on top of browser-native
   `DecompressionStream` / `DOMParser`; never add SheetJS or a CDN script.
   The PM Demand workbook is the request JSON in sheet form (`demand-xlsx.js`,
-  DOM-free, round-trip tested against `examples/bm_demand/`).
+  DOM-free, round-trip tested against `examples/bm_demand/` in
+  `tests/js/demand-xlsx.test.mjs`). Keep parsing/formatting logic in DOM-free
+  modules so it stays testable under Node; DOM code is covered only by the
+  browser smoke test.
 - **Input contract violations → INPUT_ERROR**, not silent fixes: empty
   `candidate_baremetals` on a VM, duplicate BM ids, `auto_generate_max_per_bm`
   without `default_max_per_bm`. Infeasible models → `INFEASIBLE` with
@@ -162,12 +168,34 @@ make test                             # pytest (testpaths = tests/, no args need
 make run                              # HTTP server on :50051 (UI at /ui needs ENABLE_UI=enable)
 make dev                              # uvicorn --reload with UI enabled
 make cli INPUT=examples/success_basic.json   # one-shot solve, no server
+make verify INPUT=examples/success_basic.json  # solve + independent C1–C7 re-check (OUTPUT= to check a saved result)
+make test-js                          # UI JS unit tests only (node >= 18)
+make install-ui && make test-ui       # browser smoke test (Playwright; SOLVER_CHROMIUM=/path/to/chromium)
 ```
 
 Direct: `.venv/bin/python -m pytest` (or `-k <pattern>` for one test).
 Closed network: set `UV_INDEX_URL` (uv ignores `PIP_INDEX_URL` / `pip.conf`;
 `make install` refuses to run with only the pip side configured). The
 `swagger-ui-bundle` extra is optional — its two tests skip when it is absent.
+
+## Quality gates (what must stay true whichever model writes the code)
+
+- **Every successful solve in the suite is re-checked by `app/verify.py`**
+  (autouse fixture in `tests/conftest.py`). The verifier restates C1–C7 as
+  plain counting and deliberately shares no code with `app/solver.py` — the
+  one sanctioned exception to "single source of truth". **Changing a
+  constraint's semantics, or adding C8+, means changing the solver AND the
+  verifier**, plus a tampered-result test and a sabotaged-builder case in
+  `tests/test_verify.py`. A verifier/solver disagreement is a finding to
+  report, never something to silence with `@pytest.mark.no_verify`.
+- **UI changes need a test at the right layer**: logic → `tests/js/*.test.mjs`
+  (run by `make test` through `tests/test_ui_js.py`); page wiring →
+  `tests/test_ui_smoke.py`. The smoke test fails on any console error,
+  failed request or off-site request (the no-CDN rule, enforced).
+- **Skips are local-only**: the Node and browser tests skip when the tool is
+  missing; CI sets `SOLVER_REQUIRE_NODE` / `SOLVER_REQUIRE_BROWSER` so they
+  fail instead. Never weaken a gate to get green — say what is failing.
+- CI wiring and the closed-network setup: `docs/quality-gates.md`.
 
 ## Working contract with the engineer (mentor mode)
 
@@ -198,19 +226,24 @@ Non-negotiable communication rules:
   The Stop hook finds the trunk by itself (`origin`'s remote HEAD, then the
   known names); `SOLVER_TRUNK=<remote>/<branch>` overrides it — needed only
   when the trunk is on another remote (a mirror attached as `mirror` is never
-  the trunk).
+  the trunk). In a clone whose `origin` is the internal GitLab repo, `master`
+  is the trunk and GitHub does not exist: ignore the GitHub-side steps in
+  `docs/prod-sync-runbook.md` / `scripts/sync-from-upstream.sh` there.
 - **Commit** after each completed task with a descriptive message.
 - **ADR required for core changes**: any change to solver/splitter/models
   logic needs a decision record in `docs/decisions/` (use the `/adr` skill;
   template: `docs/decisions/TEMPLATE.md`). The Stop hook registered in
   `.claude/settings.json` (`.claude/hooks/stop-gate.sh`) enforces this — and
-  runs the test suite — before you can finish a turn.
+  runs the test suite (on Python, `app/web_static/`, `tests/js/` or
+  `examples/` changes) — before you can finish a turn.
 - **Delegate mechanical work**: broad searches and long read-only exploration
   go to subagents (Explore/general-purpose); keep the main context for design
   judgment.
 - **Verify end-to-end**: after solver changes, don't stop at unit tests — run
-  `make cli INPUT=examples/...` (or the `/verify-solver` skill) and check the
-  assignments actually satisfy the constraints you touched.
+  `make verify INPUT=examples/...` (or the `/verify-solver` skill): it solves
+  and has `app/verify.py` check the assignments against C1–C7. The verifier
+  does not judge objective quality — compare `bm_used_count` / the layout
+  with the previous behaviour yourself.
 - **Single source of truth**: extend existing modules; no `*_v2.py` /
   `enhanced_*` duplicates; no new files in the repo root; generated output
   goes to `output/`.
