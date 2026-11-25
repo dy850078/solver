@@ -313,7 +313,11 @@ function renderRack() {
   if (!groups.length) { card.classList.add("hidden"); return; }
   card.classList.remove("hidden");
   if (state.group === -1 && groups.length > 1) { renderAllGroups(groups); return; }
-  const g = groups[Math.min(Math.max(state.group, 0), groups.length - 1)];
+  // In edit mode the rack draws the STAGED layout (editor.viewResult());
+  // everything else on the page keeps reading state.result, which only
+  // ever holds a validated layout (ADR-025).
+  const source = editor?.isOn() ? editor.viewResult() : state.result;
+  const g = (source.groups ?? groups)[Math.min(Math.max(state.group, 0), groups.length - 1)];
   $("#rack-title").textContent = `Machines — group “${g.name}”`;
   const view = groupView(g);
   $("#step-strip").innerHTML = view.reports.map((rep, i) => `${i ? '<span class="step-arrow">→</span>' : ""}
@@ -348,7 +352,7 @@ function syncRackControls() {
     editBtn.disabled = !editor?.canEdit();
     editBtn.title = !g ? "Pick one Baremetal group tab to edit its layout"
       : !g.success ? "This pool did not place — nothing to edit"
-      : "Move VMs between this pool's machines by hand; every move is validated by the solver";
+      : "Move VMs between this pool's machines by hand; drops land first, the whole pool is validated by the solver, Done needs a valid layout";
   }
   if (openBtn) openBtn.disabled = on || !g;
   for (const i of document.querySelectorAll("#group-tabs input")) i.disabled = on;
@@ -358,6 +362,12 @@ function selectedGroup() {
   const groups = state.result?.groups ?? [];
   if (!groups.length || (state.group === -1 && groups.length > 1)) return null;
   return groups[Math.min(Math.max(state.group, 0), groups.length - 1)];
+}
+
+/** While a staged layout is not valid, the report cards keep showing the
+ *  last valid layout and say so (ADR-025). */
+function renderPending(on) {
+  for (const el of document.querySelectorAll(".card__pending")) el.classList.toggle("hidden", !on);
 }
 
 /** Re-render after an accepted (or undone) layout edit: everything that
@@ -494,7 +504,7 @@ async function runPlan() {
     const n = state.result.groups.reduce((k, g) => k + (g.manual_moves?.length ?? 0), 0);
     if (!window.confirm(`This plan carries ${n} manual move(s). Running again replaces it with a fresh solve. Continue?`)) return;
   }
-  editor?.exit();
+  editor?.exit({ force: true });       // a fresh Run replaces the result anyway; the staged map is dropped
   const btn = $("#run-btn");
   btn.disabled = true;
   try {
@@ -926,6 +936,8 @@ function init() {
     result: () => state.result,
     group: selectedGroup,
     setResult: (result) => { state.result = result; renderAfterEdit(); },
+    rerenderRack: () => renderRack(),
+    renderPending,
     onModeChange: () => { renderRack(); syncRackControls(); },
     barEl: $("#layout-edit-bar"),
     rackEl: $("#rack-container"),

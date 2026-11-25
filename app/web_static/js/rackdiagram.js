@@ -77,7 +77,9 @@ function capacityRows(bm, assigns, request) {
   }
   if (!rows.length) return null;
   const hot = Math.max(...rows.map((r) => r.pct));
-  for (const r of rows) r.hot = r.pct === hot && r.pct > 0;
+  // `over` only ever shows while a staged edit exceeds a machine (ADR-025);
+  // a solved result never does. Display only — the solver is the judge.
+  for (const r of rows) { r.hot = r.pct === hot && r.pct > 0; r.over = r.pct > 1 + 1e-9; }
   return rows;
 }
 
@@ -220,7 +222,7 @@ function renderCapacity(rows) {
     const free = Math.max(0, r.cap - r.pre - r.placed);
     const preW = Math.min(100, (r.pre / r.cap) * 100);
     const placedW = Math.min(100 - preW, (r.placed / r.cap) * 100);
-    return `<div class="cap ${r.hot ? "cap--hot" : ""}"
+    return `<div class="cap ${r.hot ? "cap--hot" : ""} ${r.over ? "cap--over" : ""}"
       title="${r.label}: free ${r.fmt(free)} of ${r.fmt(r.cap)} — used ${r.fmt(r.pre)} + placed ${r.fmt(r.placed)} (${pctText} full)">
       <span class="cap__label">${r.label}</span>
       <span class="cap__bar"><i class="cap__pre" style="width:${preW.toFixed(1)}%"></i><i class="cap__placed" style="width:${placedW.toFixed(1)}%"></i></span>
@@ -236,7 +238,7 @@ function renderBm(bm, showCapacity, editable) {
     : "";
   const cap = showCapacity && bm.capRows ? renderCapacity(bm.capRows) : "";
   return `
-    <li class="bm ${empty ? "bm--empty" : ""} ${editable ? "bm--droppable" : ""}" data-bm-id="${escapeHtml(bm.id)}" data-bm-ag="${escapeHtml(bm.ag)}">
+    <li class="bm ${empty ? "bm--empty" : ""} ${editable ? "bm--droppable" : ""} ${bm.capRows?.some((r) => r.over) ? "bm--overfull" : ""}" data-bm-id="${escapeHtml(bm.id)}" data-bm-ag="${escapeHtml(bm.ag)}">
       <div class="bm__head">
         <span class="bm__name">${escapeHtml(bm.hostname || bm.id)}</span>
         ${ag}
