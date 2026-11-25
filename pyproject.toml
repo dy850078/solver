@@ -25,6 +25,12 @@ dev = [
     "httpx>=0.24",
     "swagger-ui-bundle>=0.0.9",
 ]
+# Browser smoke test only (tests/test_ui_smoke.py). Separate from `dev` so a
+# closed-network index without Playwright still installs the dev tools; the
+# test skips when the library or a Chromium is missing.
+ui = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 solver-server = "app.server:main"
@@ -39,6 +45,9 @@ packages = ["app"]
 [tool.pytest.ini_options]
 # pytest 固定從 tests/ 找測試，不需要在 terminal 指定路徑
 testpaths = ["tests"]
+markers = [
+    "no_verify: skip the suite-wide independent verification of solver results (tests/conftest.py)",
+]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

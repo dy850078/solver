@@ -2,7 +2,8 @@
 # Stop gate for the solver harness.
 #
 # Enforces two things before Claude may end its turn:
-#   1. If any Python file changed on this branch, the test suite must pass.
+#   1. If any Python file, web UI file (app/web_static/), JS test or example
+#      request changed on this branch, the test suite must pass.
 #   2. If core solver logic changed (app/solver.py, app/splitter.py,
 #      app/split_solver.py, app/models.py), a new ADR must exist under
 #      docs/decisions/ on this branch.
@@ -54,8 +55,11 @@ changed="$(
   } | sort -u
 )"
 
-py_changed="$(printf '%s\n' "$changed" | grep -E '\.py$' || true)"
-[ -z "$py_changed" ] && exit 0
+# Code that the test suite covers: Python, the web UI (pytest drives the
+# node unit tests and, where a browser is available, the smoke test) and
+# the example requests the suite replays.
+code_changed="$(printf '%s\n' "$changed" | grep -E '\.py$|^app/web_static/|^tests/js/|^examples/' || true)"
+[ -z "$code_changed" ] && exit 0
 
 # Gate 1: tests must pass.
 if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=python3; fi

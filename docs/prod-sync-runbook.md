@@ -2,6 +2,10 @@
 
 把「每次手動複製檔案」換成「一條可驗證的 git 流水線」的完整流程。
 
+> **適用範圍**:本文描述的是「GitHub 為上游、GitLab 為下游」的過渡期流程。
+> 開發主幹一旦移到內部 GitLab(`master`),Phase 1 之後的 GitHub→GitLab 同步
+> 步驟就不再需要;品質關卡與 CI 的接法改看 [`quality-gates.md`](quality-gates.md)。
+
 ## 適用情境
 
 生產環境位於封閉網路,code 需經 GitLab Pipeline 做 security scan 後才能落地,

@@ -57,6 +57,10 @@ output/
 !examples/**/*.json
 !examples/**/*.csv
 
+# Marks app/web_static/js/*.js as ES modules for Node (tests/js/). Browsers
+# ignore it; without it Node < 22.7 refuses to import the UI modules.
+!app/web_static/js/package.json
+
 # Claude Code: the project hooks registration is versioned; personal
 # overrides (permissions, env such as SOLVER_TRUNK) are not.
 !.claude/settings.json
