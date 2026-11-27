@@ -83,6 +83,15 @@ make test-ui
   或內部 artifact 上的執行檔即可,**不會下載任何東西**。
 - 能連外的機器可以改用 `.venv/bin/playwright install chromium`(從 Playwright CDN 下載),
   這時不必設 `SOLVER_CHROMIUM`。
+- **Ubuntu 不要用 snap 版 Chromium**:`apt install chromium-browser` 裝到的是 snap 轉接套件,
+  一般帳號在受管機器上常被禁止執行 snap(錯誤訊息:`cannot run snap applications on this
+  system`;Playwright 端只會看到 `Target page, context or browser has been closed`),
+  帶 `sudo` 才跑得動 —— 但 Stop hook 不會帶 sudo。改裝 Google Chrome 的 `.deb`,
+  並設 `SOLVER_CHROMIUM=/usr/bin/google-chrome`。
+- 瀏覽器起不來時,先用一般帳號手動啟動,它會直接說出原因:
+  `$SOLVER_CHROMIUM --headless --no-sandbox --disable-gpu --dump-dom about:blank`
+- **不要用 `sudo` 跑測試**:會留下 root 擁有的 `.pytest_cache` / `__pycache__`,之後一般帳號的
+  `make test` 會出權限錯誤(`find . -user root -not -path "./.git/*"` 檢查)。
 - 內部 PyPI 沒有 `playwright` 的話,這一關就先不跑 —— `make test` 會顯示 skip,
   其餘關卡不受影響。
 
