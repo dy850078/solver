@@ -81,11 +81,21 @@ def browser():
     with sync_playwright() as pw:
         exe = os.environ.get("SOLVER_CHROMIUM")
         try:
-            b = pw.chromium.launch(executable_path=exe or None,
-                                   args=["--no-sandbox"])
+            # --disable-dev-shm-usage: containers often ship a tiny /dev/shm
+            # and Chromium dies on start without it. --disable-gpu: no GPU
+            # on a headless runner.
+            b = pw.chromium.launch(
+                executable_path=exe or None,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         except Error as exc:
-            _unavailable("no Chromium could be launched (set SOLVER_CHROMIUM "
-                         f"to a chrome/chromium binary): {str(exc).splitlines()[0]}")
+            # The WHOLE message: Playwright appends the browser's own stderr
+            # (missing shared library, sandbox refusal, …), which is the
+            # only place the real reason appears.
+            _unavailable(
+                f"no Chromium could be launched (SOLVER_CHROMIUM={exe!r}; set it "
+                f"to a chrome/chromium binary).\nTry it by hand:\n"
+                f"  {exe or '<chromium>'} --headless --no-sandbox --disable-gpu "
+                f"--dump-dom about:blank\nPlaywright said:\n{exc}")
         yield b
         b.close()
 
